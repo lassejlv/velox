@@ -225,10 +225,10 @@ interface ChildProcess {
 ```
 
 Checklist:
-- [ ] `Velox.exec` / `execSync`
-- [ ] `Velox.spawn`
+- [x] `Velox.exec` / `execSync`
+- [x] `Velox.spawn`
 - [ ] ChildProcess stdin/stdout/stderr streams
-- [ ] ChildProcess kill/status
+- [x] ChildProcess kill/status
 
 ---
 
@@ -255,9 +255,11 @@ interface Server {
 ```
 
 Checklist:
-- [ ] `Velox.serve()` basic HTTP server
-- [ ] Request/Response objects (web standard)
-- [ ] Graceful shutdown
+- [x] `Velox.serve()` basic HTTP server
+- [x] Request/Response objects (web standard)
+- [x] Graceful shutdown
+- [ ] Async handler support (Promise<Response>)
+- [ ] onError callback
 - [ ] TLS/HTTPS support
 
 ---
@@ -281,16 +283,16 @@ import.meta.filename // /path/to/script.ts
 ```
 
 Checklist:
-- [ ] ES module parsing
-- [ ] Relative imports (`./`, `../`)
-- [ ] Absolute imports (`/path/to`)
-- [ ] JSON imports
-- [ ] Dynamic `import()`
-- [ ] `import.meta.url`
-- [ ] `import.meta.main`
-- [ ] `import.meta.dirname` / `filename`
-- [ ] Import maps
-- [ ] `node_modules` resolution (optional)
+- [x] ES module parsing
+- [x] Relative imports (`./`, `../`)
+- [x] Absolute imports (`/path/to`)
+- [x] JSON imports
+- [x] Dynamic `import()`
+- [x] `import.meta.url`
+- [x] `import.meta.main`
+- [x] `import.meta.dirname` / `filename`
+- [x] Import maps (`--import-map` flag + auto-detection)
+- [x] `node_modules` resolution
 
 ---
 
@@ -332,7 +334,9 @@ Checklist:
 
 ## Current Focus
 
-**Phase 5: Velox.exec** → Shell commands (`exec`, `execSync`, `spawn`)
+**Phase 7: Module System** → ✅ COMPLETE
+
+**Next up: Phase 8: Developer Experience** → Watch mode, source maps, tooling
 
 ## Implementation Guide
 

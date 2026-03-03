@@ -1,6 +1,7 @@
 use crate::builtins;
 use crate::colors;
 use crate::event_loop::EventLoop;
+use crate::modules;
 use crate::transpiler;
 use rusty_v8 as v8;
 use std::sync::Once;
@@ -20,13 +21,16 @@ impl Runtime {
     }
 
     pub fn execute(&mut self, filename: &str, source: &str) -> Result<String, String> {
-        let js_source = if transpiler::is_typescript(filename) {
-            transpiler::transpile_typescript(source, filename)?
-        } else {
-            source.to_string()
-        };
-
         let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
+
+        // Set up module system callbacks on the isolate
+        isolate.set_host_initialize_import_meta_object_callback(
+            modules::host_initialize_import_meta_object_callback,
+        );
+        isolate.set_host_import_module_dynamically_callback(
+            modules::host_import_module_dynamically_callback,
+        );
+
         let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope);
         let scope = &mut v8::ContextScope::new(handle_scope, context);
@@ -35,40 +39,67 @@ impl Runtime {
         builtins::fetch::set_event_loop(event_loop.handle());
         builtins::timers::set_event_loop(event_loop.handle());
         builtins::fs::set_event_loop(event_loop.handle());
+        builtins::exec::set_event_loop(event_loop.handle());
 
         builtins::setup(scope, context);
 
-        let wrapped_source = wrap_async(&js_source);
-        let code =
-            v8::String::new(scope, &wrapped_source).ok_or("Failed to create source string")?;
-        let name = v8::String::new(scope, filename).unwrap();
+        // Check if the source uses ES module syntax
+        if modules::is_module_source(source) {
+            // Execute as ES module
+            let tc_scope = &mut v8::TryCatch::new(scope);
 
-        let origin = v8::ScriptOrigin::new(
-            scope,
-            name.into(),
-            0,
-            0,
-            false,
-            0,
-            name.into(),
-            false,
-            false,
-            false,
-        );
+            match modules::execute_module(tc_scope, filename, source) {
+                Ok(_) => {}
+                Err(e) => {
+                    // Check if there's a V8 exception
+                    if tc_scope.has_caught() {
+                        return Err(format_exception(tc_scope, filename, source));
+                    }
+                    return Err(colors::error(&e));
+                }
+            }
 
-        let tc_scope = &mut v8::TryCatch::new(scope);
+            event_loop.run(tc_scope);
+        } else {
+            // Execute as classic script (wrapped in async IIFE)
+            let js_source = if transpiler::is_typescript(filename) {
+                transpiler::transpile_typescript(source, filename)?
+            } else {
+                source.to_string()
+            };
 
-        let script = match v8::Script::compile(tc_scope, code, Some(&origin)) {
-            Some(script) => script,
-            None => return Err(format_exception(tc_scope, filename, source)),
-        };
+            let wrapped_source = wrap_async(&js_source);
+            let code =
+                v8::String::new(scope, &wrapped_source).ok_or("Failed to create source string")?;
+            let name = v8::String::new(scope, filename).unwrap();
 
-        match script.run(tc_scope) {
-            Some(_) => {}
-            None => return Err(format_exception(tc_scope, filename, source)),
+            let origin = v8::ScriptOrigin::new(
+                scope,
+                name.into(),
+                0,
+                0,
+                false,
+                0,
+                name.into(),
+                false,
+                false,
+                false,
+            );
+
+            let tc_scope = &mut v8::TryCatch::new(scope);
+
+            let script = match v8::Script::compile(tc_scope, code, Some(&origin)) {
+                Some(script) => script,
+                None => return Err(format_exception(tc_scope, filename, source)),
+            };
+
+            match script.run(tc_scope) {
+                Some(_) => {}
+                None => return Err(format_exception(tc_scope, filename, source)),
+            }
+
+            event_loop.run(tc_scope);
         }
-
-        event_loop.run(tc_scope);
 
         Ok(String::new())
     }

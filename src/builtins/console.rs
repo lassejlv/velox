@@ -32,6 +32,35 @@ fn stringify(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String
         return value.to_rust_string_lossy(scope);
     }
 
+    // Special handling for TypedArrays (Uint8Array, etc.)
+    if value.is_typed_array() {
+        let typed_array = v8::Local::<v8::TypedArray>::try_from(value).unwrap();
+        let len = typed_array.byte_length();
+
+        // For Uint8Array, show a compact representation
+        if value.is_uint8_array() {
+            if len <= 64 {
+                // Small array - show all bytes
+                let mut bytes = vec![0u8; len];
+                let backing_store = typed_array.buffer(scope).unwrap().get_backing_store();
+                let data = backing_store.data();
+                if !data.is_null() {
+                    let offset = typed_array.byte_offset();
+                    unsafe {
+                        let src = (data as *const u8).add(offset);
+                        std::ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), len);
+                    }
+                }
+                return format!("Uint8Array({}) [{:?}]", len, bytes);
+            } else {
+                // Large array - show truncated
+                return format!("Uint8Array({}) [... {} bytes]", len, len);
+            }
+        }
+
+        return format!("TypedArray({})", len);
+    }
+
     if value.is_object() || value.is_array() {
         let global = scope.get_current_context().global(scope);
         let json_key = v8::String::new(scope, "JSON").unwrap();

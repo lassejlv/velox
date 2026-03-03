@@ -2,19 +2,24 @@ mod clone;
 mod console;
 mod crypto;
 mod encoding;
+pub mod exec;
 pub mod fetch;
 pub mod fs;
 mod microtask;
 mod path;
 mod performance;
 pub mod process;
+pub mod serve;
 pub mod timers;
 mod url;
+mod web_api;
 
 use rusty_v8 as v8;
 
 pub fn setup(scope: &mut v8::ContextScope<v8::HandleScope>, context: v8::Local<v8::Context>) {
     let global = context.global(scope);
+    // Web Standard APIs (Headers, Request, Response) - must be first for serve to use
+    web_api::init(scope, global);
     console::init(scope, global);
     fetch::init(scope, global);
     timers::init(scope, global);
@@ -27,4 +32,6 @@ pub fn setup(scope: &mut v8::ContextScope<v8::HandleScope>, context: v8::Local<v
     fs::init(scope, global);
     path::init(scope, global);
     process::init(scope, global);
+    exec::init(scope, global);
+    serve::init(scope, global);
 }

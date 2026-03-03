@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "utils": "./utils.ts",
+    "greet": "./greet.ts",
+    "@mylib/": "./lib/"
+  }
+}

@@ -23,6 +23,11 @@ declare namespace Velox {
     [key: string]: string | ((...args: any[]) => any) | undefined;
   };
 
+  // Shell commands
+  function exec(command: string): Promise<ExecResult>;
+  function execSync(command: string): ExecResult;
+  function spawn(command: string, options?: SpawnOptions): ChildProcess;
+
   namespace fs {
     // Reading
     function readFile(path: string): Promise<Uint8Array>;
@@ -77,6 +82,9 @@ declare namespace Velox {
     const sep: string;
     const delimiter: string;
   }
+
+  // HTTP Server
+  function serve(options: ServeOptions): Server;
 }
 
 interface FileInfo {
@@ -105,3 +113,50 @@ interface ParsedPath {
   ext: string;
   name: string;
 }
+
+interface ExecResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  success: boolean;
+}
+
+interface SpawnOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: "inherit" | "piped" | "null";
+  stdout?: "inherit" | "piped" | "null";
+  stderr?: "inherit" | "piped" | "null";
+}
+
+interface ChildProcess {
+  pid: number;
+  kill(signal?: string): void;
+  wait(): Promise<{ code: number; success: boolean }>;
+  output(): Promise<string>;
+}
+
+// HTTP Server types
+interface ServeOptions {
+  port?: number;
+  hostname?: string;
+  handler: (request: Request) => Response | Promise<Response>;
+  onListen?: (addr: { port: number; hostname: string }) => void;
+  onError?: (error: Error) => Response | void;
+}
+
+interface Server {
+  addr: { port: number; hostname: string };
+  shutdown(): Promise<void>;
+}
+
+// NOTE: Velox provides Web Standard APIs (Headers, Request, Response) that are
+// compatible with the built-in TypeScript DOM types. When using TypeScript,
+// include "lib": ["ES2020", "DOM"] in your tsconfig.json to get type definitions
+// for these standard APIs.
+//
+// Velox implements:
+// - Headers: constructor, get, set, has, delete, append, entries, keys, values, forEach
+// - Request: constructor, url, method, headers, bodyUsed, text(), json(), arrayBuffer(), bytes(), clone()
+// - Response: constructor, status, statusText, ok, headers, bodyUsed, text(), json(), arrayBuffer(), bytes(), clone()
+// - Response.json(data, init?), Response.redirect(url, status?), Response.error()

@@ -1,3 +1,4 @@
+use crate::builtins::serve;
 use crate::builtins::timers;
 use rusty_v8 as v8;
 use std::cell::RefCell;
@@ -46,6 +47,9 @@ impl EventLoop {
         use std::sync::atomic::Ordering;
 
         loop {
+            // Poll HTTP servers for incoming requests
+            serve::poll_servers(scope);
+
             match self.receiver.try_recv() {
                 Ok(EventLoopMessage::Promise(id, callback)) => {
                     // Remove resolver from map first to avoid borrow issues
@@ -63,7 +67,9 @@ impl EventLoop {
                     self.active_count.fetch_sub(1, Ordering::SeqCst);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    if self.active_count.load(Ordering::SeqCst) == 0 {
+                    // Check if we have active promises/timers OR active servers
+                    if self.active_count.load(Ordering::SeqCst) == 0 && !serve::has_active_servers()
+                    {
                         break;
                     }
                     thread::sleep(std::time::Duration::from_millis(1));

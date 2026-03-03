@@ -26,6 +26,7 @@ pub fn run() {
     builtins::fetch::set_event_loop(event_loop.handle());
     builtins::timers::set_event_loop(event_loop.handle());
     builtins::fs::set_event_loop(event_loop.handle());
+    builtins::exec::set_event_loop(event_loop.handle());
     builtins::setup(scope, context);
 
     println!(

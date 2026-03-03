@@ -220,7 +220,8 @@ fn env_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv
     let key = key_arg.to_rust_string_lossy(scope);
     let value = val_arg.to_rust_string_lossy(scope);
 
-    env::set_var(&key, &value);
+    // SAFETY: We're in a single-threaded JS runtime
+    unsafe { env::set_var(&key, &value) };
 }
 
 // Velox.env.delete(key: string): void
@@ -235,7 +236,8 @@ fn env_delete(
     }
 
     let key = key_arg.to_rust_string_lossy(scope);
-    env::remove_var(&key);
+    // SAFETY: We're in a single-threaded JS runtime
+    unsafe { env::remove_var(&key) };
 }
 
 // Velox.env.toObject(): Record<string, string>
