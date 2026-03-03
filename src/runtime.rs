@@ -33,6 +33,7 @@ impl Runtime {
 
         let event_loop = EventLoop::new();
         builtins::fetch::set_event_loop(event_loop.handle());
+        builtins::timers::set_event_loop(event_loop.handle());
 
         builtins::setup(scope, context);
 

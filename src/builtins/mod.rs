@@ -1,5 +1,6 @@
 mod console;
 pub mod fetch;
+pub mod timers;
 
 use rusty_v8 as v8;
 
@@ -7,4 +8,5 @@ pub fn setup(scope: &mut v8::ContextScope<v8::HandleScope>, context: v8::Local<v
     let global = context.global(scope);
     console::init(scope, global);
     fetch::init(scope, global);
+    timers::init(scope, global);
 }

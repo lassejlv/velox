@@ -2,6 +2,8 @@
 
 Tracking progress toward a production-ready JavaScript/TypeScript runtime.
 
+## Type-safe global Velox for all fns in example/velox.d.ts
+
 ## Completed
 
 - [x] V8 JavaScript engine integration
@@ -12,102 +14,342 @@ Tracking progress toward a production-ready JavaScript/TypeScript runtime.
 - [x] `console.log/error/warn/info/debug/table`
 - [x] `fetch()` - Promise-based HTTP client
 
+---
+
 ## Phase 1: Core APIs
 
 Essential globals and APIs for basic scripts.
 
-- [ ] `setTimeout` / `clearTimeout`
-- [ ] `setInterval` / `clearInterval`
+- [x] `setTimeout(fn, ms)` / `clearTimeout(id)`
+- [x] `setInterval(fn, ms)` / `clearInterval(id)`
 - [ ] `TextEncoder` / `TextDecoder`
 - [ ] `URL` / `URLSearchParams`
-- [ ] `atob` / `btoa` (base64)
-- [ ] `structuredClone`
-- [ ] `queueMicrotask`
+- [ ] `atob(str)` / `btoa(str)`
+- [ ] `structuredClone(obj)`
+- [ ] `queueMicrotask(fn)`
 - [ ] `performance.now()`
-- [ ] `crypto.randomUUID()` / `crypto.getRandomValues()`
+- [ ] `crypto.randomUUID()`
+- [ ] `crypto.getRandomValues(array)`
 
-## Phase 2: File System
+---
 
-File I/O for scripts that interact with the filesystem.
+## Phase 2: Velox.fs — File System
 
-- [ ] `Velox.readFile(path)` → Promise<string>
-- [ ] `Velox.readFileSync(path)` → string
-- [ ] `Velox.writeFile(path, data)` → Promise<void>
-- [ ] `Velox.writeFileSync(path, data)`
-- [ ] `Velox.exists(path)` → boolean
-- [ ] `Velox.mkdir(path)` / `Velox.rm(path)`
-- [ ] `Velox.readDir(path)` → string[]
-- [ ] `Velox.stat(path)` → FileInfo
+```typescript
+namespace Velox.fs {
+  // Reading
+  readFile(path: string): Promise<Uint8Array>
+  readFileSync(path: string): Uint8Array
+  readTextFile(path: string): Promise<string>
+  readTextFileSync(path: string): string
 
-## Phase 3: Process & Environment
+  // Writing
+  writeFile(path: string, data: Uint8Array): Promise<void>
+  writeFileSync(path: string, data: Uint8Array): void
+  writeTextFile(path: string, data: string): Promise<void>
+  writeTextFileSync(path: string, data: string): void
+  appendFile(path: string, data: string | Uint8Array): Promise<void>
 
-System interaction capabilities.
+  // Directory operations
+  readDir(path: string): Promise<DirEntry[]>
+  readDirSync(path: string): DirEntry[]
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>
+  mkdirSync(path: string, options?: { recursive?: boolean }): void
 
-- [ ] `Velox.env` - environment variables
-- [ ] `Velox.args` - command line arguments
-- [ ] `Velox.cwd()` / `Velox.chdir(path)`
-- [ ] `Velox.exit(code)`
-- [ ] `Velox.exec(command)` - run shell commands
-- [ ] `Velox.pid` / `Velox.platform` / `Velox.arch`
+  // File operations
+  remove(path: string, options?: { recursive?: boolean }): Promise<void>
+  removeSync(path: string, options?: { recursive?: boolean }): void
+  rename(from: string, to: string): Promise<void>
+  copy(from: string, to: string): Promise<void>
 
-## Phase 4: Module System
+  // Info
+  stat(path: string): Promise<FileInfo>
+  statSync(path: string): FileInfo
+  exists(path: string): Promise<boolean>
+  existsSync(path: string): boolean
 
-Import/export support for multi-file projects.
+  // Links
+  symlink(target: string, path: string): Promise<void>
+  readLink(path: string): Promise<string>
+}
 
-- [ ] ES modules (`import`/`export`)
-- [ ] Relative imports (`./foo.ts`)
-- [ ] Absolute imports (`/path/to/foo.ts`)
+interface FileInfo {
+  name: string
+  size: number
+  isFile: boolean
+  isDirectory: boolean
+  isSymlink: boolean
+  mtime: Date | null
+  atime: Date | null
+  birthtime: Date | null
+  mode: number
+}
+
+interface DirEntry {
+  name: string
+  isFile: boolean
+  isDirectory: boolean
+  isSymlink: boolean
+}
+```
+
+Checklist:
+- [ ] `Velox.fs.readFile` / `readFileSync`
+- [ ] `Velox.fs.readTextFile` / `readTextFileSync`
+- [ ] `Velox.fs.writeFile` / `writeFileSync`
+- [ ] `Velox.fs.writeTextFile` / `writeTextFileSync`
+- [ ] `Velox.fs.appendFile`
+- [ ] `Velox.fs.readDir` / `readDirSync`
+- [ ] `Velox.fs.mkdir` / `mkdirSync`
+- [ ] `Velox.fs.remove` / `removeSync`
+- [ ] `Velox.fs.rename`
+- [ ] `Velox.fs.copy`
+- [ ] `Velox.fs.stat` / `statSync`
+- [ ] `Velox.fs.exists` / `existsSync`
+- [ ] `Velox.fs.symlink` / `readLink`
+
+---
+
+## Phase 3: Velox.path — Path Utilities
+
+```typescript
+namespace Velox.path {
+  join(...paths: string[]): string
+  resolve(...paths: string[]): string
+  dirname(path: string): string
+  basename(path: string, suffix?: string): string
+  extname(path: string): string
+  normalize(path: string): string
+  isAbsolute(path: string): boolean
+  relative(from: string, to: string): string
+  parse(path: string): ParsedPath
+  format(obj: ParsedPath): string
+
+  readonly sep: string      // "/" or "\\"
+  readonly delimiter: string // ":" or ";"
+}
+
+interface ParsedPath {
+  root: string
+  dir: string
+  base: string
+  ext: string
+  name: string
+}
+```
+
+Checklist:
+- [ ] `Velox.path.join`
+- [ ] `Velox.path.resolve`
+- [ ] `Velox.path.dirname`
+- [ ] `Velox.path.basename`
+- [ ] `Velox.path.extname`
+- [ ] `Velox.path.normalize`
+- [ ] `Velox.path.isAbsolute`
+- [ ] `Velox.path.relative`
+- [ ] `Velox.path.parse` / `format`
+- [ ] `Velox.path.sep` / `delimiter`
+
+---
+
+## Phase 4: Velox.process — Process & Environment
+
+```typescript
+namespace Velox {
+  readonly args: string[]           // CLI arguments (after script path)
+  readonly execPath: string         // Path to velox binary
+  readonly pid: number
+  readonly platform: "darwin" | "linux" | "windows"
+  readonly arch: "x64" | "arm64"
+  readonly version: string          // Velox version
+
+  cwd(): string
+  chdir(path: string): void
+  exit(code?: number): never
+
+  env: {
+    get(key: string): string | undefined
+    set(key: string, value: string): void
+    delete(key: string): void
+    toObject(): Record<string, string>
+    [key: string]: string | undefined  // Proxy access
+  }
+}
+```
+
+Checklist:
+- [ ] `Velox.args`
+- [ ] `Velox.execPath`
+- [ ] `Velox.pid`
+- [ ] `Velox.platform` / `arch` / `version`
+- [ ] `Velox.cwd()` / `chdir()`
+- [ ] `Velox.exit()`
+- [ ] `Velox.env.get` / `set` / `delete`
+- [ ] `Velox.env` proxy access
+
+---
+
+## Phase 5: Velox.exec — Shell Commands
+
+```typescript
+namespace Velox {
+  exec(command: string): Promise<ExecResult>
+  execSync(command: string): ExecResult
+
+  spawn(command: string, options?: SpawnOptions): ChildProcess
+}
+
+interface ExecResult {
+  code: number
+  stdout: string
+  stderr: string
+  success: boolean
+}
+
+interface SpawnOptions {
+  cwd?: string
+  env?: Record<string, string>
+  stdin?: "inherit" | "piped" | "null"
+  stdout?: "inherit" | "piped" | "null"
+  stderr?: "inherit" | "piped" | "null"
+}
+
+interface ChildProcess {
+  pid: number
+  stdin: WritableStream | null
+  stdout: ReadableStream | null
+  stderr: ReadableStream | null
+  status: Promise<{ code: number; success: boolean }>
+  kill(signal?: string): void
+}
+```
+
+Checklist:
+- [ ] `Velox.exec` / `execSync`
+- [ ] `Velox.spawn`
+- [ ] ChildProcess stdin/stdout/stderr streams
+- [ ] ChildProcess kill/status
+
+---
+
+## Phase 6: Velox.serve — HTTP Server
+
+```typescript
+namespace Velox {
+  serve(options: ServeOptions): Server
+}
+
+interface ServeOptions {
+  port?: number
+  hostname?: string
+  handler: (req: Request) => Response | Promise<Response>
+  onListen?: (addr: { port: number; hostname: string }) => void
+  onError?: (error: Error) => Response | void
+}
+
+interface Server {
+  finished: Promise<void>
+  addr: { port: number; hostname: string }
+  shutdown(): Promise<void>
+}
+```
+
+Checklist:
+- [ ] `Velox.serve()` basic HTTP server
+- [ ] Request/Response objects (web standard)
+- [ ] Graceful shutdown
+- [ ] TLS/HTTPS support
+
+---
+
+## Phase 7: Module System
+
+```typescript
+// ES Modules
+import { foo } from "./foo.ts"
+import data from "./data.json"
+import type { Bar } from "./types.ts"
+
+// Dynamic import
+const mod = await import("./dynamic.ts")
+
+// Meta
+import.meta.url      // file:///path/to/script.ts
+import.meta.main     // true if entry point
+import.meta.dirname  // /path/to
+import.meta.filename // /path/to/script.ts
+```
+
+Checklist:
+- [ ] ES module parsing
+- [ ] Relative imports (`./`, `../`)
+- [ ] Absolute imports (`/path/to`)
 - [ ] JSON imports
-- [ ] Import maps support
+- [ ] Dynamic `import()`
+- [ ] `import.meta.url`
+- [ ] `import.meta.main`
+- [ ] `import.meta.dirname` / `filename`
+- [ ] Import maps
 - [ ] `node_modules` resolution (optional)
 
-## Phase 5: Networking
+---
 
-Extended networking capabilities.
-
-- [ ] `WebSocket` client
-- [ ] `Velox.serve()` - HTTP server
-- [ ] TCP/UDP sockets
-- [ ] TLS support
-
-## Phase 6: Developer Experience
-
-Quality of life improvements.
+## Phase 8: Developer Experience
 
 - [ ] REPL mode (`velox` with no args)
 - [ ] Watch mode (`velox run --watch`)
 - [ ] Source maps for TypeScript errors
-- [ ] `velox fmt` - code formatter
+- [ ] `velox fmt` - code formatter (oxc)
 - [ ] `velox check` - type checker
-- [ ] Better stack traces
+- [ ] `velox test` - test runner
+- [ ] `velox compile` - compile to binary
+- [ ] Better stack traces with source locations
 
-## Phase 7: Performance & Stability
+---
 
-Production hardening.
+## Phase 9: Performance & Stability
 
-- [ ] Snapshot support (faster startup)
-- [ ] Worker threads
-- [ ] Memory limits
+- [ ] V8 snapshot support (faster startup)
+- [ ] Worker threads (`new Worker()`)
+- [ ] Memory limits (`--max-memory`)
 - [ ] CPU time limits
-- [ ] Graceful shutdown handling
-- [ ] Signal handling (SIGINT, SIGTERM)
+- [ ] Graceful shutdown (SIGINT, SIGTERM)
+- [ ] Permissions system (`--allow-read`, `--allow-net`, etc.)
+
+---
 
 ## Future Ideas
 
 - [ ] FFI (Foreign Function Interface)
 - [ ] WASM support
-- [ ] SQLite built-in
+- [ ] SQLite built-in (`Velox.sqlite`)
 - [ ] Package manager (`velox add <pkg>`)
-- [ ] Compile to single binary
-- [ ] Windows support testing
-- [ ] Permissions system (like Deno)
+- [ ] WebSocket server
+- [ ] TCP/UDP sockets
+- [ ] Windows support
 
 ---
 
 ## Current Focus
 
-**Phase 1: Core APIs** - Building the essential web platform APIs that most scripts expect to be available.
+**Phase 1: Core APIs** → `setTimeout`, `URL`, `TextEncoder`, `crypto`
 
-## Contributing
+## Implementation Guide
 
-Pick an unchecked item, implement it in `src/builtins/`, and update this roadmap!
+Each `Velox.*` namespace should be implemented as a separate file:
+
+```
+src/builtins/
+├── mod.rs
+├── console.rs
+├── fetch.rs
+├── timers.rs      # setTimeout, setInterval
+├── encoding.rs    # TextEncoder, TextDecoder, atob, btoa
+├── url.rs         # URL, URLSearchParams
+├── crypto.rs      # crypto.randomUUID, getRandomValues
+├── fs.rs          # Velox.fs.*
+├── path.rs        # Velox.path.*
+├── process.rs     # Velox.args, env, cwd, exit
+├── exec.rs        # Velox.exec, spawn
+└── serve.rs       # Velox.serve
+```

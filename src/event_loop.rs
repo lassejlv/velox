@@ -1,11 +1,18 @@
+use crate::builtins::timers;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
 
 type ResolverMap = HashMap<u64, v8::Global<v8::PromiseResolver>>;
 type ResultCallback = Box<dyn FnOnce(&mut v8::HandleScope, v8::Local<v8::PromiseResolver>) + Send>;
+
+pub enum EventLoopMessage {
+    Promise(u64, ResultCallback),
+    Timer(u64),
+}
 
 thread_local! {
     static RESOLVERS: RefCell<ResolverMap> = RefCell::new(HashMap::new());
@@ -13,8 +20,8 @@ thread_local! {
 }
 
 pub struct EventLoop {
-    receiver: Receiver<(u64, ResultCallback)>,
-    sender: Sender<(u64, ResultCallback)>,
+    receiver: Receiver<EventLoopMessage>,
+    sender: Sender<EventLoopMessage>,
     active_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -40,13 +47,17 @@ impl EventLoop {
 
         loop {
             match self.receiver.try_recv() {
-                Ok((id, callback)) => {
+                Ok(EventLoopMessage::Promise(id, callback)) => {
                     RESOLVERS.with(|resolvers| {
                         if let Some(resolver_global) = resolvers.borrow_mut().remove(&id) {
                             let resolver = v8::Local::new(scope, resolver_global);
                             callback(scope, resolver);
                         }
                     });
+                    self.active_count.fetch_sub(1, Ordering::SeqCst);
+                }
+                Ok(EventLoopMessage::Timer(timer_id)) => {
+                    timers::execute_timer(scope, timer_id);
                     self.active_count.fetch_sub(1, Ordering::SeqCst);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -63,7 +74,7 @@ impl EventLoop {
 
 #[derive(Clone)]
 pub struct EventLoopHandle {
-    sender: Sender<(u64, ResultCallback)>,
+    sender: Sender<EventLoopMessage>,
     active_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -99,7 +110,18 @@ impl EventLoopHandle {
 
         thread::spawn(move || {
             let callback = work();
-            let _ = sender.send((id, callback));
+            let _ = sender.send(EventLoopMessage::Promise(id, callback));
+        });
+    }
+
+    pub fn spawn_timer(&self, timer_id: u64, delay: Duration) {
+        let sender = self.sender.clone();
+        self.active_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        thread::spawn(move || {
+            thread::sleep(delay);
+            let _ = sender.send(EventLoopMessage::Timer(timer_id));
         });
     }
 }
