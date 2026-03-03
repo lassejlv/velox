@@ -1,4 +1,5 @@
 use crate::permissions;
+use crate::shutdown;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::env;
@@ -98,6 +99,11 @@ pub fn init(scope: &mut v8::ContextScope<v8::HandleScope>, global: v8::Local<v8:
     let env_obj = create_env_object(scope);
     let env_key = v8::String::new(scope, "env").unwrap();
     velox.set(scope, env_key.into(), env_obj.into());
+
+    // Node.js compatibility: globalThis.process
+    let process_obj = create_process_object(scope, env_obj);
+    let process_key = v8::String::new(scope, "process").unwrap();
+    global.set(scope, process_key.into(), process_obj.into());
 }
 
 fn set_function(
@@ -109,6 +115,106 @@ fn set_function(
     let func = v8::Function::new(scope, callback).unwrap();
     let key = v8::String::new(scope, name).unwrap();
     obj.set(scope, key.into(), func.into());
+}
+
+fn set_value(
+    scope: &mut v8::ContextScope<v8::HandleScope>,
+    obj: v8::Local<v8::Object>,
+    name: &str,
+    value: v8::Local<v8::Value>,
+) {
+    let key = v8::String::new(scope, name).unwrap();
+    obj.set(scope, key.into(), value);
+}
+
+fn create_process_object<'s>(
+    scope: &mut v8::ContextScope<'s, v8::HandleScope>,
+    env_obj: v8::Local<'s, v8::Object>,
+) -> v8::Local<'s, v8::Object> {
+    let process_obj = v8::Object::new(scope);
+
+    // process.env
+    set_value(scope, process_obj, "env", env_obj.into());
+
+    // process.argv / argv0 / execPath
+    let exec_path = EXEC_PATH.with(|ep| ep.borrow().clone());
+    let argv = SCRIPT_ARGS.with(|sa| {
+        let args = sa.borrow();
+        let arr = v8::Array::new(scope, (args.len() + 1) as i32);
+        let exec_val = v8::String::new(scope, &exec_path).unwrap();
+        arr.set_index(scope, 0, exec_val.into());
+        for (i, arg) in args.iter().enumerate() {
+            let val = v8::String::new(scope, arg).unwrap();
+            arr.set_index(scope, (i + 1) as u32, val.into());
+        }
+        arr
+    });
+    set_value(scope, process_obj, "argv", argv.into());
+
+    let argv0 = std::path::Path::new(&exec_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "velox".to_string());
+    let argv0_v8 = v8::String::new(scope, &argv0).unwrap();
+    set_value(scope, process_obj, "argv0", argv0_v8.into());
+    let exec_path_v8 = v8::String::new(scope, &exec_path).unwrap();
+    set_value(scope, process_obj, "execPath", exec_path_v8.into());
+
+    // process.pid / platform / arch / title
+    let pid_val = v8::Integer::new(scope, std::process::id() as i32);
+    set_value(scope, process_obj, "pid", pid_val.into());
+    let platform_val = v8::String::new(scope, node_platform()).unwrap();
+    set_value(scope, process_obj, "platform", platform_val.into());
+    let arch_val = v8::String::new(scope, node_arch()).unwrap();
+    set_value(scope, process_obj, "arch", arch_val.into());
+    let title_val = v8::String::new(scope, "velox").unwrap();
+    set_value(scope, process_obj, "title", title_val.into());
+
+    // process.version / process.versions
+    let node_version = "v22.0.0";
+    let version_val = v8::String::new(scope, node_version).unwrap();
+    set_value(scope, process_obj, "version", version_val.into());
+
+    let versions = v8::Object::new(scope);
+    let node_v = v8::String::new(scope, node_version.trim_start_matches('v')).unwrap();
+    set_value(scope, versions, "node", node_v.into());
+    let velox_v = v8::String::new(scope, env!("CARGO_PKG_VERSION")).unwrap();
+    set_value(scope, versions, "velox", velox_v.into());
+    let v8_v = v8::String::new(scope, v8::V8::get_version()).unwrap();
+    set_value(scope, versions, "v8", v8_v.into());
+    set_value(scope, process_obj, "versions", versions.into());
+
+    // process methods
+    set_function(scope, process_obj, "cwd", cwd);
+    set_function(scope, process_obj, "chdir", chdir);
+    set_function(scope, process_obj, "exit", exit);
+    set_function(scope, process_obj, "nextTick", process_next_tick);
+
+    process_obj
+}
+
+fn node_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "unknown"
+    }
+}
+
+fn node_arch() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86") {
+        "ia32"
+    } else {
+        "unknown"
+    }
 }
 
 // Velox.cwd(): string
@@ -150,6 +256,7 @@ fn exit(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v
         0
     };
 
+    shutdown::request_shutdown();
     std::process::exit(code);
 }
 
@@ -287,4 +394,33 @@ fn env_to_object(
     }
 
     rv.set(obj.into());
+}
+
+// process.nextTick(fn)
+fn process_next_tick(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let callback = args.get(0);
+    if !callback.is_function() {
+        let err = v8::String::new(scope, "process.nextTick requires a function").unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
+    let context = scope.get_current_context();
+    let global = context.global(scope);
+    let key = v8::String::new(scope, "queueMicrotask").unwrap();
+    if let Some(queue_mt) = global.get(scope, key.into()) {
+        if queue_mt.is_function() {
+            let queue_mt = v8::Local::<v8::Function>::try_from(queue_mt).unwrap();
+            let args = [callback];
+            let _ = queue_mt.call(scope, global.into(), &args);
+            return;
+        }
+    }
+
+    let cb = v8::Local::<v8::Function>::try_from(callback).unwrap();
+    let _ = cb.call(scope, global.into(), &[]);
 }

@@ -1,29 +1,39 @@
+mod cache;
+mod reporter;
+mod tree;
+
 use crate::colors;
 use flate2::read::GzDecoder;
+use rayon::prelude::*;
 use semver::{Version, VersionReq};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
-use std::io::IsTerminal;
-use std::io::Read;
-use std::io::Write;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use cache::{
+    cache_root_path, cache_stats, clear_all_cache, copy_dir_all, create_temp_dir, download_to_file,
+    encode_registry_name, ensure_cache_dirs, find_unpacked_root, metadata_cache_path,
+    tarball_cache_path, x_cache_dir_for_spec,
+};
+use reporter::InstallReporter;
+use tree::print_dependency_tree;
 
 const LOCK_FILE: &str = "velox.lock";
-const CACHE_ENV_VAR: &str = "VELOX_PKG_CACHE_DIR";
-const METADATA_CACHE_DIR: &str = "metadata";
-const TARBALL_CACHE_DIR: &str = "tarballs";
 
 pub struct AddOptions {
     pub dev: bool,
     pub exact: bool,
+}
+
+pub struct CacheInfo {
+    pub path: PathBuf,
+    pub files: u64,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Default)]
@@ -51,221 +61,8 @@ struct InstallState {
     installed_versions: HashMap<String, String>,
     installed_packages: HashMap<String, InstalledPackage>,
     locked_versions: HashMap<String, String>,
-    metadata_cache: HashMap<String, Value>,
     cache_root: PathBuf,
-}
-
-struct InstallReporter {
-    start: Instant,
-    installed_count: usize,
-    lock_reused_count: usize,
-    cache_reused_count: usize,
-    resolved_count: usize,
-    metadata_cache_hits: usize,
-    tarball_cache_hits: usize,
-    verbose: bool,
-}
-
-struct Spinner {
-    stop: Arc<AtomicBool>,
-    handle: Option<thread::JoinHandle<()>>,
-    message: String,
-}
-
-impl InstallReporter {
-    fn new() -> Self {
-        Self {
-            start: Instant::now(),
-            installed_count: 0,
-            lock_reused_count: 0,
-            cache_reused_count: 0,
-            resolved_count: 0,
-            metadata_cache_hits: 0,
-            tarball_cache_hits: 0,
-            verbose: std::env::var("VELOX_PKG_VERBOSE")
-                .ok()
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
-        }
-    }
-
-    fn prefix(depth: usize) -> String {
-        format!("{}{}", "  ".repeat(depth), colors::DIM)
-    }
-
-    fn resolving(&self, package_name: &str, requested: Option<&str>, depth: usize) {
-        if !self.verbose && depth > 0 {
-            return;
-        }
-        let requested = requested.unwrap_or("latest");
-        println!(
-            "{}{}resolve{} {} ({}){}",
-            Self::prefix(depth),
-            colors::CYAN,
-            colors::RESET,
-            package_name,
-            requested,
-            colors::RESET
-        );
-    }
-
-    fn reused_lock(&mut self, package_name: &str, version: &str, depth: usize) {
-        self.lock_reused_count += 1;
-        if !self.verbose && depth > 0 {
-            return;
-        }
-        println!(
-            "{}{}lock{} {}@{}{}",
-            Self::prefix(depth),
-            colors::YELLOW,
-            colors::RESET,
-            package_name,
-            version,
-            colors::RESET
-        );
-    }
-
-    fn reused_session(&self, package_name: &str, version: &str, depth: usize) {
-        if !self.verbose && depth > 0 {
-            return;
-        }
-        println!(
-            "{}{}cache{} {}@{}{}",
-            Self::prefix(depth),
-            colors::CYAN,
-            colors::RESET,
-            package_name,
-            version,
-            colors::RESET
-        );
-    }
-
-    fn installed(&mut self, package_name: &str, version: &str, dep_count: usize, depth: usize) {
-        self.installed_count += 1;
-        if !self.verbose && depth > 0 {
-            return;
-        }
-        println!(
-            "{}{}installed{} {}@{} {}(deps: {}){}",
-            Self::prefix(depth),
-            colors::GREEN,
-            colors::RESET,
-            package_name,
-            version,
-            colors::DIM,
-            dep_count,
-            colors::RESET
-        );
-    }
-
-    fn summary(&self) {
-        println!(
-            "{}Done:{} {} package(s) installed, {} lock reuse(s), {} cache reuse(s), {} resolved, {} metadata cache hit(s), {} tarball cache hit(s) in {:.2}s",
-            colors::BOLD,
-            colors::RESET,
-            self.installed_count,
-            self.lock_reused_count,
-            self.cache_reused_count,
-            self.resolved_count,
-            self.metadata_cache_hits,
-            self.tarball_cache_hits,
-            self.start.elapsed().as_secs_f64()
-        );
-        if !self.verbose {
-            println!(
-                "{}Tip:{} set VELOX_PKG_VERBOSE=1 for full dependency tree logs",
-                colors::DIM,
-                colors::RESET
-            );
-        }
-    }
-
-    fn count_resolve(&mut self) {
-        self.resolved_count += 1;
-    }
-
-    fn count_cache_reuse(&mut self) {
-        self.cache_reused_count += 1;
-    }
-
-    fn count_metadata_cache_hit(&mut self) {
-        self.metadata_cache_hits += 1;
-    }
-
-    fn count_tarball_cache_hit(&mut self) {
-        self.tarball_cache_hits += 1;
-    }
-
-    fn should_log(&self, depth: usize) -> bool {
-        self.verbose || depth == 0
-    }
-}
-
-impl Spinner {
-    fn start(enabled: bool, message: &str) -> Self {
-        if !enabled || !std::io::stderr().is_terminal() {
-            return Self {
-                stop: Arc::new(AtomicBool::new(true)),
-                handle: None,
-                message: message.to_string(),
-            };
-        }
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_clone = Arc::clone(&stop);
-        let msg = message.to_string();
-        let handle = thread::spawn(move || {
-            let frames = ['|', '/', '-', '\\'];
-            let mut i = 0usize;
-            while !stop_clone.load(Ordering::Relaxed) {
-                eprint!(
-                    "\r{}{} {}{}",
-                    colors::DIM,
-                    msg,
-                    frames[i % frames.len()],
-                    colors::RESET
-                );
-                let _ = std::io::stderr().flush();
-                i += 1;
-                thread::sleep(std::time::Duration::from_millis(90));
-            }
-        });
-
-        Self {
-            stop,
-            handle: Some(handle),
-            message: message.to_string(),
-        }
-    }
-
-    fn finish(mut self, success: bool) {
-        if let Some(handle) = self.handle.take() {
-            self.stop.store(true, Ordering::Relaxed);
-            let _ = handle.join();
-            let status = if success {
-                format!("{}ok{}", colors::GREEN, colors::RESET)
-            } else {
-                format!("{}fail{}", colors::RED, colors::RESET)
-            };
-            eprintln!(
-                "\r{}{} {}{}",
-                colors::DIM,
-                self.message,
-                status,
-                colors::RESET
-            );
-        }
-    }
-}
-
-fn with_spinner<T, F>(enabled: bool, message: &str, work: F) -> Result<T, String>
-where
-    F: FnOnce() -> Result<T, String>,
-{
-    let spinner = Spinner::start(enabled, message);
-    let result = work();
-    spinner.finish(result.is_ok());
-    result
+    seen_packages: std::collections::HashSet<String>,
 }
 
 pub fn add_packages(packages: &[String], options: AddOptions) -> Result<(), String> {
@@ -286,21 +83,34 @@ pub fn add_packages(packages: &[String], options: AddOptions) -> Result<(), Stri
             .iter()
             .map(|(name, pkg)| (name.clone(), pkg.version.clone()))
             .collect(),
-        metadata_cache: HashMap::new(),
         cache_root,
+        seen_packages: std::collections::HashSet::new(),
     };
     let mut reporter = InstallReporter::new();
 
+    let mut requested_roots: BTreeMap<String, String> = BTreeMap::new();
+    let mut top_level_specs: Vec<(String, Option<String>)> = Vec::new();
+
     for package in packages {
         let (name, requested) = parse_package_request(package)?;
-        let resolved = install_recursive(
-            &name,
-            requested.as_deref(),
-            node_modules_dir,
-            &mut state,
-            &mut reporter,
-            0,
-        )?;
+        requested_roots.insert(
+            name.clone(),
+            requested.clone().unwrap_or_else(|| "latest".to_string()),
+        );
+        top_level_specs.push((name, requested));
+    }
+
+    resolve_dependency_graph(&requested_roots, &mut state, &mut reporter)?;
+    install_resolved_packages_parallel(node_modules_dir, &state, &mut reporter)?;
+    setup_node_modules_bin(node_modules_dir, &state)?;
+    run_postinstall_scripts(node_modules_dir, &state)?;
+
+    for (name, requested) in top_level_specs {
+        let resolved = state
+            .installed_packages
+            .get(&name)
+            .map(|p| p.version.clone())
+            .ok_or_else(|| format!("Internal error: package '{}' was not resolved", name))?;
 
         let record_version = if options.exact {
             resolved.clone()
@@ -311,13 +121,7 @@ pub fn add_packages(packages: &[String], options: AddOptions) -> Result<(), Stri
         };
 
         set_dependency(&mut package_json, &name, &record_version, options.dev)?;
-        println!(
-            "{}tracked{} {} -> {}",
-            colors::CYAN,
-            colors::RESET,
-            name,
-            record_version
-        );
+        reporter.tracked(&name, &record_version);
     }
 
     save_package_json(&package_json)?;
@@ -385,21 +189,15 @@ pub fn install_from_package_json(include_dev: bool) -> Result<(), String> {
             .iter()
             .map(|(name, pkg)| (name.clone(), pkg.version.clone()))
             .collect(),
-        metadata_cache: HashMap::new(),
         cache_root,
+        seen_packages: std::collections::HashSet::new(),
     };
     let mut reporter = InstallReporter::new();
 
-    for (name, req) in &root_deps {
-        let _ = install_recursive(
-            name,
-            Some(req),
-            node_modules_dir,
-            &mut state,
-            &mut reporter,
-            0,
-        )?;
-    }
+    resolve_dependency_graph(&root_deps, &mut state, &mut reporter)?;
+    install_resolved_packages_parallel(node_modules_dir, &state, &mut reporter)?;
+    setup_node_modules_bin(node_modules_dir, &state)?;
+    run_postinstall_scripts(node_modules_dir, &state)?;
 
     let mut merged_packages = existing_lock.packages;
     for (name, pkg) in &state.installed_packages {
@@ -425,7 +223,13 @@ pub fn install_from_package_json(include_dev: bool) -> Result<(), String> {
 
     save_lockfile(&lock)?;
     reporter.summary();
-    print_dependency_tree(&root_deps, &state.installed_packages);
+    if std::env::var("VELOX_PKG_VERBOSE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        print_dependency_tree(&root_deps, &state.installed_packages);
+    }
     Ok(())
 }
 
@@ -478,83 +282,233 @@ pub fn run_package_binary(package_spec: &str, args: &[String]) -> Result<i32, St
     restore_result
 }
 
-fn install_recursive(
-    package_name: &str,
-    requested: Option<&str>,
-    node_modules_dir: &Path,
-    state: &mut InstallState,
-    reporter: &mut InstallReporter,
-    depth: usize,
-) -> Result<String, String> {
-    reporter.count_resolve();
-    reporter.resolving(package_name, requested, depth);
+pub fn run_project_script(script_name: &str, args: &[String]) -> Result<i32, String> {
+    let package_json = load_package_json()?;
+    let script = package_json
+        .get("scripts")
+        .and_then(Value::as_object)
+        .and_then(|scripts| scripts.get(script_name))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("Script '{}' not found in package.json", script_name))?;
 
-    if let Some(version) = state.installed_versions.get(package_name) {
-        reporter.count_cache_reuse();
-        reporter.reused_session(package_name, version, depth);
-        return Ok(version.clone());
-    }
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("Failed to read current directory: {}", e))?;
+    let bin_dir = cwd.join("node_modules").join(".bin");
 
-    let metadata = fetch_package_metadata(package_name, state, reporter, depth)?;
-    let locked = state.locked_versions.get(package_name).map(String::as_str);
-    let resolved_version = resolve_version(&metadata, requested, locked)?;
-    if matches!(locked, Some(v) if v == resolved_version) {
-        reporter.reused_lock(package_name, &resolved_version, depth);
-    }
-    let tarball_url = get_tarball_url(&metadata, &resolved_version, package_name)?;
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(compose_windows_script_command(script, args));
+        c
+    };
 
-    install_package_files(
-        package_name,
-        &resolved_version,
-        &tarball_url,
-        node_modules_dir,
-        state,
-        reporter,
-        depth,
-    )?;
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(compose_unix_script_command(script, args));
+        c
+    };
 
-    state
-        .installed_versions
-        .insert(package_name.to_string(), resolved_version.clone());
-
-    let dependencies = get_installed_dependencies(package_name, node_modules_dir)?;
-    reporter.installed(package_name, &resolved_version, dependencies.len(), depth);
-
-    state.installed_packages.insert(
-        package_name.to_string(),
-        InstalledPackage {
-            version: resolved_version.clone(),
-            resolved: tarball_url,
-            dependencies: dependencies.clone(),
-        },
-    );
-
-    for (dep_name, dep_req) in dependencies {
-        let _ = install_recursive(
-            &dep_name,
-            Some(dep_req.as_str()),
-            node_modules_dir,
-            state,
-            reporter,
-            depth + 1,
-        )?;
-    }
-
-    Ok(resolved_version)
+    cmd.current_dir(&cwd);
+    prepend_node_bin_to_path(&mut cmd, &bin_dir);
+    let status = cmd
+        .status()
+        .map_err(|e| format!("Failed to run script '{}': {}", script_name, e))?;
+    Ok(status.code().unwrap_or(1))
 }
 
-fn fetch_package_metadata(
-    package_name: &str,
+pub fn cache_dir() -> PathBuf {
+    cache_root_path()
+}
+
+pub fn cache_info() -> Result<CacheInfo, String> {
+    let path = cache_root_path();
+    let (files, bytes) = cache_stats()?;
+    Ok(CacheInfo { path, files, bytes })
+}
+
+pub fn cache_clear() -> Result<(), String> {
+    clear_all_cache()
+}
+
+fn resolve_dependency_graph(
+    roots: &BTreeMap<String, String>,
     state: &mut InstallState,
     reporter: &mut InstallReporter,
-    depth: usize,
-) -> Result<Value, String> {
-    if let Some(cached) = state.metadata_cache.get(package_name) {
-        reporter.count_metadata_cache_hit();
-        return Ok(cached.clone());
+) -> Result<(), String> {
+    let mut frontier: Vec<(String, String, usize)> = roots
+        .iter()
+        .map(|(name, req)| (name.clone(), req.clone(), 0usize))
+        .collect();
+
+    while !frontier.is_empty() {
+        let mut level: BTreeMap<String, (String, usize)> = BTreeMap::new();
+        for (name, req, depth) in frontier.drain(..) {
+            if state.installed_packages.contains_key(&name) {
+                reporter.count_cache_reuse();
+                reporter.reused_session(
+                    &name,
+                    state
+                        .installed_versions
+                        .get(&name)
+                        .map(String::as_str)
+                        .unwrap_or("resolved"),
+                    depth,
+                );
+                continue;
+            }
+            level.entry(name).or_insert((req, depth));
+        }
+
+        if level.is_empty() {
+            break;
+        }
+
+        for name in level.keys() {
+            if state.seen_packages.insert(name.clone()) {
+                reporter.register_target();
+            }
+        }
+
+        let locked_versions = state.locked_versions.clone();
+        let cache_root = state.cache_root.clone();
+
+        let outcomes: Vec<ResolveOutcome> = level
+            .into_par_iter()
+            .map(|(name, (req, depth))| -> Result<ResolveOutcome, String> {
+                let (metadata, metadata_cache_hit) =
+                    fetch_package_metadata_cached(&name, &cache_root)?;
+                let locked = locked_versions.get(&name).map(String::as_str);
+                let resolved_version = resolve_version(&metadata, Some(&req), locked)?;
+                let compatible = is_package_version_compatible(&metadata, &resolved_version)?;
+                let tarball_url = get_tarball_url(&metadata, &resolved_version, &name)?;
+                let dependencies = get_dependencies_from_metadata(&metadata, &resolved_version)?;
+                Ok(ResolveOutcome {
+                    name,
+                    requested: req,
+                    depth,
+                    metadata_cache_hit,
+                    lock_reused: matches!(locked, Some(v) if v == resolved_version),
+                    compatible,
+                    resolved_version,
+                    tarball_url,
+                    dependencies,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut outcomes = outcomes;
+        outcomes.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut next_frontier = Vec::new();
+        for outcome in outcomes {
+            reporter.count_resolve();
+            reporter.resolving(&outcome.name, Some(&outcome.requested), outcome.depth);
+            if outcome.metadata_cache_hit {
+                reporter.count_metadata_cache_hit();
+            }
+            if outcome.lock_reused {
+                reporter.reused_lock(&outcome.name, &outcome.resolved_version, outcome.depth);
+            }
+            if !outcome.compatible {
+                reporter.complete_target();
+                continue;
+            }
+            reporter.installed(
+                &outcome.name,
+                &outcome.resolved_version,
+                outcome.dependencies.len(),
+                outcome.depth,
+            );
+
+            state
+                .installed_versions
+                .insert(outcome.name.clone(), outcome.resolved_version.clone());
+            state.installed_packages.insert(
+                outcome.name.clone(),
+                InstalledPackage {
+                    version: outcome.resolved_version.clone(),
+                    resolved: outcome.tarball_url,
+                    dependencies: outcome.dependencies.clone(),
+                },
+            );
+
+            next_frontier.extend(
+                outcome
+                    .dependencies
+                    .into_iter()
+                    .map(|(dep, req)| (dep, req, outcome.depth + 1)),
+            );
+        }
+
+        frontier = next_frontier;
     }
 
-    let cache_path = metadata_cache_path(&state.cache_root, package_name);
+    Ok(())
+}
+
+struct ResolveOutcome {
+    name: String,
+    requested: String,
+    depth: usize,
+    metadata_cache_hit: bool,
+    lock_reused: bool,
+    compatible: bool,
+    resolved_version: String,
+    tarball_url: String,
+    dependencies: BTreeMap<String, String>,
+}
+
+fn install_resolved_packages_parallel(
+    node_modules_dir: &Path,
+    state: &InstallState,
+    reporter: &mut InstallReporter,
+) -> Result<(), String> {
+    let items: Vec<(String, InstalledPackage)> = state
+        .installed_packages
+        .iter()
+        .map(|(name, pkg)| (name.clone(), pkg.clone()))
+        .collect();
+    let cache_root = state.cache_root.clone();
+    let node_modules_dir = node_modules_dir.to_path_buf();
+    let cache_hits = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
+
+    items
+        .par_iter()
+        .try_for_each(|(package_name, pkg)| -> Result<(), String> {
+            let cache_hit = install_package_files_cached(
+                package_name,
+                &pkg.version,
+                &pkg.resolved,
+                &node_modules_dir,
+                &cache_root,
+            )?;
+
+            if cache_hit {
+                cache_hits.fetch_add(1, Ordering::Relaxed);
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })?;
+
+    for _ in 0..cache_hits.load(Ordering::Relaxed) {
+        reporter.count_tarball_cache_hit();
+    }
+    for _ in 0..completed.load(Ordering::Relaxed) {
+        reporter.complete_target();
+    }
+
+    Ok(())
+}
+
+fn fetch_package_metadata_cached(
+    package_name: &str,
+    cache_root: &Path,
+) -> Result<(Value, bool), String> {
+    let cache_path = metadata_cache_path(cache_root, package_name);
     if cache_path.exists() {
         let raw = fs::read_to_string(&cache_path).map_err(|e| {
             format!(
@@ -570,32 +524,20 @@ fn fetch_package_metadata(
                 e
             )
         })?;
-        state
-            .metadata_cache
-            .insert(package_name.to_string(), json.clone());
-        reporter.count_metadata_cache_hit();
-        return Ok(json);
+        return Ok((json, true));
     }
 
     let encoded = encode_registry_name(package_name);
     let url = format!("https://registry.npmjs.org/{}", encoded);
 
-    let body = with_spinner(
-        reporter.should_log(depth),
-        &format!("fetch metadata {}", package_name),
-        || {
-            let response = ureq::get(&url)
-                .call()
-                .map_err(|e| format!("Failed to fetch metadata for {}: {}", package_name, e))?;
-
-            let mut body = String::new();
-            response
-                .into_reader()
-                .read_to_string(&mut body)
-                .map_err(|e| format!("Failed to read metadata for {}: {}", package_name, e))?;
-            Ok(body)
-        },
-    )?;
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| format!("Failed to fetch metadata for {}: {}", package_name, e))?;
+    let mut body = String::new();
+    response
+        .into_reader()
+        .read_to_string(&mut body)
+        .map_err(|e| format!("Failed to read metadata for {}: {}", package_name, e))?;
 
     let json: Value = serde_json::from_str(&body)
         .map_err(|e| format!("Failed to parse metadata for {}: {}", package_name, e))?;
@@ -604,11 +546,7 @@ fn fetch_package_metadata(
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(&cache_path, format!("{}\n", body));
-    state
-        .metadata_cache
-        .insert(package_name.to_string(), json.clone());
-
-    Ok(json)
+    Ok((json, false))
 }
 
 fn resolve_version(
@@ -643,17 +581,15 @@ fn resolve_version(
             return Ok(tag_version.to_string());
         }
 
-        if let Ok(version_req) = VersionReq::parse(req) {
-            let mut matching: Vec<Version> = versions_obj
-                .keys()
-                .filter_map(|v| Version::parse(v).ok())
-                .filter(|v| version_req.matches(v))
-                .collect();
+        let mut matching: Vec<Version> = versions_obj
+            .keys()
+            .filter_map(|v| Version::parse(v).ok())
+            .filter(|v| matches_npm_version_req(v, req))
+            .collect();
 
-            matching.sort();
-            if let Some(max) = matching.last() {
-                return Ok(max.to_string());
-            }
+        matching.sort();
+        if let Some(max) = matching.last() {
+            return Ok(max.to_string());
         }
 
         return Err(format!("No matching version found for '{}'", req));
@@ -688,11 +624,195 @@ fn version_satisfies_request(metadata: &Value, version: &str, requested: Option<
         }
     }
 
-    if let (Ok(range), Ok(v)) = (VersionReq::parse(req), Version::parse(version)) {
-        return range.matches(&v);
+    if let Ok(v) = Version::parse(version) {
+        return matches_npm_version_req(&v, req);
     }
 
     false
+}
+
+fn matches_npm_version_req(version: &Version, req: &str) -> bool {
+    let req = req.trim();
+    if req.is_empty() {
+        return false;
+    }
+
+    // npm allows OR-ranges: "1.x || 2.x"
+    for alt in req.split("||").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(normalized) = normalize_npm_hyphen_range(alt) {
+            if let Ok(range) = VersionReq::parse(&normalized) {
+                if range.matches(version) {
+                    return true;
+                }
+            }
+            continue;
+        }
+
+        if alt == "*" || alt.eq_ignore_ascii_case("x") {
+            return true;
+        }
+
+        // First try semver directly for standard ranges (^, ~, >=, etc.)
+        if let Ok(range) = VersionReq::parse(alt) {
+            if range.matches(version) {
+                return true;
+            }
+            continue;
+        }
+
+        // npm also allows comparator sets separated by whitespace:
+        // ">= 2.1.2 < 3.0.0" (AND). semver crate expects comma-separated comparators.
+        if let Some(normalized) = normalize_npm_comparator_set(alt) {
+            if let Ok(range) = VersionReq::parse(&normalized) {
+                if range.matches(version) {
+                    return true;
+                }
+                continue;
+            }
+        }
+
+        // Handle npm wildcard forms not accepted by semver crate (e.g. "1.x.x")
+        if let Some(normalized) = normalize_npm_wildcard_range(alt) {
+            if let Ok(range) = VersionReq::parse(&normalized) {
+                if range.matches(version) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn normalize_npm_wildcard_range(input: &str) -> Option<String> {
+    let s = input.trim().trim_start_matches('v');
+
+    if s == "*" || s.eq_ignore_ascii_case("x") {
+        return Some("*".to_string());
+    }
+
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let is_wild = |p: &str| p.eq_ignore_ascii_case("x") || p == "*";
+
+    let major: u64 = parts[0].parse().ok()?;
+
+    // "1", "1.x", "1.x.x"
+    if parts.len() == 1 || (parts.len() >= 2 && is_wild(parts[1])) {
+        return Some(format!(">={major}.0.0, <{}.0.0", major + 1));
+    }
+
+    let minor: u64 = parts[1].parse().ok()?;
+
+    // "1.2", "1.2.x"
+    if parts.len() == 2 || (parts.len() >= 3 && is_wild(parts[2])) {
+        return Some(format!(">={major}.{minor}.0, <{major}.{}.0", minor + 1));
+    }
+
+    if parts.len() >= 3 {
+        let patch: u64 = parts[2].parse().ok()?;
+        return Some(format!("={major}.{minor}.{patch}"));
+    }
+
+    None
+}
+
+fn normalize_npm_comparator_set(input: &str) -> Option<String> {
+    let tokens: Vec<&str> = input.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let is_op = |t: &str| matches!(t, ">" | ">=" | "<" | "<=" | "=");
+    let starts_with_op = |t: &str| {
+        t.starts_with(">=")
+            || t.starts_with("<=")
+            || t.starts_with('>')
+            || t.starts_with('<')
+            || t.starts_with('=')
+    };
+
+    let mut comparators: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if is_op(t) {
+            if i + 1 >= tokens.len() {
+                return None;
+            }
+            comparators.push(format!("{}{}", t, tokens[i + 1]));
+            i += 2;
+            continue;
+        }
+        if starts_with_op(t) {
+            comparators.push(t.to_string());
+            i += 1;
+            continue;
+        }
+        return None;
+    }
+
+    if comparators.len() >= 2 {
+        Some(comparators.join(", "))
+    } else {
+        None
+    }
+}
+
+fn normalize_npm_hyphen_range(input: &str) -> Option<String> {
+    let parts: Vec<&str> = input.split(" - ").collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let left = parse_partial_version(parts[0].trim())?;
+    let right = parse_partial_version(parts[1].trim())?;
+
+    let lower = format!(">={}.{}.{}", left.major, left.minor, left.patch);
+    let upper = match right.precision {
+        1 => format!("<{}.0.0", right.major + 1),
+        2 => format!("<{}.{}.0", right.major, right.minor + 1),
+        _ => format!("<={}.{}.{}", right.major, right.minor, right.patch),
+    };
+
+    Some(format!("{}, {}", lower, upper))
+}
+
+struct PartialVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    precision: u8,
+}
+
+fn parse_partial_version(input: &str) -> Option<PartialVersion> {
+    let s = input.trim().trim_start_matches('v');
+    let segs: Vec<&str> = s.split('.').collect();
+    if segs.is_empty() || segs.len() > 3 {
+        return None;
+    }
+
+    let major = segs[0].parse().ok()?;
+    let minor = if segs.len() >= 2 {
+        segs[1].parse().ok()?
+    } else {
+        0
+    };
+    let patch = if segs.len() >= 3 {
+        segs[2].parse().ok()?
+    } else {
+        0
+    };
+
+    Some(PartialVersion {
+        major,
+        minor,
+        patch,
+        precision: segs.len() as u8,
+    })
 }
 
 fn get_tarball_url(metadata: &Value, version: &str, package_name: &str) -> Result<String, String> {
@@ -714,23 +834,119 @@ fn get_tarball_url(metadata: &Value, version: &str, package_name: &str) -> Resul
         })
 }
 
-fn install_package_files(
+fn get_dependencies_from_metadata(
+    metadata: &Value,
+    version: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut deps = metadata
+        .get("versions")
+        .and_then(Value::as_object)
+        .and_then(|versions| versions.get(version))
+        .and_then(Value::as_object)
+        .and_then(|ver| ver.get("dependencies"))
+        .map(|v| get_dependency_map(v, ""))
+        .unwrap_or_default();
+
+    let optional_deps = metadata
+        .get("versions")
+        .and_then(Value::as_object)
+        .and_then(|versions| versions.get(version))
+        .and_then(Value::as_object)
+        .and_then(|ver| ver.get("optionalDependencies"))
+        .map(|v| get_dependency_map(v, ""))
+        .unwrap_or_default();
+
+    for (name, req) in optional_deps {
+        deps.entry(name).or_insert(req);
+    }
+    Ok(deps)
+}
+
+fn is_package_version_compatible(metadata: &Value, version: &str) -> Result<bool, String> {
+    let ver_obj = metadata
+        .get("versions")
+        .and_then(Value::as_object)
+        .and_then(|versions| versions.get(version))
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("Invalid package metadata: missing versions['{}']", version))?;
+
+    if let Some(os_list) = ver_obj.get("os").and_then(Value::as_array) {
+        if !matches_npm_constraint_list(os_list, current_npm_os()) {
+            return Ok(false);
+        }
+    }
+
+    if let Some(cpu_list) = ver_obj.get("cpu").and_then(Value::as_array) {
+        if !matches_npm_constraint_list(cpu_list, current_npm_cpu()) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn matches_npm_constraint_list(list: &[Value], current: &str) -> bool {
+    let mut positives: Vec<&str> = Vec::new();
+    let mut negatives: Vec<&str> = Vec::new();
+
+    for item in list.iter().filter_map(Value::as_str) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if item == "*" {
+            positives.push(item);
+            continue;
+        }
+        if let Some(rest) = item.strip_prefix('!') {
+            negatives.push(rest.trim());
+        } else {
+            positives.push(item);
+        }
+    }
+
+    if negatives.iter().any(|v| *v == current) {
+        return false;
+    }
+
+    if positives.is_empty() {
+        return true;
+    }
+    if positives.iter().any(|v| *v == "*") {
+        return true;
+    }
+    positives.iter().any(|v| *v == current)
+}
+
+fn current_npm_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    }
+}
+
+fn current_npm_cpu() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "x86" => "ia32",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+fn install_package_files_cached(
     package_name: &str,
     version: &str,
     tarball_url: &str,
     node_modules_dir: &Path,
-    state: &InstallState,
-    reporter: &mut InstallReporter,
-    depth: usize,
-) -> Result<(), String> {
-    let tarball_cache = tarball_cache_path(&state.cache_root, tarball_url);
+    cache_root: &Path,
+) -> Result<bool, String> {
+    let tarball_cache = tarball_cache_path(cache_root, tarball_url);
+    let mut cache_hit = true;
     if !tarball_cache.exists() {
-        let msg = format!("download {}@{}", package_name, version);
-        with_spinner(reporter.should_log(depth), &msg, || {
-            download_to_file(tarball_url, &tarball_cache)
-        })?;
-    } else {
-        reporter.count_tarball_cache_hit();
+        cache_hit = false;
+        download_to_file(tarball_url, &tarball_cache)?;
     }
 
     let temp_root = create_temp_dir(package_name)?;
@@ -800,35 +1016,7 @@ fn install_package_files(
         )
     })?;
 
-    Ok(())
-}
-
-fn get_installed_dependencies(
-    package_name: &str,
-    node_modules_dir: &Path,
-) -> Result<BTreeMap<String, String>, String> {
-    let package_json_path = node_modules_dir.join(package_name).join("package.json");
-    if !package_json_path.exists() {
-        return Ok(BTreeMap::new());
-    }
-
-    let content = fs::read_to_string(&package_json_path).map_err(|e| {
-        format!(
-            "Failed to read installed package.json {}: {}",
-            package_json_path.display(),
-            e
-        )
-    })?;
-
-    let json: Value = serde_json::from_str(&content).map_err(|e| {
-        format!(
-            "Failed to parse installed package.json {}: {}",
-            package_json_path.display(),
-            e
-        )
-    })?;
-
-    Ok(get_dependency_map(&json, "dependencies"))
+    Ok(cache_hit)
 }
 
 fn load_lockfile() -> Result<LockData, String> {
@@ -1071,22 +1259,43 @@ fn package_short_name(package_name: &str) -> &str {
 }
 
 fn build_bin_command(bin_path: &Path, args: &[String]) -> Result<Command, String> {
-    if is_javascript_entry(bin_path)? {
-        let mut cmd = Command::new("node");
-        cmd.arg(bin_path);
-        cmd.args(args);
-        return Ok(cmd);
+    match detect_bin_entry_kind(bin_path)? {
+        BinEntryKind::NodeScript => {
+            let mut cmd = Command::new("node");
+            cmd.arg(bin_path);
+            cmd.args(args);
+            Ok(cmd)
+        }
+        BinEntryKind::VeloxScript => {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("Failed to resolve current velox executable: {}", e))?;
+            let mut cmd = Command::new(exe);
+            cmd.arg("run");
+            cmd.arg(bin_path);
+            cmd.args(args);
+            Ok(cmd)
+        }
+        BinEntryKind::DirectExecutable => {
+            let mut cmd = Command::new(bin_path);
+            cmd.args(args);
+            Ok(cmd)
+        }
     }
-
-    let mut cmd = Command::new(bin_path);
-    cmd.args(args);
-    Ok(cmd)
 }
 
-fn is_javascript_entry(path: &Path) -> Result<bool, String> {
+enum BinEntryKind {
+    NodeScript,
+    VeloxScript,
+    DirectExecutable,
+}
+
+fn detect_bin_entry_kind(path: &Path) -> Result<BinEntryKind, String> {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if matches!(ext, "ts" | "tsx") {
+            return Ok(BinEntryKind::VeloxScript);
+        }
         if matches!(ext, "js" | "mjs" | "cjs") {
-            return Ok(true);
+            return Ok(BinEntryKind::NodeScript);
         }
     }
 
@@ -1097,12 +1306,17 @@ fn is_javascript_entry(path: &Path) -> Result<bool, String> {
             .iter()
             .position(|b| *b == b'\n')
             .unwrap_or(content.len());
-        let first_line = String::from_utf8_lossy(&content[..first_line_end]);
+        let first_line = String::from_utf8_lossy(&content[..first_line_end]).to_ascii_lowercase();
+
         if first_line.contains("node") {
-            return Ok(true);
+            return Ok(BinEntryKind::NodeScript);
+        }
+        if first_line.contains("velox") || first_line.contains("vlox") {
+            return Ok(BinEntryKind::VeloxScript);
         }
     }
-    Ok(false)
+
+    Ok(BinEntryKind::DirectExecutable)
 }
 
 fn prepend_node_bin_to_path(cmd: &mut Command, bin_dir: &Path) {
@@ -1117,49 +1331,312 @@ fn prepend_node_bin_to_path(cmd: &mut Command, bin_dir: &Path) {
     cmd.env(key, combined);
 }
 
-fn print_dependency_tree(
-    roots: &BTreeMap<String, String>,
-    installed: &HashMap<String, InstalledPackage>,
-) {
-    println!("\nDependency tree:");
-    let root_names: Vec<String> = roots.keys().cloned().collect();
-    for (i, name) in root_names.iter().enumerate() {
-        let last = i + 1 == root_names.len();
-        let mut trail = vec![name.clone()];
-        print_tree_node(name, "", last, installed, &mut trail);
+fn setup_node_modules_bin(node_modules_dir: &Path, state: &InstallState) -> Result<(), String> {
+    let bin_dir = node_modules_dir.join(".bin");
+    fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("Failed to create {}: {}", bin_dir.display(), e))?;
+
+    let mut package_names: Vec<&str> = state.installed_packages.keys().map(String::as_str).collect();
+    package_names.sort_unstable();
+
+    for package_name in package_names {
+        let package_json = load_installed_package_json(node_modules_dir, package_name)?;
+        let bins = extract_package_bins(&package_json, package_name);
+        let package_dir = node_modules_dir.join(package_name);
+
+        for (bin_name, rel_target) in bins {
+            let target = package_dir.join(rel_target);
+            if !target.exists() {
+                return Err(format!(
+                    "Package '{}' declares bin '{}' -> '{}' but target does not exist",
+                    package_name,
+                    bin_name,
+                    target.display()
+                ));
+            }
+            create_bin_entry(&bin_dir, &bin_name, &target)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_postinstall_scripts(node_modules_dir: &Path, state: &InstallState) -> Result<(), String> {
+    let mut postinstalls: Vec<(String, String, String, PathBuf)> = Vec::new();
+    for (package_name, installed) in &state.installed_packages {
+        let package_json = load_installed_package_json(node_modules_dir, package_name)?;
+        let postinstall = package_json
+            .get("scripts")
+            .and_then(Value::as_object)
+            .and_then(|scripts| scripts.get("postinstall"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if let Some(script) = postinstall {
+            postinstalls.push((
+                package_name.clone(),
+                installed.version.clone(),
+                script.to_string(),
+                node_modules_dir.join(package_name),
+            ));
+        }
+    }
+
+    if postinstalls.is_empty() {
+        return Ok(());
+    }
+
+    postinstalls.sort_by(|a, b| a.0.cmp(&b.0));
+    println!(
+        "{}Found:{} {} package postinstall script(s)",
+        colors::CYAN,
+        colors::RESET,
+        postinstalls.len()
+    );
+
+    let bin_dir = node_modules_dir.join(".bin");
+    let mut approval = PostinstallApproval::from_env()?;
+
+    for (package_name, version, script, package_dir) in postinstalls {
+        let allowed = approval.approve(&package_name, &version, &script)?;
+        if !allowed {
+            println!(
+                "{}Skipped:{} {}@{} postinstall",
+                colors::YELLOW,
+                colors::RESET,
+                package_name,
+                version
+            );
+            continue;
+        }
+
+        println!(
+            "{}Running:{} {}@{} postinstall",
+            colors::CYAN,
+            colors::RESET,
+            package_name,
+            version
+        );
+        run_package_script(&package_name, &package_dir, &script, &bin_dir)?;
+    }
+
+    Ok(())
+}
+
+fn load_installed_package_json(node_modules_dir: &Path, package_name: &str) -> Result<Value, String> {
+    let package_json_path = node_modules_dir.join(package_name).join("package.json");
+    let raw = fs::read_to_string(&package_json_path).map_err(|e| {
+        format!(
+            "Failed to read package.json for {} ({}): {}",
+            package_name,
+            package_json_path.display(),
+            e
+        )
+    })?;
+    serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "Failed to parse package.json for {} ({}): {}",
+            package_name,
+            package_json_path.display(),
+            e
+        )
+    })
+}
+
+fn extract_package_bins(package_json: &Value, package_name: &str) -> Vec<(String, String)> {
+    match package_json.get("bin") {
+        Some(Value::String(target)) => vec![(package_short_name(package_name).to_string(), target.to_string())],
+        Some(Value::Object(map)) => map
+            .iter()
+            .filter_map(|(name, val)| val.as_str().map(|target| (name.clone(), target.to_string())))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
-fn print_tree_node(
-    name: &str,
-    prefix: &str,
-    is_last: bool,
-    installed: &HashMap<String, InstalledPackage>,
-    trail: &mut Vec<String>,
-) {
-    let connector = if is_last { "`- " } else { "|- " };
-    if let Some(pkg) = installed.get(name) {
-        println!("{}{}{}@{}", prefix, connector, name, pkg.version);
-        let next_prefix = if is_last {
-            format!("{}   ", prefix)
-        } else {
-            format!("{}|  ", prefix)
-        };
+#[cfg(unix)]
+fn create_bin_entry(bin_dir: &Path, bin_name: &str, target: &Path) -> Result<(), String> {
+    use std::os::unix::fs::symlink;
 
-        let deps: Vec<String> = pkg.dependencies.keys().cloned().collect();
-        for (i, dep) in deps.iter().enumerate() {
-            let dep_last = i + 1 == deps.len();
-            if trail.iter().any(|x| x == dep) {
-                let cyc = if dep_last { "`- " } else { "|- " };
-                println!("{}{}{} (cycle)", next_prefix, cyc, dep);
-                continue;
-            }
-            trail.push(dep.clone());
-            print_tree_node(dep, &next_prefix, dep_last, installed, trail);
-            trail.pop();
-        }
+    let link_path = bin_dir.join(bin_name);
+    remove_existing_path(&link_path)?;
+    let absolute_target = fs::canonicalize(target).map_err(|e| {
+        format!(
+            "Failed to resolve bin target {}: {}",
+            target.display(),
+            e
+        )
+    })?;
+    symlink(&absolute_target, &link_path).map_err(|e| {
+        format!(
+            "Failed to create bin symlink {} -> {}: {}",
+            link_path.display(),
+            absolute_target.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_bin_entry(bin_dir: &Path, bin_name: &str, target: &Path) -> Result<(), String> {
+    let cmd_path = bin_dir.join(format!("{}.cmd", bin_name));
+    remove_existing_path(&cmd_path)?;
+    let absolute_target = fs::canonicalize(target).map_err(|e| {
+        format!(
+            "Failed to resolve bin target {}: {}",
+            target.display(),
+            e
+        )
+    })?;
+    let target_str = absolute_target.to_string_lossy().replace('"', "\"\"");
+    let content = format!("@echo off\r\n\"{}\" %*\r\n", target_str);
+    fs::write(&cmd_path, content)
+        .map_err(|e| format!("Failed to write {}: {}", cmd_path.display(), e))?;
+    Ok(())
+}
+
+fn remove_existing_path(path: &Path) -> Result<(), String> {
+    if !path.exists() && fs::symlink_metadata(path).is_err() {
+        return Ok(());
+    }
+
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
+    if meta.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| format!("Failed to remove {}: {}", path.display(), e))
     } else {
-        println!("{}{}{} (missing)", prefix, connector, name);
+        fs::remove_file(path).map_err(|e| format!("Failed to remove {}: {}", path.display(), e))
+    }
+}
+
+enum PostinstallApproval {
+    AllowAll,
+    DenyAll,
+    Prompt,
+}
+
+impl PostinstallApproval {
+    fn from_env() -> Result<Self, String> {
+        let value = std::env::var("VELOX_PKG_POSTINSTALL")
+            .ok()
+            .map(|v| v.to_ascii_lowercase());
+        match value.as_deref() {
+            Some("1") | Some("true") | Some("allow") | Some("yes") => Ok(Self::AllowAll),
+            Some("0") | Some("false") | Some("deny") | Some("no") => Ok(Self::DenyAll),
+            Some(other) => Err(format!(
+                "Invalid VELOX_PKG_POSTINSTALL='{}'. Use allow|deny|true|false|1|0",
+                other
+            )),
+            None => Ok(Self::Prompt),
+        }
+    }
+
+    fn approve(&mut self, package_name: &str, version: &str, script: &str) -> Result<bool, String> {
+        match self {
+            Self::AllowAll => Ok(true),
+            Self::DenyAll => Ok(false),
+            Self::Prompt => prompt_postinstall_approval(package_name, version, script).map(|choice| {
+                match choice {
+                    PromptChoice::Yes => true,
+                    PromptChoice::No => false,
+                    PromptChoice::All => {
+                        *self = Self::AllowAll;
+                        true
+                    }
+                    PromptChoice::None => {
+                        *self = Self::DenyAll;
+                        false
+                    }
+                }
+            }),
+        }
+    }
+}
+
+enum PromptChoice {
+    Yes,
+    No,
+    All,
+    None,
+}
+
+fn prompt_postinstall_approval(
+    package_name: &str,
+    version: &str,
+    script: &str,
+) -> Result<PromptChoice, String> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(PromptChoice::No);
+    }
+
+    println!(
+        "{}Approve:{} run postinstall for {}@{}?",
+        colors::YELLOW,
+        colors::RESET,
+        package_name,
+        version
+    );
+    println!("  {}", script);
+
+    loop {
+        print!("  [y]es/[n]o/[a]ll/[x]none: ");
+        std::io::stdout()
+            .flush()
+            .map_err(|e| format!("Failed to flush prompt: {}", e))?;
+
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| format!("Failed to read input: {}", e))?;
+        match input.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(PromptChoice::Yes),
+            "n" | "no" => return Ok(PromptChoice::No),
+            "a" | "all" => return Ok(PromptChoice::All),
+            "x" | "none" => return Ok(PromptChoice::None),
+            _ => {
+                println!("Please answer y, n, a, or x.");
+            }
+        }
+    }
+}
+
+fn run_package_script(
+    package_name: &str,
+    package_dir: &Path,
+    script: &str,
+    bin_dir: &Path,
+) -> Result<(), String> {
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(script);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(script);
+        c
+    };
+    cmd.current_dir(package_dir);
+    prepend_node_bin_to_path(&mut cmd, bin_dir);
+
+    let status = cmd.status().map_err(|e| {
+        format!(
+            "Failed to execute postinstall for {} in {}: {}",
+            package_name,
+            package_dir.display(),
+            e
+        )
+    })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "postinstall failed for {} with exit code {}",
+            package_name,
+            status.code().unwrap_or(1)
+        ))
     }
 }
 
@@ -1203,142 +1680,36 @@ fn parse_package_request(input: &str) -> Result<(String, Option<String>), String
     Ok((input.to_string(), None))
 }
 
-fn encode_registry_name(name: &str) -> String {
-    name.replace('/', "%2F")
-}
-
-fn ensure_cache_dirs() -> Result<PathBuf, String> {
-    let root = cache_root();
-    fs::create_dir_all(root.join(METADATA_CACHE_DIR))
-        .map_err(|e| format!("Failed to create metadata cache dir: {}", e))?;
-    fs::create_dir_all(root.join(TARBALL_CACHE_DIR))
-        .map_err(|e| format!("Failed to create tarball cache dir: {}", e))?;
-    Ok(root)
-}
-
-fn cache_root() -> PathBuf {
-    if let Ok(path) = std::env::var(CACHE_ENV_VAR) {
-        return PathBuf::from(path);
+#[cfg(windows)]
+fn compose_windows_script_command(script: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return script.to_string();
     }
-    if let Ok(home) = std::env::var("HOME") {
-        return Path::new(&home).join(".cache").join("velox").join("pkg");
+    let escaped_args = args
+        .iter()
+        .map(|a| format!("\"{}\"", a.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{} {}", script, escaped_args)
+}
+
+#[cfg(not(windows))]
+fn compose_unix_script_command(script: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return script.to_string();
     }
-    std::env::temp_dir().join("velox-pkg-cache")
-}
-
-fn metadata_cache_path(cache_root: &Path, package_name: &str) -> PathBuf {
-    let encoded = encode_registry_name(package_name).replace('%', "_");
-    cache_root
-        .join(METADATA_CACHE_DIR)
-        .join(format!("{}.json", encoded))
-}
-
-fn tarball_cache_path(cache_root: &Path, tarball_url: &str) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tarball_url.hash(&mut hasher);
-    let digest = hasher.finish();
-    cache_root
-        .join(TARBALL_CACHE_DIR)
-        .join(format!("{:016x}.tgz", digest))
-}
-
-fn x_cache_dir_for_spec(cache_root: &Path, package_spec: &str) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    package_spec.hash(&mut hasher);
-    let digest = hasher.finish();
-    cache_root.join("x").join(format!("{:016x}", digest))
-}
-
-fn download_to_file(url: &str, target: &Path) -> Result<(), String> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create cache parent {}: {}", parent.display(), e))?;
-    }
-
-    let response = ureq::get(url)
-        .call()
-        .map_err(|e| format!("Failed to download tarball {}: {}", url, e))?;
-    let mut reader = response.into_reader();
-
-    let tmp = target.with_extension("tgz.part");
-    let mut out = File::create(&tmp)
-        .map_err(|e| format!("Failed to create temp cache file {}: {}", tmp.display(), e))?;
-    std::io::copy(&mut reader, &mut out)
-        .map_err(|e| format!("Failed to write tarball cache {}: {}", tmp.display(), e))?;
-    fs::rename(&tmp, target).map_err(|e| {
-        format!(
-            "Failed to finalize tarball cache {} -> {}: {}",
-            tmp.display(),
-            target.display(),
-            e
-        )
-    })?;
-    Ok(())
-}
-
-fn create_temp_dir(package_name: &str) -> Result<PathBuf, String> {
-    let sanitized = package_name.replace('/', "_").replace('@', "");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    let path = std::env::temp_dir().join(format!("velox-pkg-{}-{}", sanitized, nanos));
-    fs::create_dir_all(&path)
-        .map_err(|e| format!("Failed to create temp directory {}: {}", path.display(), e))?;
-    Ok(path)
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create destination {}: {}", dst.display(), e))?;
-
-    for entry in
-        fs::read_dir(src).map_err(|e| format!("Failed to read source {}: {}", src.display(), e))?
-    {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-        let target = dst.join(entry.file_name());
-
-        if file_type.is_dir() {
-            copy_dir_all(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), &target).map_err(|e| {
-                format!(
-                    "Failed to copy {} to {}: {}",
-                    entry.path().display(),
-                    target.display(),
-                    e
-                )
-            })?;
-        }
-    }
-
-    Ok(())
-}
-
-fn find_unpacked_root(temp_root: &Path) -> Option<PathBuf> {
-    let standard = temp_root.join("package");
-    if standard.exists() && standard.is_dir() {
-        return Some(standard);
-    }
-
-    let mut dirs = fs::read_dir(temp_root)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_type().ok().filter(|t| t.is_dir()).map(|_| e.path()))
-        .collect::<Vec<_>>();
-
-    if dirs.len() == 1 {
-        return dirs.pop();
-    }
-
-    None
+    let escaped_args = args
+        .iter()
+        .map(|a| format!("'{}'", a.replace('\'', "'\"'\"'")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{} {}", script, escaped_args)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_package_request, version_satisfies_request};
+    use super::{matches_npm_version_req, parse_package_request, version_satisfies_request};
+    use semver::Version;
     use serde_json::json;
 
     #[test]
@@ -1377,5 +1748,38 @@ mod tests {
             "1.9.9",
             Some("^2.0.0")
         ));
+    }
+
+    #[test]
+    fn version_match_npm_or_x_range() {
+        let v1 = Version::parse("1.5.0").unwrap();
+        let v2 = Version::parse("2.9.1").unwrap();
+        let v3 = Version::parse("3.0.0").unwrap();
+
+        assert!(matches_npm_version_req(&v1, "1.x.x || 2.x.x"));
+        assert!(matches_npm_version_req(&v2, "1.x.x || 2.x.x"));
+        assert!(!matches_npm_version_req(&v3, "1.x.x || 2.x.x"));
+    }
+
+    #[test]
+    fn version_match_npm_hyphen_range() {
+        let v1 = Version::parse("1.4.0").unwrap();
+        let v2 = Version::parse("2.9.1").unwrap();
+        let v3 = Version::parse("3.0.0").unwrap();
+
+        assert!(matches_npm_version_req(&v1, "1 - 2"));
+        assert!(matches_npm_version_req(&v2, "1 - 2"));
+        assert!(!matches_npm_version_req(&v3, "1 - 2"));
+    }
+
+    #[test]
+    fn version_match_npm_space_comparator_set() {
+        let inside = Version::parse("2.5.0").unwrap();
+        let lower = Version::parse("2.1.2").unwrap();
+        let upper = Version::parse("3.0.0").unwrap();
+
+        assert!(matches_npm_version_req(&inside, ">= 2.1.2 < 3.0.0"));
+        assert!(matches_npm_version_req(&lower, ">= 2.1.2 < 3.0.0"));
+        assert!(!matches_npm_version_req(&upper, ">= 2.1.2 < 3.0.0"));
     }
 }

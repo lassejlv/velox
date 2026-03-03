@@ -2,10 +2,13 @@
 //!
 //! Implements ES module loading with import/export support.
 
+use crate::pkg;
 use crate::transpiler;
 use rusty_v8 as v8;
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 thread_local! {
@@ -199,6 +202,14 @@ fn resolve_with_extensions(path: &Path) -> Result<PathBuf, String> {
 /// Resolve a bare specifier from node_modules
 /// Walks up the directory tree looking for node_modules/<specifier>
 fn resolve_node_modules(specifier: &str, referrer_path: &str) -> Result<PathBuf, String> {
+    resolve_node_modules_internal(specifier, referrer_path, true)
+}
+
+fn resolve_node_modules_internal(
+    specifier: &str,
+    referrer_path: &str,
+    allow_auto_install: bool,
+) -> Result<PathBuf, String> {
     let referrer = Path::new(referrer_path);
     let mut current_dir = if referrer.is_file() {
         referrer.parent().map(|p| p.to_path_buf())
@@ -241,6 +252,13 @@ fn resolve_node_modules(specifier: &str, referrer_path: &str) -> Result<PathBuf,
         current_dir = dir.parent().map(|p| p.to_path_buf());
     }
 
+    if allow_auto_install
+        && should_auto_install_missing_deps()
+        && auto_install_missing_package(&package_name, referrer_path)?
+    {
+        return resolve_node_modules_internal(specifier, referrer_path, false);
+    }
+
     Err(format!(
         "Cannot find module '{}' in node_modules",
         specifier
@@ -272,6 +290,89 @@ fn parse_package_specifier(specifier: &str) -> (String, Option<String>) {
         return (parts[0].to_string(), None);
     }
     (specifier.to_string(), None)
+}
+
+fn should_auto_install_missing_deps() -> bool {
+    std::env::var("VELOX_AUTO_INSTALL")
+        .ok()
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off")))
+        .unwrap_or(true)
+}
+
+fn auto_install_missing_package(package_name: &str, referrer_path: &str) -> Result<bool, String> {
+    let referrer = Path::new(referrer_path);
+    let start_dir = if referrer.is_file() {
+        referrer.parent().unwrap_or(referrer)
+    } else {
+        referrer
+    };
+
+    let Some(project_root) = find_project_root(start_dir) else {
+        return Ok(false);
+    };
+
+    eprintln!("Auto-installing missing dependency '{}'", package_name);
+    let already_declared = dependency_declared_in_package_json(&project_root, package_name)?;
+    let original_cwd =
+        std::env::current_dir().map_err(|e| format!("Failed to read current directory: {}", e))?;
+
+    let install_result = (|| -> Result<(), String> {
+        std::env::set_current_dir(&project_root)
+            .map_err(|e| format!("Failed to enter project root: {}", e))?;
+
+        if already_declared {
+            pkg::install_from_package_json(true)
+        } else {
+            pkg::add_packages(
+                &[package_name.to_string()],
+                pkg::AddOptions {
+                    dev: false,
+                    exact: false,
+                },
+            )
+        }
+    })();
+
+    let restore_result = std::env::set_current_dir(&original_cwd)
+        .map_err(|e| format!("Failed to restore current directory: {}", e));
+
+    if let Err(e) = restore_result {
+        return Err(e);
+    }
+
+    install_result.map(|_| true)
+}
+
+fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = Some(start_dir.to_path_buf());
+    while let Some(dir) = current {
+        if dir.join("package.json").exists() {
+            return Some(dir);
+        }
+        current = dir.parent().map(|p| p.to_path_buf());
+    }
+    None
+}
+
+fn dependency_declared_in_package_json(project_root: &Path, package_name: &str) -> Result<bool, String> {
+    let path = project_root.join("package.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let json: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
+
+    let in_deps = json
+        .get("dependencies")
+        .and_then(Value::as_object)
+        .map(|deps| deps.contains_key(package_name))
+        .unwrap_or(false);
+    let in_dev_deps = json
+        .get("devDependencies")
+        .and_then(Value::as_object)
+        .map(|deps| deps.contains_key(package_name))
+        .unwrap_or(false);
+
+    Ok(in_deps || in_dev_deps)
 }
 
 /// Get the entry point from a package.json
@@ -321,6 +422,206 @@ fn get_package_entry(package_json_path: &Path) -> Result<String, String> {
     Ok("index.js".to_string())
 }
 
+fn should_wrap_commonjs_module(path: &str, source: &str) -> bool {
+    if path.ends_with(".cjs") {
+        return true;
+    }
+
+    if transpiler::is_typescript(path) || path.ends_with(".json") {
+        return false;
+    }
+
+    if is_module_source(source) {
+        return false;
+    }
+
+    source.contains("module.exports")
+        || source.contains("exports.")
+        || source.contains("require(")
+        || source.contains("__esModule")
+}
+
+fn wrap_commonjs_as_esm(source: &str) -> String {
+    format!(
+        r#"
+const __veloxCjs = globalThis.__veloxCjs || (globalThis.__veloxCjs = (() => {{
+  const cache = new Map();
+  const path = globalThis.Velox?.path;
+  const fs = globalThis.Velox?.fs;
+
+  if (!path || !fs) {{
+    throw new Error("Velox.path and Velox.fs are required for CommonJS compatibility");
+  }}
+
+  const splitPackageSpecifier = (specifier) => {{
+    if (specifier.startsWith("@")) {{
+      const parts = specifier.split("/");
+      const pkg = parts.slice(0, 2).join("/");
+      const rest = parts.slice(2).join("/");
+      return [pkg, rest || null];
+    }}
+    const parts = specifier.split("/");
+    return [parts[0], parts.slice(1).join("/") || null];
+  }};
+
+  const tryResolveFile = (base) => {{
+    const candidates = [
+      `${{base}}.js`,
+      `${{base}}.cjs`,
+      `${{base}}.json`,
+      path.join(base, "index.js"),
+      path.join(base, "index.cjs"),
+      path.join(base, "index.json"),
+    ];
+    if (fs.existsSync(base)) {{
+      try {{
+        const st = fs.statSync(base);
+        if (st && st.isFile) return base;
+      }} catch (_err) {{}}
+    }}
+    for (const candidate of candidates) {{
+      if (fs.existsSync(candidate)) {{
+        try {{
+          const st = fs.statSync(candidate);
+          if (st && st.isFile) return candidate;
+        }} catch (_err) {{}}
+      }}
+    }}
+    return null;
+  }};
+
+  const resolvePackageEntry = (pkgDir, subpath) => {{
+    if (subpath) {{
+      const withSub = tryResolveFile(path.join(pkgDir, subpath));
+      if (withSub) return withSub;
+    }}
+    const pkgJsonPath = path.join(pkgDir, "package.json");
+    if (fs.existsSync(pkgJsonPath)) {{
+      const raw = fs.readTextFileSync(pkgJsonPath);
+      const pkg = JSON.parse(raw);
+      if (typeof pkg.main === "string" && pkg.main.length > 0) {{
+        const mainEntry = tryResolveFile(path.join(pkgDir, pkg.main));
+        if (mainEntry) return mainEntry;
+      }}
+    }}
+    return tryResolveFile(pkgDir);
+  }};
+
+  const resolveBare = (specifier, parentFilename) => {{
+    const [pkgName, subpath] = splitPackageSpecifier(specifier);
+    let dir = path.dirname(parentFilename);
+    while (true) {{
+      const pkgDir = path.join(dir, "node_modules", pkgName);
+      if (fs.existsSync(pkgDir)) {{
+        const resolved = resolvePackageEntry(pkgDir, subpath);
+        if (resolved) return resolved;
+      }}
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }}
+    throw new Error(`Cannot resolve CommonJS module '${{specifier}}' from ${{parentFilename}}`);
+  }};
+
+  const resolve = (specifier, parentFilename) => {{
+    if (
+      specifier.startsWith("./") ||
+      specifier.startsWith("../") ||
+      specifier.startsWith("/")
+    ) {{
+      const base = specifier.startsWith("/")
+        ? specifier
+        : path.resolve(path.dirname(parentFilename), specifier);
+      const resolved = tryResolveFile(base);
+      if (resolved) return resolved;
+      throw new Error(`Cannot resolve CommonJS module '${{specifier}}' from ${{parentFilename}}`);
+    }}
+    return resolveBare(specifier, parentFilename);
+  }};
+
+  const require = (specifier, parentFilename) => {{
+    const normalized = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
+    if (normalized === "fs") return globalThis.Velox.fs;
+    if (normalized === "path") return globalThis.Velox.path;
+    if (normalized === "process") return globalThis.process;
+    if (normalized === "events") {{
+      class EventEmitter {{
+        constructor() {{ this._events = new Map(); }}
+        on(name, fn) {{
+          const list = this._events.get(name) || [];
+          list.push(fn);
+          this._events.set(name, list);
+          return this;
+        }}
+        addListener(name, fn) {{ return this.on(name, fn); }}
+        once(name, fn) {{
+          const wrapped = (...args) => {{
+            this.removeListener(name, wrapped);
+            return fn.apply(this, args);
+          }};
+          return this.on(name, wrapped);
+        }}
+        off(name, fn) {{ return this.removeListener(name, fn); }}
+        removeListener(name, fn) {{
+          const list = this._events.get(name) || [];
+          this._events.set(name, list.filter((cb) => cb !== fn));
+          return this;
+        }}
+        removeAllListeners(name) {{
+          if (typeof name === "undefined") this._events.clear();
+          else this._events.delete(name);
+          return this;
+        }}
+        emit(name, ...args) {{
+          const list = this._events.get(name) || [];
+          for (const fn of [...list]) fn.apply(this, args);
+          return list.length > 0;
+        }}
+        listeners(name) {{
+          return [...(this._events.get(name) || [])];
+        }}
+        setMaxListeners(_n) {{ return this; }}
+      }}
+      EventEmitter.defaultMaxListeners = 10;
+      EventEmitter.EventEmitter = EventEmitter;
+      return EventEmitter;
+    }}
+
+    const filename = resolve(normalized, parentFilename);
+    if (cache.has(filename)) return cache.get(filename).exports;
+
+    if (filename.endsWith(".json")) {{
+      const module = {{ exports: JSON.parse(fs.readTextFileSync(filename)) }};
+      cache.set(filename, module);
+      return module.exports;
+    }}
+
+    const code = fs.readTextFileSync(filename);
+    const module = {{ exports: {{}} }};
+    cache.set(filename, module);
+
+    const localRequire = (next) => require(next, filename);
+    const __dirname = path.dirname(filename);
+    const fn = new Function("require", "module", "exports", "__filename", "__dirname", code);
+    fn(localRequire, module, module.exports, filename, __dirname);
+    return module.exports;
+  }};
+
+  return {{ cache, require }};
+}})());
+
+const __filename = import.meta.filename;
+const __dirname = import.meta.dirname;
+const module = {{ exports: {{}} }};
+const exports = module.exports;
+const require = (specifier) => __veloxCjs.require(specifier, __filename);
+{source}
+const __velox_cjs_default = module.exports;
+export default __velox_cjs_default;
+"#
+    )
+}
+
 /// Load and compile a module from file
 fn load_module<'s>(
     scope: &mut v8::HandleScope<'s>,
@@ -352,6 +653,11 @@ fn load_module<'s>(
         format!("export default {};", source)
     } else {
         source
+    };
+    let js_source = if should_wrap_commonjs_module(&path_str, &js_source) {
+        wrap_commonjs_as_esm(&js_source)
+    } else {
+        js_source
     };
 
     // Create source for compilation
@@ -396,6 +702,16 @@ fn resolve_module_callback<'a>(
     let scope = &mut unsafe { v8::CallbackScope::new(context) };
 
     let specifier_str = specifier.to_rust_string_lossy(scope);
+    if is_node_builtin_specifier(&specifier_str) {
+        return match load_builtin_module(scope, &specifier_str) {
+            Ok(module) => Some(module),
+            Err(e) => {
+                let err = v8::String::new(scope, &e).unwrap();
+                scope.throw_exception(err.into());
+                None
+            }
+        };
+    }
 
     // Get the referrer's path from the module cache
     // We need to find which path corresponds to this referrer module
@@ -662,6 +978,22 @@ pub extern "C" fn host_import_module_dynamically_callback(
     };
     let promise = resolver.get_promise(scope);
 
+    if is_node_builtin_specifier(&specifier_str) {
+        match load_builtin_module(scope, &specifier_str) {
+            Ok(module) => {
+                let namespace = module.get_module_namespace();
+                resolver.resolve(scope, namespace);
+                return &*promise as *const v8::Promise as *mut v8::Promise;
+            }
+            Err(e) => {
+                let err_msg = v8::String::new(scope, &e).unwrap();
+                let err = v8::Exception::error(scope, err_msg);
+                resolver.reject(scope, err);
+                return &*promise as *const v8::Promise as *mut v8::Promise;
+            }
+        }
+    }
+
     // Get referrer path from the ScriptOrModule's resource name
     let referrer_resource = referrer.get_resource_name();
     let referrer_path = if referrer_resource.is_string() {
@@ -717,4 +1049,112 @@ pub extern "C" fn host_import_module_dynamically_callback(
     }
 
     &*promise as *const v8::Promise as *mut v8::Promise
+}
+
+fn is_node_builtin_specifier(specifier: &str) -> bool {
+    normalize_node_builtin_name(specifier).is_some()
+}
+
+fn normalize_node_builtin_name(specifier: &str) -> Option<&str> {
+    let name = specifier.strip_prefix("node:").unwrap_or(specifier);
+    match name {
+        "fs" => Some("fs"),
+        _ => None,
+    }
+}
+
+fn builtin_module_cache_key(specifier: &str) -> String {
+    format!("<velox:builtin:{}>", specifier)
+}
+
+fn builtin_module_source(specifier: &str) -> Option<String> {
+    let name = normalize_node_builtin_name(specifier)?;
+    match name {
+        "fs" => Some(
+            r#"
+const fs = globalThis.Velox?.fs ?? {};
+export default fs;
+export const readFile = fs.readFile;
+export const readFileSync = fs.readFileSync;
+export const readTextFile = fs.readTextFile;
+export const readTextFileSync = fs.readTextFileSync;
+export const writeFile = fs.writeFile;
+export const writeFileSync = fs.writeFileSync;
+export const writeTextFile = fs.writeTextFile;
+export const writeTextFileSync = fs.writeTextFileSync;
+export const appendFile = fs.appendFile;
+export const readDir = fs.readDir;
+export const readDirSync = fs.readDirSync;
+export const mkdir = fs.mkdir;
+export const mkdirSync = fs.mkdirSync;
+export const remove = fs.remove;
+export const removeSync = fs.removeSync;
+export const rename = fs.rename;
+export const copy = fs.copy;
+export const stat = fs.stat;
+export const statSync = fs.statSync;
+export const exists = fs.exists;
+export const existsSync = fs.existsSync;
+export const symlink = fs.symlink;
+export const readLink = fs.readLink;
+"#
+            .trim()
+            .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn load_builtin_module<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    specifier: &str,
+) -> Result<v8::Local<'s, v8::Module>, String> {
+    let key = builtin_module_cache_key(specifier);
+    let cached = MODULE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&key)
+            .map(|g| v8::Local::new(scope, g.clone()))
+    });
+    if let Some(module) = cached {
+        return Ok(module);
+    }
+
+    let source_code = builtin_module_source(specifier)
+        .ok_or_else(|| format!("Unsupported Node builtin module '{}'", specifier))?;
+    let code =
+        v8::String::new(scope, &source_code).ok_or("Failed to create builtin module source")?;
+    let name = v8::String::new(scope, &key).unwrap();
+
+    let origin = v8::ScriptOrigin::new(
+        scope,
+        name.into(),
+        0,
+        0,
+        false,
+        0,
+        name.into(),
+        false,
+        false,
+        true,
+    );
+    let source = v8::script_compiler::Source::new(code, Some(&origin));
+    let module = v8::script_compiler::compile_module(scope, source)
+        .ok_or_else(|| format!("Failed to compile builtin module '{}'", specifier))?;
+
+    let instantiate_result = module.instantiate_module(scope, resolve_module_callback);
+    if instantiate_result.is_none() || instantiate_result == Some(false) {
+        return Err(format!("Failed to instantiate builtin module '{}'", specifier));
+    }
+
+    let _ = module
+        .evaluate(scope)
+        .ok_or_else(|| format!("Failed to evaluate builtin module '{}'", specifier))?;
+
+    let global = v8::Global::new(scope, module);
+    MODULE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(key, global);
+    });
+
+    Ok(module)
 }

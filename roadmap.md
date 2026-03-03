@@ -312,6 +312,12 @@ Checklist:
 ## Phase 9: Performance & Stability
 
 - [ ] V8 snapshot support (faster startup)
+  - [ ] Add snapshot builder mode (`velox snapshot build`)
+  - [ ] Pre-initialize builtins/modules in snapshot context
+  - [ ] Emit snapshot blob artifact and embed with `include_bytes!`
+  - [ ] Boot isolate from snapshot blob in `Runtime::new`
+  - [ ] Fallback to non-snapshot startup if blob is missing/invalid
+  - [ ] Add CI benchmark: cold startup before/after snapshot
 - [x] Worker threads (`new Worker()`)
 - [ ] Memory limits (`--max-memory`)
 - [ ] CPU time limits

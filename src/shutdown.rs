@@ -43,6 +43,8 @@ pub fn request_shutdown() {
 }
 
 /// Reset shutdown flag (useful for tests or REPL restart)
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn reset() {
     SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
 }

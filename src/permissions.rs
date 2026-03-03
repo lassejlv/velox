@@ -159,6 +159,8 @@ pub fn init(permissions: Permissions) {
 }
 
 /// Reset permissions (useful for tests)
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn reset() {
     let mut perms = PERMISSIONS.write().unwrap();
     *perms = None;

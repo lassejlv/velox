@@ -77,10 +77,34 @@ fn main() {
                 }
             };
 
-            if watch_mode {
-                watch::run_watch(&script_path, script_args, import_map_path);
+            if Path::new(&script_path).is_file() {
+                if watch_mode {
+                    watch::run_watch(&script_path, script_args, import_map_path);
+                } else {
+                    run_file(&script_path, script_args, import_map_path);
+                }
             } else {
-                run_file(&script_path, script_args, import_map_path);
+                if watch_mode || import_map_path.is_some() {
+                    eprintln!(
+                        "{}",
+                        colors::error(
+                            "--watch and --import-map are only supported when running a file path"
+                        )
+                    );
+                    process::exit(1);
+                }
+
+                match pkg::run_project_script(&script_path, &script_args) {
+                    Ok(code) => {
+                        if code != 0 {
+                            process::exit(code);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}", colors::error(&e));
+                        process::exit(1);
+                    }
+                }
             }
         }
         "fmt" => {
@@ -98,8 +122,17 @@ fn main() {
         "install" => {
             run_install(&args[2..]);
         }
+        "cache" => {
+            run_cache(&args[2..]);
+        }
         "x" => {
             run_x(&args[2..]);
+        }
+        "create" => {
+            run_create(&args[2..]);
+        }
+        "snapshot" => {
+            run_snapshot(&args[2..]);
         }
         "init" => {
             run_init(&args[2..]);
@@ -126,11 +159,14 @@ fn print_usage(program: &str) {
         program
     );
     eprintln!("\n{}Commands:{}", colors::BOLD, colors::RESET);
-    eprintln!("  run <file>    Run a JavaScript/TypeScript file");
+    eprintln!("  run <target>  Run a file or package.json script");
     eprintln!("  init          Initialize a new Velox project");
     eprintln!("  add <pkg>     Add package(s) to package.json/node_modules");
     eprintln!("  install       Install dependencies from package.json");
+    eprintln!("  cache         Manage package cache (dir/info/clear)");
     eprintln!("  x <pkg>       Run a package binary (npx alternative)");
+    eprintln!("  create <name> Run create-<name> package (bun create style)");
+    eprintln!("  snapshot      Build/load V8 startup snapshot");
     eprintln!("  fmt [files]   Format source files");
     eprintln!("  check [files] Type-check source files");
     eprintln!("  test [files]  Run test files");
@@ -197,6 +233,58 @@ fn run_file(path: &str, script_args: Vec<String>, import_map_path: Option<String
     if let Err(e) = runtime.execute(path, &source) {
         eprintln!("{}", e);
         process::exit(1);
+    }
+}
+
+fn run_snapshot(args: &[String]) {
+    let mut out_path = String::from("velox.snapshot.bin");
+    let mut mode: Option<&str> = None;
+    let mut i = 0usize;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "build" if mode.is_none() => {
+                mode = Some("build");
+                i += 1;
+            }
+            "--out" if i + 1 < args.len() => {
+                out_path = args[i + 1].clone();
+                i += 2;
+            }
+            "-h" | "--help" => {
+                println!("Usage: velox snapshot build [--out <path>]");
+                println!("Default output: velox.snapshot.bin (current directory)");
+                println!("Runtime auto-loads ./velox.snapshot.bin or VELOX_SNAPSHOT_PATH");
+                return;
+            }
+            other => {
+                eprintln!("{}", colors::error(&format!("unknown option '{}'", other)));
+                process::exit(1);
+            }
+        }
+    }
+
+    if mode != Some("build") {
+        eprintln!("{}", colors::error("missing subcommand 'build'"));
+        eprintln!("Usage: velox snapshot build [--out <path>]");
+        process::exit(1);
+    }
+
+    let out = Path::new(&out_path);
+    match Runtime::build_snapshot(out) {
+        Ok(size) => {
+            println!(
+                "{}snapshot built{} {} ({} bytes)",
+                colors::GREEN,
+                colors::RESET,
+                out.display(),
+                size
+            );
+        }
+        Err(e) => {
+            eprintln!("{}", colors::error(&e));
+            process::exit(1);
+        }
     }
 }
 
@@ -483,6 +571,62 @@ fn run_x(args: &[String]) {
     }
 }
 
+fn run_create(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("{}", colors::error("missing create package name"));
+        eprintln!("\nUsage: velox create <name> [args...]");
+        eprintln!("Example: velox create vite my-app");
+        process::exit(1);
+    }
+
+    if matches!(args[0].as_str(), "-h" | "--help") {
+        println!("Usage: velox create <name> [args...]");
+        println!("Example: velox create vite my-app");
+        println!("Runs: velox x create-<name> [args...]");
+        return;
+    }
+
+    let spec = map_create_name_to_package(&args[0]);
+    let cmd_args: Vec<String> = args[1..].to_vec();
+
+    match pkg::run_package_binary(&spec, &cmd_args) {
+        Ok(code) => {
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Err(e) => {
+            eprintln!("{}", colors::error(&e));
+            process::exit(1);
+        }
+    }
+}
+
+fn map_create_name_to_package(input: &str) -> String {
+    if input.starts_with("create-") || input.starts_with('@') {
+        return input.to_string();
+    }
+
+    if let Some((name, version)) = split_unscoped_package_version(input) {
+        return format!("create-{}@{}", name, version);
+    }
+
+    format!("create-{}", input)
+}
+
+fn split_unscoped_package_version(input: &str) -> Option<(&str, &str)> {
+    let at_idx = input.rfind('@')?;
+    if at_idx == 0 || at_idx + 1 >= input.len() {
+        return None;
+    }
+    let name = &input[..at_idx];
+    if name.contains('/') {
+        return None;
+    }
+    let version = &input[at_idx + 1..];
+    Some((name, version))
+}
+
 fn run_install(args: &[String]) {
     let mut include_dev = true;
     for arg in args {
@@ -505,6 +649,51 @@ fn run_install(args: &[String]) {
     if let Err(e) = pkg::install_from_package_json(include_dev) {
         eprintln!("{}", colors::error(&e));
         process::exit(1);
+    }
+}
+
+fn run_cache(args: &[String]) {
+    let cmd = if args.is_empty() {
+        "info"
+    } else {
+        args[0].as_str()
+    };
+    match cmd {
+        "dir" => {
+            println!("{}", pkg::cache_dir().display());
+        }
+        "info" => match pkg::cache_info() {
+            Ok(info) => {
+                println!("Cache path: {}", info.path.display());
+                println!("Files: {}", info.files);
+                println!("Size: {} bytes", info.bytes);
+            }
+            Err(e) => {
+                eprintln!("{}", colors::error(&e));
+                process::exit(1);
+            }
+        },
+        "clear" => match pkg::cache_clear() {
+            Ok(()) => println!("{}cache cleared{}", colors::GREEN, colors::RESET),
+            Err(e) => {
+                eprintln!("{}", colors::error(&e));
+                process::exit(1);
+            }
+        },
+        "-h" | "--help" => {
+            println!("Usage: velox cache [info|dir|clear]");
+            println!("  info   Show cache location and size (default)");
+            println!("  dir    Print cache directory path");
+            println!("  clear  Delete all cached metadata/tarballs/x cache");
+        }
+        _ => {
+            eprintln!(
+                "{}",
+                colors::error(&format!("unknown cache command '{}'", cmd))
+            );
+            eprintln!("Run `velox cache --help` for usage.");
+            process::exit(1);
+        }
     }
 }
 

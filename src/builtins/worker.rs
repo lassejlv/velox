@@ -630,7 +630,7 @@ fn worker_self_get_onmessage(
 
 fn run_worker_event_loop(
     scope: &mut v8::TryCatch<v8::HandleScope>,
-    event_loop: &EventLoop,
+    _event_loop: &EventLoop,
     tx: &Sender<WorkerToMain>,
 ) {
     loop {
