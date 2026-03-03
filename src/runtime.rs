@@ -131,7 +131,7 @@ fn format_exception(
         .map(|m| {
             (
                 m.get_line_number(tc_scope).unwrap_or(1),
-                m.get_start_column() + 1,
+                m.get_start_column().saturating_add(1),
             )
         })
         .unwrap_or((1, 1));

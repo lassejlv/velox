@@ -1,9 +1,7 @@
 // greet.ts - Simple greeting module
-
 export function greet(name: string): string {
-  return `Hello, ${name}!`;
+	return `Hello, ${name}!`;
 }
-
 export function farewell(name: string): string {
-  return `Goodbye, ${name}!`;
+	return `Goodbye, ${name}!`;
 }

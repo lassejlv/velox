@@ -258,7 +258,7 @@ Checklist:
 - [x] `Velox.serve()` basic HTTP server
 - [x] Request/Response objects (web standard)
 - [x] Graceful shutdown
-- [ ] Async handler support (Promise<Response>)
+- [x] Async handler support (Promise<Response>)
 - [ ] onError callback
 - [ ] TLS/HTTPS support
 
@@ -299,11 +299,11 @@ Checklist:
 ## Phase 8: Developer Experience
 
 - [x] REPL mode (`velox` with no args)
-- [ ] Watch mode (`velox run --watch`)
+- [x] Watch mode (`velox run --watch`)
 - [ ] Source maps for TypeScript errors
-- [ ] `velox fmt` - code formatter (oxc)
-- [ ] `velox check` - type checker
-- [ ] `velox test` - test runner
+- [x] `velox fmt` - code formatter (oxc)
+- [x] `velox check` - syntax checker
+- [x] `velox test` - test runner
 - [ ] `velox compile` - compile to binary
 - [ ] Better stack traces with source locations
 
@@ -336,7 +336,11 @@ Checklist:
 
 **Phase 7: Module System** → ✅ COMPLETE
 
-**Next up: Phase 8: Developer Experience** → Watch mode, source maps, tooling
+**Phase 8: Developer Experience** → ✅ IN PROGRESS
+- Watch mode, fmt, check, test commands implemented
+- Remaining: source maps, compile to binary, better stack traces
+
+**Next up: Phase 9: Performance & Stability**
 
 ## Implementation Guide
 

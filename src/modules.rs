@@ -48,6 +48,7 @@ pub fn load_import_map(path: &Path) -> Result<(), String> {
 }
 
 /// Set import map entries directly
+#[allow(dead_code)]
 pub fn set_import_map(entries: HashMap<String, String>) {
     IMPORT_MAP.with(|map| {
         *map.borrow_mut() = entries;
@@ -55,6 +56,7 @@ pub fn set_import_map(entries: HashMap<String, String>) {
 }
 
 /// Clear the import map
+#[allow(dead_code)]
 pub fn clear_import_map() {
     IMPORT_MAP.with(|map| map.borrow_mut().clear());
 }
@@ -498,6 +500,18 @@ pub fn execute_module<'s>(
     // Evaluate the module
     let result = module.evaluate(scope).ok_or("Failed to evaluate module")?;
 
+    // Check if module evaluation resulted in an error
+    // Module status will be kErrored if there was a synchronous exception
+    let status = module.get_status();
+    if status == v8::ModuleStatus::Errored {
+        let exception = module.get_exception();
+        let msg = exception
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_else(|| "Module evaluation failed".to_string());
+        return Err(msg);
+    }
+
     Ok(result)
 }
 
@@ -530,6 +544,7 @@ pub fn clear_cache() {
 }
 
 /// Setup import.meta for a module
+#[allow(dead_code)]
 pub fn setup_import_meta<'s>(
     scope: &mut v8::HandleScope<'s>,
     filename: &str,

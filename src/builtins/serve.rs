@@ -9,6 +9,8 @@ use tiny_http::{Header, Response as HttpResponse, Server as HttpServer};
 thread_local! {
     static SERVERS: RefCell<HashMap<u32, ServerState>> = RefCell::new(HashMap::new());
     static NEXT_SERVER_ID: RefCell<u32> = RefCell::new(0);
+    /// Pending async handler promises with their response channels
+    static PENDING_RESPONSES: RefCell<Vec<PendingAsyncResponse>> = RefCell::new(Vec::new());
 }
 
 struct ServerState {
@@ -26,6 +28,11 @@ struct PendingRequest {
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    response_tx: Sender<ResponseData>,
+}
+
+struct PendingAsyncResponse {
+    promise: v8::Global<v8::Promise>,
     response_tx: Sender<ResponseData>,
 }
 
@@ -297,6 +304,9 @@ fn server_shutdown(
 pub fn poll_servers(scope: &mut v8::HandleScope) -> bool {
     let mut has_active_servers = false;
 
+    // First, check pending async responses
+    poll_pending_responses(scope);
+
     SERVERS.with(|servers| {
         let servers_ref = servers.borrow();
         let server_ids: Vec<u32> = servers_ref.keys().copied().collect();
@@ -335,32 +345,8 @@ pub fn poll_servers(scope: &mut v8::HandleScope) -> bool {
                     // Handle result (Response or Promise<Response>)
                     if let Some(result) = result {
                         if result.is_promise() {
-                            // Handle async handler - for now, send a 500 until we integrate with event loop
-                            // TODO: properly handle async handlers
                             let promise = v8::Local::<v8::Promise>::try_from(result).unwrap();
-                            match promise.state() {
-                                v8::PromiseState::Fulfilled => {
-                                    let response_val = promise.result(scope);
-                                    let resp_data = extract_response_data(scope, response_val);
-                                    let _ = req.response_tx.send(resp_data);
-                                }
-                                v8::PromiseState::Rejected => {
-                                    let _ = req.response_tx.send(ResponseData {
-                                        status: 500,
-                                        headers: vec![],
-                                        body: b"Internal Server Error".to_vec(),
-                                    });
-                                }
-                                v8::PromiseState::Pending => {
-                                    // Store pending promise for later resolution
-                                    // For now, send a timeout response
-                                    let _ = req.response_tx.send(ResponseData {
-                                        status: 500,
-                                        headers: vec![],
-                                        body: b"Async handlers not yet fully supported".to_vec(),
-                                    });
-                                }
-                            }
+                            handle_promise_response(scope, promise, req.response_tx);
                         } else {
                             // Synchronous Response
                             let resp_data = extract_response_data(scope, result);
@@ -379,7 +365,78 @@ pub fn poll_servers(scope: &mut v8::HandleScope) -> bool {
         }
     });
 
-    has_active_servers
+    // Check if there are pending async responses
+    let has_pending = PENDING_RESPONSES.with(|pending| !pending.borrow().is_empty());
+
+    has_active_servers || has_pending
+}
+
+/// Handle a promise response from an async handler
+fn handle_promise_response(
+    scope: &mut v8::HandleScope,
+    promise: v8::Local<v8::Promise>,
+    response_tx: Sender<ResponseData>,
+) {
+    match promise.state() {
+        v8::PromiseState::Fulfilled => {
+            let response_val = promise.result(scope);
+            let resp_data = extract_response_data(scope, response_val);
+            let _ = response_tx.send(resp_data);
+        }
+        v8::PromiseState::Rejected => {
+            let error_val = promise.result(scope);
+            let error_msg = error_val.to_rust_string_lossy(scope);
+            let _ = response_tx.send(ResponseData {
+                status: 500,
+                headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                body: format!("Handler error: {}", error_msg).into_bytes(),
+            });
+        }
+        v8::PromiseState::Pending => {
+            // Store for later polling
+            let promise_global = v8::Global::new(scope, promise);
+            PENDING_RESPONSES.with(|pending| {
+                pending.borrow_mut().push(PendingAsyncResponse {
+                    promise: promise_global,
+                    response_tx,
+                });
+            });
+        }
+    }
+}
+
+/// Poll pending async responses and send them when resolved
+fn poll_pending_responses(scope: &mut v8::HandleScope) {
+    PENDING_RESPONSES.with(|pending| {
+        let mut pending_ref = pending.borrow_mut();
+        let mut i = 0;
+        while i < pending_ref.len() {
+            let promise_local = v8::Local::new(scope, &pending_ref[i].promise);
+            match promise_local.state() {
+                v8::PromiseState::Fulfilled => {
+                    let response_val = promise_local.result(scope);
+                    let resp_data = extract_response_data(scope, response_val);
+                    let _ = pending_ref[i].response_tx.send(resp_data);
+                    pending_ref.swap_remove(i);
+                    // Don't increment i, we've moved a new item into position i
+                }
+                v8::PromiseState::Rejected => {
+                    let error_val = promise_local.result(scope);
+                    let error_msg = error_val.to_rust_string_lossy(scope);
+                    let _ = pending_ref[i].response_tx.send(ResponseData {
+                        status: 500,
+                        headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                        body: format!("Handler error: {}", error_msg).into_bytes(),
+                    });
+                    pending_ref.swap_remove(i);
+                }
+                v8::PromiseState::Pending => {
+                    // Still pending, check next one
+                    i += 1;
+                }
+            }
+        }
+    });
 }
 
 /// Check if there are any active servers

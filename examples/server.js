@@ -1,12 +1,9 @@
 // Example HTTP server using Velox.serve
-
 const server = Velox.serve({
-  port: 3000,
+  port: 3e3,
   hostname: "127.0.0.1",
-
   handler: (request) => {
     console.log(`${request.method} ${request.url}`);
-
     // Route handling
     if (request.url === "/") {
       return {
@@ -15,7 +12,6 @@ const server = Velox.serve({
         body: "<h1>Hello from Velox!</h1><p>Try /api/info or /api/echo</p>",
       };
     }
-
     if (request.url === "/api/info") {
       return {
         status: 200,
@@ -29,7 +25,6 @@ const server = Velox.serve({
         }),
       };
     }
-
     if (request.url === "/api/echo" && request.method === "POST") {
       // Echo back the request body
       const decoder = new TextDecoder();
@@ -41,11 +36,10 @@ const server = Velox.serve({
           method: request.method,
           url: request.url,
           headers: request.headers,
-          body: body,
+          body,
         }),
       };
     }
-
     // 404 for unknown routes
     return {
       status: 404,
@@ -53,11 +47,9 @@ const server = Velox.serve({
       body: "Not Found",
     };
   },
-
   onListen: (addr) => {
     console.log(`Server listening on http://${addr.hostname}:${addr.port}`);
     console.log("Press Ctrl+C to stop");
   },
 });
-
 console.log("Server started:", server.addr);
