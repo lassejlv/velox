@@ -30,4 +30,3 @@ COPY --from=builder /app/target/release/velox /usr/local/bin/velox
 
 # Set entrypoint
 ENTRYPOINT ["velox"]
-CMD ["--help"]
