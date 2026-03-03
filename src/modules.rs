@@ -544,7 +544,238 @@ const __veloxCjs = globalThis.__veloxCjs || (globalThis.__veloxCjs = (() => {{
     if (normalized === "fs") return globalThis.Velox.fs;
     if (normalized === "path") return globalThis.Velox.path;
     if (normalized === "process") return globalThis.process;
-    if (normalized === "events") {{
+    if (normalized === "crypto") {{
+      const toBase64 = (bytes) => {{
+        let s = "";
+        for (const b of bytes) s += String.fromCharCode(b & 0xff);
+        return btoa(s);
+      }};
+      const toHex = (bytes) =>
+        Array.from(bytes)
+          .map((b) => (b & 0xff).toString(16).padStart(2, "0"))
+          .join("");
+      const hashBytes = (input, seed = 2166136261) => {{
+        const text = String(input);
+        let h = seed >>> 0;
+        for (let i = 0; i < text.length; i++) {{
+          h ^= text.charCodeAt(i);
+          h = Math.imul(h, 16777619) >>> 0;
+        }}
+        const out = new Uint8Array(20);
+        let x = h;
+        for (let i = 0; i < out.length; i++) {{
+          x ^= x << 13;
+          x ^= x >>> 17;
+          x ^= x << 5;
+          out[i] = x & 0xff;
+        }}
+        return out;
+      }};
+      const mkDigest = (bytes, encoding) => {{
+        if (!encoding) return bytes;
+        const enc = String(encoding).toLowerCase();
+        if (enc === "hex") return toHex(bytes);
+        if (enc === "base64") return toBase64(bytes);
+        if (enc === "latin1" || enc === "binary") {{
+          return Array.from(bytes).map((b) => String.fromCharCode(b)).join("");
+        }}
+        return toHex(bytes);
+      }};
+      const createHash = (_algorithm) => {{
+        let state = "";
+        return {{
+          update(data) {{
+            state += typeof data === "string" ? data : String(data);
+            return this;
+          }},
+          digest(encoding) {{
+            return mkDigest(hashBytes(state), encoding);
+          }},
+        }};
+      }};
+      const createHmac = (_algorithm, key) => {{
+        let state = String(key ?? "");
+        return {{
+          update(data) {{
+            state += "|" + (typeof data === "string" ? data : String(data));
+            return this;
+          }},
+          digest(encoding) {{
+            return mkDigest(hashBytes(state, 0x9e3779b9), encoding);
+          }},
+        }};
+      }};
+      const randomBytes = (size) => {{
+        const n = Math.max(0, Number(size) || 0);
+        const out = new Uint8Array(n);
+        if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {{
+          globalThis.crypto.getRandomValues(out);
+        }} else {{
+          for (let i = 0; i < n; i++) out[i] = (Math.random() * 256) | 0;
+        }}
+        return out;
+      }};
+      return {{
+        createHash,
+        createHmac,
+        randomBytes,
+      }};
+    }}
+    if (normalized === "querystring") {{
+      const parse = (input = "") => {{
+        const out = {{}};
+        const qs = String(input).replace(/^\?/, "");
+        if (!qs) return out;
+        for (const part of qs.split("&")) {{
+          if (!part) continue;
+          const idx = part.indexOf("=");
+          const k = idx >= 0 ? part.slice(0, idx) : part;
+          const v = idx >= 0 ? part.slice(idx + 1) : "";
+          const key = decodeURIComponent(k.replace(/\+/g, "%20"));
+          const value = decodeURIComponent(v.replace(/\+/g, "%20"));
+          if (Object.prototype.hasOwnProperty.call(out, key)) {{
+            const prev = out[key];
+            out[key] = Array.isArray(prev) ? [...prev, value] : [prev, value];
+          }} else {{
+            out[key] = value;
+          }}
+        }}
+        return out;
+      }};
+      const stringify = (obj = {{}}) => {{
+        const parts = [];
+        for (const key of Object.keys(obj)) {{
+          const v = obj[key];
+          if (Array.isArray(v)) {{
+            for (const item of v) {{
+              parts.push(`${{encodeURIComponent(key)}}=${{encodeURIComponent(String(item))}}`);
+            }}
+          }} else {{
+            parts.push(`${{encodeURIComponent(key)}}=${{encodeURIComponent(String(v))}}`);
+          }}
+        }}
+        return parts.join("&");
+      }};
+      return {{
+        parse,
+        stringify,
+        escape: (s) => encodeURIComponent(String(s)),
+        unescape: (s) => decodeURIComponent(String(s)),
+      }};
+    }}
+    if (normalized === "buffer") {{
+      const textEncoder = new TextEncoder();
+      const textDecoder = new TextDecoder();
+
+      const encodeHex = (bytes) =>
+        Array.from(bytes)
+          .map((b) => (b & 0xff).toString(16).padStart(2, "0"))
+          .join("");
+      const decodeHex = (hex) => {{
+        const clean = String(hex).trim();
+        const len = Math.floor(clean.length / 2);
+        const out = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {{
+          out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16) || 0;
+        }}
+        return out;
+      }};
+      const decodeBase64 = (b64) => {{
+        const bin = atob(String(b64));
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i) & 0xff;
+        return out;
+      }};
+
+      class Buffer extends Uint8Array {{
+        static from(input, encoding) {{
+          if (input instanceof Uint8Array) return new Buffer(input);
+          if (Array.isArray(input)) return new Buffer(input);
+          if (typeof input === "string") {{
+            const enc = String(encoding || "utf8").toLowerCase();
+            if (enc === "hex") return new Buffer(decodeHex(input));
+            if (enc === "base64") return new Buffer(decodeBase64(input));
+            return new Buffer(textEncoder.encode(input));
+          }}
+          if (typeof input === "number") return Buffer.alloc(input);
+          return new Buffer([]);
+        }}
+        static alloc(size, fill = 0) {{
+          const out = new Buffer(Math.max(0, Number(size) || 0));
+          out.fill(fill);
+          return out;
+        }}
+        static isBuffer(v) {{
+          return v instanceof Buffer;
+        }}
+        static concat(list, totalLength) {{
+          const arrays = list.map((v) => (v instanceof Uint8Array ? v : Buffer.from(v)));
+          const len =
+            typeof totalLength === "number"
+              ? totalLength
+              : arrays.reduce((acc, cur) => acc + cur.length, 0);
+          const out = new Buffer(len);
+          let offset = 0;
+          for (const arr of arrays) {{
+            out.set(arr.subarray(0, Math.max(0, len - offset)), offset);
+            offset += arr.length;
+            if (offset >= len) break;
+          }}
+          return out;
+        }}
+        static byteLength(input, encoding) {{
+          return Buffer.from(input, encoding).length;
+        }}
+        toString(encoding = "utf8") {{
+          const enc = String(encoding).toLowerCase();
+          if (enc === "hex") return encodeHex(this);
+          if (enc === "base64") {{
+            let s = "";
+            for (const b of this) s += String.fromCharCode(b & 0xff);
+            return btoa(s);
+          }}
+          return textDecoder.decode(this);
+        }}
+      }}
+
+      return {{
+        Buffer,
+        SlowBuffer: Buffer,
+        kMaxLength: 0x7fffffff,
+      }};
+    }}
+    if (normalized === "net") {{
+      const isIPv4 = (input) => {{
+        const s = String(input || "");
+        const parts = s.split(".");
+        if (parts.length !== 4) return false;
+        return parts.every((p) => {{
+          if (!/^\d+$/.test(p)) return false;
+          const n = Number(p);
+          return n >= 0 && n <= 255;
+        }});
+      }};
+      const isIPv6 = (input) => {{
+        const s = String(input || "");
+        if (!s.includes(":")) return false;
+        // Intentionally permissive for compatibility checks in userland packages.
+        return /^[0-9a-fA-F:]+$/.test(s);
+      }};
+      const isIP = (input) => (isIPv4(input) ? 4 : isIPv6(input) ? 6 : 0);
+      const unsupported = () => {{
+        throw new Error("Node net sockets are not supported yet in Velox");
+      }};
+      return {{
+        isIP,
+        isIPv4,
+        isIPv6,
+        createConnection: unsupported,
+        connect: unsupported,
+        Socket: function Socket() {{}},
+        Server: function Server() {{}},
+      }};
+    }}
+    if (normalized === "stream") {{
       class EventEmitter {{
         constructor() {{ this._events = new Map(); }}
         on(name, fn) {{
@@ -553,8 +784,394 @@ const __veloxCjs = globalThis.__veloxCjs || (globalThis.__veloxCjs = (() => {{
           this._events.set(name, list);
           return this;
         }}
+        once(name, fn) {{
+          const wrapped = (...args) => {{
+            this.off(name, wrapped);
+            return fn.apply(this, args);
+          }};
+          return this.on(name, wrapped);
+        }}
+        off(name, fn) {{
+          const list = this._events.get(name) || [];
+          this._events.set(name, list.filter((cb) => cb !== fn));
+          return this;
+        }}
+        emit(name, ...args) {{
+          const list = this._events.get(name) || [];
+          for (const fn of [...list]) fn.apply(this, args);
+          return list.length > 0;
+        }}
+      }}
+
+      class Stream extends EventEmitter {{
+        pipe(dest) {{
+          this.on("data", (chunk) => {{
+            if (dest && typeof dest.write === "function") dest.write(chunk);
+          }});
+          this.on("end", () => {{
+            if (dest && typeof dest.end === "function") dest.end();
+          }});
+          return dest;
+        }}
+      }}
+      class Readable extends Stream {{
+        constructor(...args) {{ super(...args); this.readable = true; }}
+      }}
+      class Writable extends Stream {{
+        constructor(...args) {{ super(...args); this.writable = true; }}
+        write(_chunk) {{ return true; }}
+        end(_chunk) {{ this.emit("finish"); }}
+      }}
+      class Duplex extends Stream {{
+        constructor(...args) {{ super(...args); this.readable = true; this.writable = true; }}
+      }}
+      class Transform extends Duplex {{}}
+      class PassThrough extends Transform {{}}
+
+      return {{
+        Stream,
+        Readable,
+        Writable,
+        Duplex,
+        Transform,
+        PassThrough,
+        pipeline: (..._args) => {{
+          const cb = _args[_args.length - 1];
+          if (typeof cb === "function") cb();
+        }},
+        finished: (_stream, cb) => {{
+          if (typeof cb === "function") cb();
+        }},
+      }};
+    }}
+    if (normalized === "zlib") {{
+      const makePassthrough = () => {{
+        const streamMod = require("stream", parentFilename);
+        return new streamMod.PassThrough();
+      }};
+      const unsupportedCb = (cb) => {{
+        if (typeof cb === "function") {{
+          cb(new Error("zlib compression is not supported yet in Velox"));
+        }} else {{
+          throw new Error("zlib compression is not supported yet in Velox");
+        }}
+      }};
+      return {{
+        constants: {{}},
+        createGzip: makePassthrough,
+        createGunzip: makePassthrough,
+        createDeflate: makePassthrough,
+        createInflate: makePassthrough,
+        createBrotliCompress: makePassthrough,
+        createBrotliDecompress: makePassthrough,
+        gzip: (_buf, _opts, cb) => unsupportedCb(typeof _opts === "function" ? _opts : cb),
+        gunzip: (_buf, _opts, cb) => unsupportedCb(typeof _opts === "function" ? _opts : cb),
+        deflate: (_buf, _opts, cb) => unsupportedCb(typeof _opts === "function" ? _opts : cb),
+        inflate: (_buf, _opts, cb) => unsupportedCb(typeof _opts === "function" ? _opts : cb),
+        brotliCompress: (_buf, _opts, cb) => unsupportedCb(typeof _opts === "function" ? _opts : cb),
+        brotliDecompress: (_buf, _opts, cb) => unsupportedCb(typeof _opts === "function" ? _opts : cb),
+      }};
+    }}
+    if (normalized === "tty") {{
+      return {{
+        isatty: () => false,
+        ReadStream: function () {{}},
+        WriteStream: function () {{}},
+      }};
+    }}
+    if (normalized === "url") {{
+      const parse = (input) => {{
+        try {{
+          const u = new URL(input);
+          return {{
+            href: u.href,
+            protocol: u.protocol,
+            host: u.host,
+            hostname: u.hostname,
+            port: u.port,
+            pathname: u.pathname,
+            search: u.search,
+            hash: u.hash,
+            query: u.search.startsWith("?") ? u.search.slice(1) : "",
+            path: `${{u.pathname}}${{u.search}}`,
+          }};
+        }} catch (_err) {{
+          const u = new URL(input, "http://velox.local");
+          return {{
+            href: input,
+            protocol: "",
+            host: "",
+            hostname: "",
+            port: "",
+            pathname: u.pathname,
+            search: u.search,
+            hash: u.hash,
+            query: u.search.startsWith("?") ? u.search.slice(1) : "",
+            path: `${{u.pathname}}${{u.search}}`,
+          }};
+        }}
+      }};
+      const format = (obj) => obj?.href || obj?.path || "";
+      return {{ URL, URLSearchParams, parse, format }};
+    }}
+    if (normalized === "http" || normalized === "https") {{
+      const METHODS = [
+        "ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD",
+        "LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL",
+        "MOVE", "NOTIFY", "OPTIONS", "PATCH", "POST", "PROPFIND", "PROPPATCH",
+        "PURGE", "PUT", "QUERY", "REBIND", "REPORT", "SEARCH", "SOURCE",
+        "SUBSCRIBE", "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE"
+      ];
+      const mkEmitter = () => {{
+        const map = new Map();
+        return {{
+          on(name, fn) {{
+            const list = map.get(name) || [];
+            list.push(fn);
+            map.set(name, list);
+            return this;
+          }},
+          once(name, fn) {{
+            const wrapped = (...args) => {{
+              this.off(name, wrapped);
+              return fn.apply(this, args);
+            }};
+            return this.on(name, wrapped);
+          }},
+          off(name, fn) {{
+            const list = map.get(name) || [];
+            map.set(name, list.filter((cb) => cb !== fn));
+            return this;
+          }},
+          emit(name, ...args) {{
+            const list = map.get(name) || [];
+            for (const fn of [...list]) fn.apply(this, args);
+            return list.length > 0;
+          }},
+        }};
+      }};
+
+      const createServer = (requestListener) => {{
+        const emitter = mkEmitter();
+        const server = Object.assign({{}}, emitter);
+        server._veloxServer = null;
+        server._address = null;
+
+        if (typeof requestListener === "function") {{
+          server.on("request", requestListener);
+        }}
+
+        server.listen = function (...args) {{
+          let port = 3000;
+          let hostname = "127.0.0.1";
+          let callback = null;
+
+          if (args.length > 0 && typeof args[args.length - 1] === "function") {{
+            callback = args.pop();
+          }}
+          if (args.length > 0 && typeof args[0] === "object" && args[0] !== null) {{
+            const opts = args[0];
+            if (typeof opts.port === "number") port = opts.port;
+            if (typeof opts.host === "string") hostname = opts.host;
+            if (typeof opts.hostname === "string") hostname = opts.hostname;
+          }} else {{
+            if (typeof args[0] === "number") port = args[0];
+            if (typeof args[1] === "string") hostname = args[1];
+          }}
+
+          const isTls = normalized === "https";
+          const serverRef = this;
+          this._veloxServer = globalThis.Velox.serve({{
+            port,
+            hostname,
+            onListen: (addr) => {{
+              serverRef._address = {{
+                address: addr.hostname,
+                port: addr.port,
+                family: "IPv4",
+              }};
+              serverRef.emit("listening");
+              if (callback) callback();
+            }},
+            handler: (request) =>
+              new Promise((resolve) => {{
+                const url = new URL(request.url);
+                const headers = {{}};
+                if (request.headers && typeof request.headers.forEach === "function") {{
+                  request.headers.forEach((value, key) => {{
+                    headers[String(key).toLowerCase()] = String(value);
+                  }});
+                }} else if (request.headers && typeof request.headers === "object") {{
+                  for (const key of Object.keys(request.headers)) {{
+                    headers[String(key).toLowerCase()] = String(request.headers[key]);
+                  }}
+                }}
+
+                const req = {{
+                  method: request.method || "GET",
+                  url: `${{url.pathname}}${{url.search}}`,
+                  originalUrl: `${{url.pathname}}${{url.search}}`,
+                  headers,
+                  httpVersion: "1.1",
+                  connection: {{ encrypted: isTls }},
+                  socket: {{ encrypted: isTls }},
+                  get(name) {{ return headers[String(name).toLowerCase()]; }},
+                  header(name) {{ return headers[String(name).toLowerCase()]; }},
+                }};
+
+                const res = {{
+                  statusCode: 200,
+                  statusMessage: "OK",
+                  headersSent: false,
+                  writableEnded: false,
+                  finished: false,
+                  locals: {{}},
+                  _headers: {{}},
+                  _chunks: [],
+                  setHeader(name, value) {{
+                    this._headers[String(name).toLowerCase()] = String(value);
+                    return this;
+                  }},
+                  getHeader(name) {{
+                    return this._headers[String(name).toLowerCase()];
+                  }},
+                  getHeaders() {{
+                    return {{ ...this._headers }};
+                  }},
+                  hasHeader(name) {{
+                    return Object.prototype.hasOwnProperty.call(
+                      this._headers,
+                      String(name).toLowerCase()
+                    );
+                  }},
+                  removeHeader(name) {{
+                    delete this._headers[String(name).toLowerCase()];
+                  }},
+                  writeHead(statusCode, reasonOrHeaders, maybeHeaders) {{
+                    this.statusCode = Number(statusCode) || 200;
+                    let headersObj = maybeHeaders;
+                    if (reasonOrHeaders && typeof reasonOrHeaders === "object") {{
+                      headersObj = reasonOrHeaders;
+                    }} else if (typeof reasonOrHeaders === "string") {{
+                      this.statusMessage = reasonOrHeaders;
+                    }}
+                    if (headersObj && typeof headersObj === "object") {{
+                      for (const key of Object.keys(headersObj)) {{
+                        this.setHeader(key, headersObj[key]);
+                      }}
+                    }}
+                    this.headersSent = true;
+                    return this;
+                  }},
+                  write(chunk) {{
+                    if (this.writableEnded) return false;
+                    this.headersSent = true;
+                    if (typeof chunk !== "undefined") {{
+                      this._chunks.push(
+                        typeof chunk === "string" ? chunk : String(chunk)
+                      );
+                    }}
+                    return true;
+                  }},
+                  end(chunk) {{
+                    if (this.writableEnded) return this;
+                    if (typeof chunk !== "undefined") this.write(chunk);
+                    this.writableEnded = true;
+                    this.finished = true;
+                    const body = this._chunks.join("");
+                    resolve(
+                      new Response(body, {{
+                        status: this.statusCode || 200,
+                        headers: this._headers,
+                      }})
+                    );
+                    return this;
+                  }},
+                }};
+
+                try {{
+                  serverRef.emit("request", req, res);
+                }} catch (err) {{
+                  serverRef.emit("error", err);
+                  if (!res.writableEnded) {{
+                    resolve(
+                      new Response("Internal Server Error", {{
+                        status: 500,
+                        headers: {{ "content-type": "text/plain" }},
+                      }})
+                    );
+                  }}
+                }}
+              }}),
+          }});
+
+          return this;
+        }};
+
+        server.address = function () {{
+          return this._address;
+        }};
+
+        server.close = function (callback) {{
+          if (this._veloxServer && typeof this._veloxServer.shutdown === "function") {{
+            this._veloxServer.shutdown().then(() => {{
+              this.emit("close");
+              if (callback) callback();
+            }});
+          }} else if (callback) {{
+            callback();
+          }}
+          return this;
+        }};
+
+        return server;
+      }};
+      return {{
+        METHODS,
+        STATUS_CODES: {{}},
+        createServer,
+        request: () => {{
+          throw new Error("http.request() is not supported yet in Velox");
+        }},
+        get: () => {{
+          throw new Error("http.get() is not supported yet in Velox");
+        }},
+        Agent: function Agent() {{}},
+        Server: function Server() {{}},
+        IncomingMessage: function IncomingMessage() {{}},
+        ServerResponse: function ServerResponse() {{}},
+      }};
+    }}
+    if (normalized === "util") {{
+      return {{
+        format: (...args) => args.map((v) => String(v)).join(" "),
+        inspect: (v) => {{
+          try {{ return JSON.stringify(v); }} catch (_err) {{ return String(v); }}
+        }},
+        deprecate: (fn) => fn,
+        inherits: (ctor, superCtor) => {{
+          if (!ctor || !superCtor) return;
+          ctor.super_ = superCtor;
+          if (superCtor.prototype) {{
+            ctor.prototype = Object.create(superCtor.prototype);
+            ctor.prototype.constructor = ctor;
+          }}
+        }},
+      }};
+    }}
+    if (normalized === "events") {{
+      class EventEmitter {{
+        constructor() {{ this._events = new Map(); }}
+        on(name, fn) {{
+          if (!this._events) this._events = new Map();
+          const list = this._events.get(name) || [];
+          list.push(fn);
+          this._events.set(name, list);
+          return this;
+        }}
         addListener(name, fn) {{ return this.on(name, fn); }}
         once(name, fn) {{
+          if (!this._events) this._events = new Map();
           const wrapped = (...args) => {{
             this.removeListener(name, wrapped);
             return fn.apply(this, args);
@@ -563,21 +1180,25 @@ const __veloxCjs = globalThis.__veloxCjs || (globalThis.__veloxCjs = (() => {{
         }}
         off(name, fn) {{ return this.removeListener(name, fn); }}
         removeListener(name, fn) {{
+          if (!this._events) this._events = new Map();
           const list = this._events.get(name) || [];
           this._events.set(name, list.filter((cb) => cb !== fn));
           return this;
         }}
         removeAllListeners(name) {{
+          if (!this._events) this._events = new Map();
           if (typeof name === "undefined") this._events.clear();
           else this._events.delete(name);
           return this;
         }}
         emit(name, ...args) {{
+          if (!this._events) this._events = new Map();
           const list = this._events.get(name) || [];
           for (const fn of [...list]) fn.apply(this, args);
           return list.length > 0;
         }}
         listeners(name) {{
+          if (!this._events) this._events = new Map();
           return [...(this._events.get(name) || [])];
         }}
         setMaxListeners(_n) {{ return this; }}
@@ -602,8 +1223,14 @@ const __veloxCjs = globalThis.__veloxCjs || (globalThis.__veloxCjs = (() => {{
 
     const localRequire = (next) => require(next, filename);
     const __dirname = path.dirname(filename);
-    const fn = new Function("require", "module", "exports", "__filename", "__dirname", code);
-    fn(localRequire, module, module.exports, filename, __dirname);
+    try {{
+      const fn = new Function("require", "module", "exports", "__filename", "__dirname", code);
+      fn(localRequire, module, module.exports, filename, __dirname);
+    }} catch (err) {{
+      const details =
+        err && err.stack ? String(err.stack) : err ? String(err) : "unknown error";
+      throw new Error(`Failed while loading CommonJS module ${{filename}}: ${{details}}`);
+    }}
     return module.exports;
   }};
 
@@ -628,6 +1255,13 @@ fn load_module<'s>(
     path: &Path,
 ) -> Result<v8::Local<'s, v8::Module>, String> {
     let path_str = path.to_string_lossy().to_string();
+    if std::env::var("VELOX_MODULE_TRACE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        eprintln!("module: {}", path_str);
+    }
 
     // Check cache first
     let cached = MODULE_CACHE.with(|cache| {

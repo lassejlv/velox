@@ -205,6 +205,17 @@ fn format_exception(
         .to_string(tc_scope)
         .map(|m| m.to_rust_string_lossy(tc_scope))
         .unwrap_or_else(|| "unknown error".to_string());
+    let stack = if exception.is_object() {
+        let obj = v8::Local::<v8::Object>::try_from(exception).ok();
+        obj.and_then(|o| {
+            let key = v8::String::new(tc_scope, "stack")?;
+            o.get(tc_scope, key.into())
+                .filter(|v| v.is_string())
+                .map(|v| v.to_rust_string_lossy(tc_scope))
+        })
+    } else {
+        None
+    };
 
     let (line, col) = tc_scope
         .message()
@@ -231,7 +242,7 @@ fn format_exception(
         colors::RESET
     );
 
-    format!(
+    let base = format!(
         "{}\n\n  {}{}{}\n  {}\n\n{}",
         colors::error(&message),
         colors::DIM,
@@ -239,5 +250,10 @@ fn format_exception(
         colors::RESET,
         pointer,
         location
-    )
+    );
+    if let Some(stack) = stack {
+        format!("{}\n\n{}", base, stack)
+    } else {
+        base
+    }
 }

@@ -190,6 +190,16 @@ fn create_process_object<'s>(
     set_function(scope, process_obj, "exit", exit);
     set_function(scope, process_obj, "nextTick", process_next_tick);
 
+    // process.stdin/stdout/stderr
+    let stdin_obj = create_stdio_object(scope, 0, false);
+    let stdout_obj = create_stdio_object(scope, 1, false);
+    set_function(scope, stdout_obj, "write", stdio_stdout_write);
+    let stderr_obj = create_stdio_object(scope, 2, false);
+    set_function(scope, stderr_obj, "write", stdio_stderr_write);
+    set_value(scope, process_obj, "stdin", stdin_obj.into());
+    set_value(scope, process_obj, "stdout", stdout_obj.into());
+    set_value(scope, process_obj, "stderr", stderr_obj.into());
+
     process_obj
 }
 
@@ -215,6 +225,23 @@ fn node_arch() -> &'static str {
     } else {
         "unknown"
     }
+}
+
+fn create_stdio_object<'s>(
+    scope: &mut v8::ContextScope<'s, v8::HandleScope>,
+    fd: i32,
+    is_tty: bool,
+) -> v8::Local<'s, v8::Object> {
+    let obj = v8::Object::new(scope);
+    let fd_val = v8::Integer::new(scope, fd);
+    let fd_key = v8::String::new(scope, "fd").unwrap();
+    obj.set(scope, fd_key.into(), fd_val.into());
+
+    let tty_key = v8::String::new(scope, "isTTY").unwrap();
+    let tty_val = v8::Boolean::new(scope, is_tty);
+    obj.set(scope, tty_key.into(), tty_val.into());
+
+    obj
 }
 
 // Velox.cwd(): string
@@ -423,4 +450,24 @@ fn process_next_tick(
 
     let cb = v8::Local::<v8::Function>::try_from(callback).unwrap();
     let _ = cb.call(scope, global.into(), &[]);
+}
+
+fn stdio_stdout_write(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let text = args.get(0).to_rust_string_lossy(scope);
+    print!("{}", text);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
+fn stdio_stderr_write(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let text = args.get(0).to_rust_string_lossy(scope);
+    eprint!("{}", text);
+    let _ = std::io::Write::flush(&mut std::io::stderr());
 }
