@@ -22,11 +22,11 @@ Essential globals and APIs for basic scripts.
 
 - [x] `setTimeout(fn, ms)` / `clearTimeout(id)`
 - [x] `setInterval(fn, ms)` / `clearInterval(id)`
-- [ ] `TextEncoder` / `TextDecoder`
-- [ ] `URL` / `URLSearchParams`
-- [ ] `atob(str)` / `btoa(str)`
-- [ ] `structuredClone(obj)`
-- [ ] `queueMicrotask(fn)`
+- [x] `TextEncoder` / `TextDecoder`
+- [x] `URL` / `URLSearchParams`
+- [x] `atob(str)` / `btoa(str)`
+- [x] `structuredClone(obj)`
+- [x] `queueMicrotask(fn)`
 - [ ] `performance.now()`
 - [ ] `crypto.randomUUID()`
 - [ ] `crypto.getRandomValues(array)`

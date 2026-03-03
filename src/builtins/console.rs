@@ -43,7 +43,9 @@ fn stringify(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String
                     if let Some(func) = v8::Local::<v8::Function>::try_from(stringify).ok() {
                         let null = v8::null(scope);
                         let indent = v8::Integer::new(scope, 2);
-                        if let Some(result) = func.call(scope, json.into(), &[value, null.into(), indent.into()]) {
+                        if let Some(result) =
+                            func.call(scope, json.into(), &[value, null.into(), indent.into()])
+                        {
                             return result.to_rust_string_lossy(scope);
                         }
                     }
@@ -55,7 +57,11 @@ fn stringify(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String
     value.to_rust_string_lossy(scope)
 }
 
-fn stringify_cell(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>, max_width: usize) -> String {
+fn stringify_cell(
+    scope: &mut v8::HandleScope,
+    value: v8::Local<v8::Value>,
+    max_width: usize,
+) -> String {
     if value.is_null_or_undefined() {
         return String::new();
     }
@@ -73,7 +79,13 @@ fn stringify_cell(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>, max_
 fn truncate_cell(s: &str, max_width: usize) -> String {
     let sanitized: String = s
         .chars()
-        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+        .map(|c| {
+            if c == '\n' || c == '\r' || c == '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
 
     if sanitized.len() <= max_width {
@@ -95,19 +107,39 @@ fn log(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8
 }
 
 fn error(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    eprintln!("{}{}{}", colors::RED, format_args(scope, &args), colors::RESET);
+    eprintln!(
+        "{}{}{}",
+        colors::RED,
+        format_args(scope, &args),
+        colors::RESET
+    );
 }
 
 fn warn(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    eprintln!("{}{}{}", colors::YELLOW, format_args(scope, &args), colors::RESET);
+    eprintln!(
+        "{}{}{}",
+        colors::YELLOW,
+        format_args(scope, &args),
+        colors::RESET
+    );
 }
 
 fn info(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    println!("{}{}{}", colors::CYAN, format_args(scope, &args), colors::RESET);
+    println!(
+        "{}{}{}",
+        colors::CYAN,
+        format_args(scope, &args),
+        colors::RESET
+    );
 }
 
 fn debug(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    println!("{}{}{}", colors::DIM, format_args(scope, &args), colors::RESET);
+    println!(
+        "{}{}{}",
+        colors::DIM,
+        format_args(scope, &args),
+        colors::RESET
+    );
 }
 
 fn table(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
@@ -191,10 +223,28 @@ fn table(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: 
         }
     }
 
-    let separator: String = widths.iter().map(|w| "─".repeat(*w + 2)).collect::<Vec<_>>().join("┼");
-    let top = format!("┌{}┐", widths.iter().map(|w| "─".repeat(*w + 2)).collect::<Vec<_>>().join("┬"));
+    let separator: String = widths
+        .iter()
+        .map(|w| "─".repeat(*w + 2))
+        .collect::<Vec<_>>()
+        .join("┼");
+    let top = format!(
+        "┌{}┐",
+        widths
+            .iter()
+            .map(|w| "─".repeat(*w + 2))
+            .collect::<Vec<_>>()
+            .join("┬")
+    );
     let mid = format!("├{}┤", separator);
-    let bot = format!("└{}┘", widths.iter().map(|w| "─".repeat(*w + 2)).collect::<Vec<_>>().join("┴"));
+    let bot = format!(
+        "└{}┘",
+        widths
+            .iter()
+            .map(|w| "─".repeat(*w + 2))
+            .collect::<Vec<_>>()
+            .join("┴")
+    );
 
     println!("{}", top);
 

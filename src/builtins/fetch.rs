@@ -19,7 +19,11 @@ pub fn init(scope: &mut v8::ContextScope<v8::HandleScope>, global: v8::Local<v8:
     global.set(scope, key.into(), fetch_fn.into());
 }
 
-fn fetch(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn fetch(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let url = if args.length() < 1 {
         throw_error(scope, "fetch requires a URL argument");
         return;
@@ -81,7 +85,8 @@ fn fetch(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut r
                 move |scope: &mut v8::HandleScope, resolver: v8::Local<v8::PromiseResolver>| {
                     match result {
                         Ok((status, body_text, resp_headers)) => {
-                            let response = create_response(scope, status, &body_text, &resp_headers);
+                            let response =
+                                create_response(scope, status, &body_text, &resp_headers);
                             resolver.resolve(scope, response.into());
                         }
                         Err(e) => {
