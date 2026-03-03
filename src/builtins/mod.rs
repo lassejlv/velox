@@ -5,6 +5,7 @@ mod encoding;
 pub mod fetch;
 pub mod fs;
 mod microtask;
+mod path;
 mod performance;
 pub mod timers;
 mod url;
@@ -23,4 +24,5 @@ pub fn setup(scope: &mut v8::ContextScope<v8::HandleScope>, context: v8::Local<v
     performance::init(scope, global);
     crypto::init(scope, global);
     fs::init(scope, global);
+    path::init(scope, global);
 }

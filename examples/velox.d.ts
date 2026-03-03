@@ -37,6 +37,24 @@ declare namespace Velox {
     function symlink(target: string, path: string): Promise<void>;
     function readLink(path: string): Promise<string>;
   }
+
+  namespace path {
+    // Path manipulation
+    function join(...paths: string[]): string;
+    function resolve(...paths: string[]): string;
+    function dirname(path: string): string;
+    function basename(path: string, suffix?: string): string;
+    function extname(path: string): string;
+    function normalize(path: string): string;
+    function isAbsolute(path: string): boolean;
+    function relative(from: string, to: string): string;
+    function parse(path: string): ParsedPath;
+    function format(obj: ParsedPath): string;
+
+    // Constants
+    const sep: string;
+    const delimiter: string;
+  }
 }
 
 interface FileInfo {
@@ -56,4 +74,12 @@ interface DirEntry {
   isFile: boolean;
   isDirectory: boolean;
   isSymlink: boolean;
+}
+
+interface ParsedPath {
+  root: string;
+  dir: string;
+  base: string;
+  ext: string;
+  name: string;
 }

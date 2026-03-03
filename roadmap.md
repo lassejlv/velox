@@ -139,16 +139,16 @@ interface ParsedPath {
 ```
 
 Checklist:
-- [ ] `Velox.path.join`
-- [ ] `Velox.path.resolve`
-- [ ] `Velox.path.dirname`
-- [ ] `Velox.path.basename`
-- [ ] `Velox.path.extname`
-- [ ] `Velox.path.normalize`
-- [ ] `Velox.path.isAbsolute`
-- [ ] `Velox.path.relative`
-- [ ] `Velox.path.parse` / `format`
-- [ ] `Velox.path.sep` / `delimiter`
+- [x] `Velox.path.join`
+- [x] `Velox.path.resolve`
+- [x] `Velox.path.dirname`
+- [x] `Velox.path.basename`
+- [x] `Velox.path.extname`
+- [x] `Velox.path.normalize`
+- [x] `Velox.path.isAbsolute`
+- [x] `Velox.path.relative`
+- [x] `Velox.path.parse` / `format`
+- [x] `Velox.path.sep` / `delimiter`
 
 ---
 
@@ -332,7 +332,7 @@ Checklist:
 
 ## Current Focus
 
-**Phase 3: Velox.path** → Path utilities (`join`, `resolve`, `dirname`, etc.)
+**Phase 4: Velox.process** → Process & environment (`args`, `env`, `cwd`, `exit`)
 
 ## Implementation Guide
 
