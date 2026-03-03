@@ -94,19 +94,19 @@ interface DirEntry {
 ```
 
 Checklist:
-- [ ] `Velox.fs.readFile` / `readFileSync`
-- [ ] `Velox.fs.readTextFile` / `readTextFileSync`
-- [ ] `Velox.fs.writeFile` / `writeFileSync`
-- [ ] `Velox.fs.writeTextFile` / `writeTextFileSync`
-- [ ] `Velox.fs.appendFile`
-- [ ] `Velox.fs.readDir` / `readDirSync`
-- [ ] `Velox.fs.mkdir` / `mkdirSync`
-- [ ] `Velox.fs.remove` / `removeSync`
-- [ ] `Velox.fs.rename`
-- [ ] `Velox.fs.copy`
-- [ ] `Velox.fs.stat` / `statSync`
-- [ ] `Velox.fs.exists` / `existsSync`
-- [ ] `Velox.fs.symlink` / `readLink`
+- [x] `Velox.fs.readFile` / `readFileSync`
+- [x] `Velox.fs.readTextFile` / `readTextFileSync`
+- [x] `Velox.fs.writeFile` / `writeFileSync`
+- [x] `Velox.fs.writeTextFile` / `writeTextFileSync`
+- [x] `Velox.fs.appendFile`
+- [x] `Velox.fs.readDir` / `readDirSync`
+- [x] `Velox.fs.mkdir` / `mkdirSync`
+- [x] `Velox.fs.remove` / `removeSync`
+- [x] `Velox.fs.rename`
+- [x] `Velox.fs.copy`
+- [x] `Velox.fs.stat` / `statSync`
+- [x] `Velox.fs.exists` / `existsSync`
+- [x] `Velox.fs.symlink` / `readLink`
 
 ---
 
@@ -332,7 +332,7 @@ Checklist:
 
 ## Current Focus
 
-**Phase 1: Core APIs** → `setTimeout`, `URL`, `TextEncoder`, `crypto`
+**Phase 3: Velox.path** → Path utilities (`join`, `resolve`, `dirname`, etc.)
 
 ## Implementation Guide
 

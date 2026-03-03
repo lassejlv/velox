@@ -48,12 +48,14 @@ impl EventLoop {
         loop {
             match self.receiver.try_recv() {
                 Ok(EventLoopMessage::Promise(id, callback)) => {
-                    RESOLVERS.with(|resolvers| {
-                        if let Some(resolver_global) = resolvers.borrow_mut().remove(&id) {
-                            let resolver = v8::Local::new(scope, resolver_global);
-                            callback(scope, resolver);
-                        }
-                    });
+                    // Remove resolver from map first to avoid borrow issues
+                    // if callback registers new resolvers
+                    let resolver_global =
+                        RESOLVERS.with(|resolvers| resolvers.borrow_mut().remove(&id));
+                    if let Some(resolver_global) = resolver_global {
+                        let resolver = v8::Local::new(scope, resolver_global);
+                        callback(scope, resolver);
+                    }
                     self.active_count.fetch_sub(1, Ordering::SeqCst);
                 }
                 Ok(EventLoopMessage::Timer(timer_id)) => {
