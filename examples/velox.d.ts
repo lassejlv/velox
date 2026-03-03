@@ -1,6 +1,28 @@
 // Velox Runtime Type Definitions
 
 declare namespace Velox {
+  // Process info
+  const args: string[];
+  const execPath: string;
+  const pid: number;
+  const platform: "darwin" | "linux" | "windows";
+  const arch: "x64" | "arm64";
+  const version: string;
+
+  // Process functions
+  function cwd(): string;
+  function chdir(path: string): void;
+  function exit(code?: number): never;
+
+  // Environment variables
+  const env: {
+    get(key: string): string | undefined;
+    set(key: string, value: string): void;
+    delete(key: string): void;
+    toObject(): Record<string, string>;
+    [key: string]: string | ((...args: any[]) => any) | undefined;
+  };
+
   namespace fs {
     // Reading
     function readFile(path: string): Promise<Uint8Array>;

@@ -178,14 +178,14 @@ namespace Velox {
 ```
 
 Checklist:
-- [ ] `Velox.args`
-- [ ] `Velox.execPath`
-- [ ] `Velox.pid`
-- [ ] `Velox.platform` / `arch` / `version`
-- [ ] `Velox.cwd()` / `chdir()`
-- [ ] `Velox.exit()`
-- [ ] `Velox.env.get` / `set` / `delete`
-- [ ] `Velox.env` proxy access
+- [x] `Velox.args`
+- [x] `Velox.execPath`
+- [x] `Velox.pid`
+- [x] `Velox.platform` / `arch` / `version`
+- [x] `Velox.cwd()` / `chdir()`
+- [x] `Velox.exit()`
+- [x] `Velox.env.get` / `set` / `delete`
+- [x] `Velox.env` proxy access
 
 ---
 
@@ -332,7 +332,7 @@ Checklist:
 
 ## Current Focus
 
-**Phase 4: Velox.process** → Process & environment (`args`, `env`, `cwd`, `exit`)
+**Phase 5: Velox.exec** → Shell commands (`exec`, `execSync`, `spawn`)
 
 ## Implementation Guide
 

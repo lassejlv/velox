@@ -26,7 +26,9 @@ fn main() {
                 print_usage(&args[0]);
                 process::exit(1);
             }
-            run_file(&args[2]);
+            // Collect script arguments (everything after the script path)
+            let script_args: Vec<String> = args[3..].to_vec();
+            run_file(&args[2], script_args);
         }
         "repl" => {
             repl::run();
@@ -55,7 +57,7 @@ fn print_usage(program: &str) {
     eprintln!("\nRun with no arguments to start REPL");
 }
 
-fn run_file(path: &str) {
+fn run_file(path: &str, script_args: Vec<String>) {
     let source = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) => {
@@ -66,6 +68,12 @@ fn run_file(path: &str) {
             process::exit(1);
         }
     };
+
+    // Get exec path and set args for Velox.args/Velox.execPath
+    let exec_path = env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| String::from("velox"));
+    builtins::process::set_args(exec_path, script_args);
 
     let mut runtime = Runtime::new();
 
