@@ -1,8 +1,10 @@
 mod clone;
 mod console;
+mod crypto;
 mod encoding;
 pub mod fetch;
 mod microtask;
+mod performance;
 pub mod timers;
 mod url;
 
@@ -17,4 +19,6 @@ pub fn setup(scope: &mut v8::ContextScope<v8::HandleScope>, context: v8::Local<v
     url::init(scope, global);
     clone::init(scope, global);
     microtask::init(scope, global);
+    performance::init(scope, global);
+    crypto::init(scope, global);
 }

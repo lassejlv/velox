@@ -27,9 +27,9 @@ Essential globals and APIs for basic scripts.
 - [x] `atob(str)` / `btoa(str)`
 - [x] `structuredClone(obj)`
 - [x] `queueMicrotask(fn)`
-- [ ] `performance.now()`
-- [ ] `crypto.randomUUID()`
-- [ ] `crypto.getRandomValues(array)`
+- [x] `performance.now()`
+- [x] `crypto.randomUUID()`
+- [x] `crypto.getRandomValues(array)`
 
 ---
 
@@ -296,7 +296,7 @@ Checklist:
 
 ## Phase 8: Developer Experience
 
-- [ ] REPL mode (`velox` with no args)
+- [x] REPL mode (`velox` with no args)
 - [ ] Watch mode (`velox run --watch`)
 - [ ] Source maps for TypeScript errors
 - [ ] `velox fmt` - code formatter (oxc)
