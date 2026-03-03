@@ -3,6 +3,7 @@ mod colors;
 mod event_loop;
 mod modules;
 mod permissions;
+mod pkg;
 mod repl;
 mod runtime;
 mod shutdown;
@@ -91,6 +92,15 @@ fn main() {
         "test" => {
             run_test(&args[2..]);
         }
+        "add" => {
+            run_add(&args[2..]);
+        }
+        "install" => {
+            run_install(&args[2..]);
+        }
+        "x" => {
+            run_x(&args[2..]);
+        }
         "init" => {
             run_init(&args[2..]);
         }
@@ -118,6 +128,9 @@ fn print_usage(program: &str) {
     eprintln!("\n{}Commands:{}", colors::BOLD, colors::RESET);
     eprintln!("  run <file>    Run a JavaScript/TypeScript file");
     eprintln!("  init          Initialize a new Velox project");
+    eprintln!("  add <pkg>     Add package(s) to package.json/node_modules");
+    eprintln!("  install       Install dependencies from package.json");
+    eprintln!("  x <pkg>       Run a package binary (npx alternative)");
     eprintln!("  fmt [files]   Format source files");
     eprintln!("  check [files] Type-check source files");
     eprintln!("  test [files]  Run test files");
@@ -386,6 +399,111 @@ fn run_test(args: &[String]) {
     );
 
     if failed > 0 {
+        process::exit(1);
+    }
+}
+
+fn run_add(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("{}", colors::error("missing package name"));
+        eprintln!("\nUsage: velox add [options] <pkg...>");
+        eprintln!("Options:");
+        eprintln!("  -D, --dev    Add as dev dependency");
+        eprintln!("  -E, --exact  Pin exact version");
+        process::exit(1);
+    }
+
+    let mut packages: Vec<String> = Vec::new();
+    let mut dev = false;
+    let mut exact = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "-D" | "--dev" => dev = true,
+            "-E" | "--exact" => exact = true,
+            "-h" | "--help" => {
+                println!("Usage: velox add [options] <pkg...>");
+                println!("Options:");
+                println!("  -D, --dev    Add as dev dependency");
+                println!("  -E, --exact  Pin exact version");
+                return;
+            }
+            _ if arg.starts_with('-') => {
+                eprintln!("{}", colors::error(&format!("unknown option '{}'", arg)));
+                process::exit(1);
+            }
+            _ => packages.push(arg.clone()),
+        }
+    }
+
+    if packages.is_empty() {
+        eprintln!("{}", colors::error("missing package name"));
+        process::exit(1);
+    }
+
+    println!(
+        "{}Installing:{} {}",
+        colors::CYAN,
+        colors::RESET,
+        packages.join(", ")
+    );
+
+    if let Err(e) = pkg::add_packages(&packages, pkg::AddOptions { dev, exact }) {
+        eprintln!("{}", colors::error(&e));
+        process::exit(1);
+    }
+}
+
+fn run_x(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("{}", colors::error("missing package name"));
+        eprintln!("\nUsage: velox x <pkg[@version]> [args...]");
+        process::exit(1);
+    }
+
+    if matches!(args[0].as_str(), "-h" | "--help") {
+        println!("Usage: velox x <pkg[@version]> [args...]");
+        println!("Example: velox x cowsay hello");
+        return;
+    }
+
+    let package_spec = &args[0];
+    let cmd_args: Vec<String> = args[1..].to_vec();
+
+    match pkg::run_package_binary(package_spec, &cmd_args) {
+        Ok(code) => {
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Err(e) => {
+            eprintln!("{}", colors::error(&e));
+            process::exit(1);
+        }
+    }
+}
+
+fn run_install(args: &[String]) {
+    let mut include_dev = true;
+    for arg in args {
+        match arg.as_str() {
+            "--prod" | "--production" => include_dev = false,
+            "-h" | "--help" => {
+                println!("Usage: velox install [--prod]");
+                println!(
+                    "  --prod, --production   Install only dependencies (exclude devDependencies)"
+                );
+                return;
+            }
+            _ => {
+                eprintln!("{}", colors::error(&format!("unknown option '{}'", arg)));
+                process::exit(1);
+            }
+        }
+    }
+
+    if let Err(e) = pkg::install_from_package_json(include_dev) {
+        eprintln!("{}", colors::error(&e));
         process::exit(1);
     }
 }

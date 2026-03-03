@@ -13,6 +13,9 @@ cargo build --release
 ```bash
 velox run script.js
 velox run script.ts
+velox add hono
+velox install
+velox x cowsay hello
 ```
 
 ## Example
@@ -30,6 +33,7 @@ console.table(data);
 - Async/await with event loop
 - `fetch()` API
 - `console.log/error/warn/info/debug/table`
+- `velox add <pkg>` package installation
 
 ## License
 

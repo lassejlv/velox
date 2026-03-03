@@ -325,7 +325,7 @@ Checklist:
 - [ ] FFI (Foreign Function Interface)
 - [ ] WASM support
 - [ ] SQLite built-in (`Velox.sqlite`)
-- [ ] Package manager (`velox add <pkg>`)
+- [x] Package manager (`velox add <pkg>`)
 - [ ] WebSocket server
 - [ ] TCP/UDP sockets
 - [ ] Windows support
