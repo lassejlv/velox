@@ -1,0 +1,27 @@
+{
+  "name": "velox",
+  "version": "1.0.0",
+  "description": "A fast JavaScript/TypeScript runtime built with V8.",
+  "main": "index.js",
+  "directories": {
+    "example": "examples"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lassejlv/velox.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/lassejlv/velox/issues"
+  },
+  "homepage": "https://github.com/lassejlv/velox#readme",
+  "dependencies": {
+    "hono": "^4.12.4"
+  }
+}

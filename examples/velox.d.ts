@@ -155,3 +155,19 @@ interface Server {
 // - Request: constructor, url, method, headers, bodyUsed, text(), json(), arrayBuffer(), bytes(), clone()
 // - Response: constructor, status, statusText, ok, headers, bodyUsed, text(), json(), arrayBuffer(), bytes(), clone()
 // - Response.json(data, init?), Response.redirect(url, status?), Response.error()
+
+// Worker API (Web Workers for parallel execution)
+declare class Worker {
+	constructor(scriptURL: string);
+	postMessage(message: any): void;
+	terminate(): void;
+	onmessage: ((event: { data: any }) => void) | null;
+	onerror: ((event: { message: string }) => void) | null;
+}
+
+// Worker scope globals (available inside worker scripts)
+declare var self: typeof globalThis & {
+	postMessage(message: any): void;
+	onmessage: ((event: { data: any }) => void) | null;
+};
+declare function postMessage(message: any): void;

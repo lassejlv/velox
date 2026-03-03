@@ -1,3 +1,4 @@
+use crate::permissions;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::env;
@@ -193,6 +194,14 @@ fn env_get(
     }
 
     let key = key_arg.to_rust_string_lossy(scope);
+
+    // Check env permission
+    if let Err(e) = permissions::check_env(&key) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
     match env::var(&key) {
         Ok(value) => {
             let result = v8::String::new(scope, &value).unwrap();
@@ -220,6 +229,13 @@ fn env_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv
     let key = key_arg.to_rust_string_lossy(scope);
     let value = val_arg.to_rust_string_lossy(scope);
 
+    // Check env permission
+    if let Err(e) = permissions::check_env(&key) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
     // SAFETY: We're in a single-threaded JS runtime
     unsafe { env::set_var(&key, &value) };
 }
@@ -236,6 +252,14 @@ fn env_delete(
     }
 
     let key = key_arg.to_rust_string_lossy(scope);
+
+    // Check env permission
+    if let Err(e) = permissions::check_env(&key) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
     // SAFETY: We're in a single-threaded JS runtime
     unsafe { env::remove_var(&key) };
 }
@@ -246,6 +270,14 @@ fn env_to_object(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    // Check for full env permission
+    if let Err(e) = permissions::check(permissions::PermissionKind::Env, None) {
+        // If no full permission, return empty object
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
     let obj = v8::Object::new(scope);
 
     for (key, value) in env::vars() {

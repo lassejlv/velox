@@ -1,3 +1,4 @@
+use crate::permissions;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ struct ServerState {
     shutdown_tx: Sender<()>,
     request_rx: Receiver<PendingRequest>,
     handler: v8::Global<v8::Function>,
+    on_error: Option<v8::Global<v8::Function>>,
     #[allow(dead_code)]
     hostname: String,
     #[allow(dead_code)]
@@ -29,11 +31,14 @@ struct PendingRequest {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     response_tx: Sender<ResponseData>,
+    /// Full base URL (e.g., "http://127.0.0.1:3000")
+    base_url: String,
 }
 
 struct PendingAsyncResponse {
     promise: v8::Global<v8::Promise>,
     response_tx: Sender<ResponseData>,
+    server_id: u32,
 }
 
 struct ResponseData {
@@ -108,8 +113,22 @@ fn serve_callback(
         .filter(|v| v.is_function())
         .map(|v| v8::Global::new(scope, v8::Local::<v8::Function>::try_from(v).unwrap()));
 
-    // Create the HTTP server
+    // Get onError callback (optional)
+    let on_error_key = v8::String::new(scope, "onError").unwrap();
+    let on_error = opts
+        .get(scope, on_error_key.into())
+        .filter(|v| v.is_function())
+        .map(|v| v8::Global::new(scope, v8::Local::<v8::Function>::try_from(v).unwrap()));
+
+    // Check network permission
     let addr = format!("{}:{}", hostname, port);
+    if let Err(e) = permissions::check_net(&addr) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
+    // Create the HTTP server
     let server = match HttpServer::http(&addr) {
         Ok(s) => s,
         Err(e) => {
@@ -136,6 +155,7 @@ fn serve_callback(
     // Spawn the server thread
     let server_arc = Arc::new(Mutex::new(Some(server)));
     let server_for_thread = server_arc.clone();
+    let base_url = format!("http://{}:{}", hostname, port);
 
     thread::spawn(move || {
         let server_guard = server_for_thread.lock().unwrap();
@@ -174,6 +194,7 @@ fn serve_callback(
                         headers,
                         body,
                         response_tx,
+                        base_url: base_url.clone(),
                     };
 
                     // Send request to main thread
@@ -221,6 +242,7 @@ fn serve_callback(
                 shutdown_tx,
                 request_rx,
                 handler: handler_global,
+                on_error,
                 hostname: hostname.clone(),
                 port,
             },
@@ -346,19 +368,16 @@ pub fn poll_servers(scope: &mut v8::HandleScope) -> bool {
                     if let Some(result) = result {
                         if result.is_promise() {
                             let promise = v8::Local::<v8::Promise>::try_from(result).unwrap();
-                            handle_promise_response(scope, promise, req.response_tx);
+                            handle_promise_response(scope, promise, req.response_tx, server_id);
                         } else {
                             // Synchronous Response
                             let resp_data = extract_response_data(scope, result);
                             let _ = req.response_tx.send(resp_data);
                         }
                     } else {
-                        // Handler threw an exception
-                        let _ = req.response_tx.send(ResponseData {
-                            status: 500,
-                            headers: vec![],
-                            body: b"Handler threw an exception".to_vec(),
-                        });
+                        // Handler threw an exception - try onError callback
+                        let error_response = call_on_error_callback(scope, server_id, None);
+                        let _ = req.response_tx.send(error_response);
                     }
                 }
             }
@@ -371,11 +390,60 @@ pub fn poll_servers(scope: &mut v8::HandleScope) -> bool {
     has_active_servers || has_pending
 }
 
+/// Call the onError callback if available, otherwise return default 500 response
+fn call_on_error_callback(
+    scope: &mut v8::HandleScope,
+    server_id: u32,
+    error: Option<v8::Local<v8::Value>>,
+) -> ResponseData {
+    // Get onError callback
+    let on_error_opt = SERVERS.with(|servers| {
+        let servers_ref = servers.borrow();
+        servers_ref.get(&server_id).and_then(|s| {
+            s.on_error
+                .as_ref()
+                .map(|f| v8::Local::new(scope, f.clone()))
+        })
+    });
+
+    if let Some(on_error_fn) = on_error_opt {
+        // Create error object if not provided
+        let error_val = error.unwrap_or_else(|| {
+            let err_obj = v8::Object::new(scope);
+            let msg_key = v8::String::new(scope, "message").unwrap();
+            let msg_val = v8::String::new(scope, "Handler threw an exception").unwrap();
+            err_obj.set(scope, msg_key.into(), msg_val.into());
+            err_obj.into()
+        });
+
+        // Call onError
+        let undefined = v8::undefined(scope);
+        if let Some(result) = on_error_fn.call(scope, undefined.into(), &[error_val]) {
+            // If onError returns a Response, use it
+            if result.is_object() && !result.is_null_or_undefined() {
+                return extract_response_data(scope, result);
+            }
+        }
+    }
+
+    // Default error response
+    let error_msg = error
+        .map(|e| e.to_rust_string_lossy(scope))
+        .unwrap_or_else(|| "Internal Server Error".to_string());
+
+    ResponseData {
+        status: 500,
+        headers: vec![("content-type".to_string(), "text/plain".to_string())],
+        body: format!("Error: {}", error_msg).into_bytes(),
+    }
+}
+
 /// Handle a promise response from an async handler
 fn handle_promise_response(
     scope: &mut v8::HandleScope,
     promise: v8::Local<v8::Promise>,
     response_tx: Sender<ResponseData>,
+    server_id: u32,
 ) {
     match promise.state() {
         v8::PromiseState::Fulfilled => {
@@ -385,12 +453,8 @@ fn handle_promise_response(
         }
         v8::PromiseState::Rejected => {
             let error_val = promise.result(scope);
-            let error_msg = error_val.to_rust_string_lossy(scope);
-            let _ = response_tx.send(ResponseData {
-                status: 500,
-                headers: vec![("content-type".to_string(), "text/plain".to_string())],
-                body: format!("Handler error: {}", error_msg).into_bytes(),
-            });
+            let resp_data = call_on_error_callback(scope, server_id, Some(error_val));
+            let _ = response_tx.send(resp_data);
         }
         v8::PromiseState::Pending => {
             // Store for later polling
@@ -399,6 +463,7 @@ fn handle_promise_response(
                 pending.borrow_mut().push(PendingAsyncResponse {
                     promise: promise_global,
                     response_tx,
+                    server_id,
                 });
             });
         }
@@ -407,41 +472,66 @@ fn handle_promise_response(
 
 /// Poll pending async responses and send them when resolved
 fn poll_pending_responses(scope: &mut v8::HandleScope) {
+    // Collect resolved/rejected promises first to avoid borrow issues
+    let mut completed: Vec<(usize, v8::PromiseState, Option<v8::Global<v8::Value>>)> = Vec::new();
+
     PENDING_RESPONSES.with(|pending| {
-        let mut pending_ref = pending.borrow_mut();
-        let mut i = 0;
-        while i < pending_ref.len() {
-            let promise_local = v8::Local::new(scope, &pending_ref[i].promise);
-            match promise_local.state() {
-                v8::PromiseState::Fulfilled => {
-                    let response_val = promise_local.result(scope);
-                    let resp_data = extract_response_data(scope, response_val);
-                    let _ = pending_ref[i].response_tx.send(resp_data);
-                    pending_ref.swap_remove(i);
-                    // Don't increment i, we've moved a new item into position i
+        let pending_ref = pending.borrow();
+        for (i, pending_resp) in pending_ref.iter().enumerate() {
+            let promise_local = v8::Local::new(scope, &pending_resp.promise);
+            let state = promise_local.state();
+            match state {
+                v8::PromiseState::Fulfilled | v8::PromiseState::Rejected => {
+                    let result = promise_local.result(scope);
+                    let result_global = v8::Global::new(scope, result);
+                    completed.push((i, state, Some(result_global)));
                 }
-                v8::PromiseState::Rejected => {
-                    let error_val = promise_local.result(scope);
-                    let error_msg = error_val.to_rust_string_lossy(scope);
-                    let _ = pending_ref[i].response_tx.send(ResponseData {
-                        status: 500,
-                        headers: vec![("content-type".to_string(), "text/plain".to_string())],
-                        body: format!("Handler error: {}", error_msg).into_bytes(),
-                    });
-                    pending_ref.swap_remove(i);
-                }
-                v8::PromiseState::Pending => {
-                    // Still pending, check next one
-                    i += 1;
-                }
+                v8::PromiseState::Pending => {}
             }
         }
     });
+
+    // Process completed promises in reverse order to maintain correct indices when removing
+    completed.sort_by(|a, b| b.0.cmp(&a.0));
+
+    for (idx, state, result_global) in completed {
+        let (response_tx, server_id) = PENDING_RESPONSES.with(|pending| {
+            let mut pending_ref = pending.borrow_mut();
+            let item = pending_ref.swap_remove(idx);
+            (item.response_tx, item.server_id)
+        });
+
+        let result_local = result_global.map(|g| v8::Local::new(scope, g));
+
+        let resp_data = match state {
+            v8::PromiseState::Fulfilled => extract_response_data(scope, result_local.unwrap()),
+            v8::PromiseState::Rejected => call_on_error_callback(scope, server_id, result_local),
+            v8::PromiseState::Pending => unreachable!(),
+        };
+
+        let _ = response_tx.send(resp_data);
+    }
 }
 
 /// Check if there are any active servers
 pub fn has_active_servers() -> bool {
     SERVERS.with(|servers| !servers.borrow().is_empty())
+}
+
+/// Shutdown all active servers gracefully (called on SIGINT/SIGTERM)
+pub fn shutdown_all_servers() {
+    SERVERS.with(|servers| {
+        let mut servers_ref = servers.borrow_mut();
+        for (_id, state) in servers_ref.drain() {
+            // Send shutdown signal to each server thread
+            let _ = state.shutdown_tx.send(());
+        }
+    });
+
+    // Clear pending async responses
+    PENDING_RESPONSES.with(|pending| {
+        pending.borrow_mut().clear();
+    });
 }
 
 fn create_request_object<'s>(
@@ -450,12 +540,15 @@ fn create_request_object<'s>(
 ) -> v8::Local<'s, v8::Object> {
     let global = scope.get_current_context().global(scope);
 
+    // Construct full URL from base_url and request path
+    let full_url = format!("{}{}", req.base_url, req.url);
+
     // Try to use the Request constructor if available
     let request_key = v8::String::new(scope, "Request").unwrap();
     if let Some(request_ctor) = global.get(scope, request_key.into()) {
         if let Ok(request_func) = v8::Local::<v8::Function>::try_from(request_ctor) {
-            // Create URL string
-            let url_val = v8::String::new(scope, &req.url).unwrap();
+            // Create URL string (full URL for proper parsing)
+            let url_val = v8::String::new(scope, &full_url).unwrap();
 
             // Create options object
             let opts = v8::Object::new(scope);
@@ -513,14 +606,17 @@ fn create_request_object_fallback<'s>(
 ) -> v8::Local<'s, v8::Object> {
     let request_obj = v8::Object::new(scope);
 
+    // Construct full URL from base_url and request path
+    let full_url = format!("{}{}", req.base_url, req.url);
+
     // request.method
     let method_key = v8::String::new(scope, "method").unwrap();
     let method_val = v8::String::new(scope, &req.method).unwrap();
     request_obj.set(scope, method_key.into(), method_val.into());
 
-    // request.url
+    // request.url (full URL)
     let url_key = v8::String::new(scope, "url").unwrap();
-    let url_val = v8::String::new(scope, &req.url).unwrap();
+    let url_val = v8::String::new(scope, &full_url).unwrap();
     request_obj.set(scope, url_key.into(), url_val.into());
 
     // request.headers (as object)

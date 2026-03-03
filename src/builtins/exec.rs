@@ -1,4 +1,5 @@
 use crate::event_loop::EventLoopHandle;
+use crate::permissions;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -74,6 +75,15 @@ fn exec_sync(
     }
 
     let command = cmd_arg.to_rust_string_lossy(scope);
+
+    // Check run permission - extract the program name from the command
+    let program = extract_program(&command);
+    if let Err(e) = permissions::check_run(&program) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
+
     let result = run_command(&command);
 
     let obj = create_exec_result(scope, &result);
@@ -90,6 +100,14 @@ fn exec(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv
     }
 
     let command = cmd_arg.to_rust_string_lossy(scope);
+
+    // Check run permission - extract the program name from the command
+    let program = extract_program(&command);
+    if let Err(e) = permissions::check_run(&program) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -185,6 +203,14 @@ fn spawn(
     }
 
     let command = cmd_arg.to_rust_string_lossy(scope);
+
+    // Check run permission - extract the program name from the command
+    let program = extract_program(&command);
+    if let Err(e) = permissions::check_run(&program) {
+        let err = v8::String::new(scope, &e).unwrap();
+        scope.throw_exception(err.into());
+        return;
+    }
 
     // Parse options
     let mut cwd: Option<String> = None;
@@ -476,4 +502,23 @@ fn child_output(
 
         rv.set(promise.into());
     }
+}
+
+/// Extract the program name from a shell command for permission checking
+fn extract_program(command: &str) -> String {
+    // Split on whitespace and get the first part
+    let trimmed = command.trim();
+
+    // Handle commands that start with environment variables (VAR=val cmd)
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    for part in parts {
+        // Skip environment variable assignments
+        if !part.contains('=') {
+            // Extract just the program name (remove path)
+            return part.rsplit('/').next().unwrap_or(part).to_string();
+        }
+    }
+
+    // Fallback to the whole command if we can't parse it
+    trimmed.to_string()
 }

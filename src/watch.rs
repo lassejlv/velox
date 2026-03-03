@@ -11,6 +11,7 @@ use crate::builtins;
 use crate::colors;
 use crate::modules;
 use crate::runtime::Runtime;
+use crate::shutdown;
 
 /// Run a file in watch mode, re-executing on changes
 pub fn run_watch(path: &str, script_args: Vec<String>, import_map_path: Option<String>) {
@@ -61,7 +62,13 @@ pub fn run_watch(path: &str, script_args: Vec<String>, import_map_path: Option<S
 
     // Watch loop
     loop {
-        match rx.recv() {
+        // Check for shutdown signal (Ctrl+C)
+        if shutdown::is_shutdown_requested() {
+            println!("\n{}Watch mode stopped.{}", colors::CYAN, colors::RESET);
+            break;
+        }
+
+        match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(events)) => {
                 // Filter for relevant file changes
                 let relevant_change = events.iter().any(|event| {
@@ -94,8 +101,12 @@ pub fn run_watch(path: &str, script_args: Vec<String>, import_map_path: Option<S
             Ok(Err(error)) => {
                 eprintln!("{}", colors::error(&format!("Watch error: {}", error)));
             }
-            Err(e) => {
-                eprintln!("{}", colors::error(&format!("Channel error: {}", e)));
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // No events, continue checking for shutdown
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                eprintln!("{}", colors::error("Watch channel disconnected"));
                 break;
             }
         }

@@ -13,6 +13,7 @@ pub mod serve;
 pub mod timers;
 mod url;
 mod web_api;
+pub mod worker;
 
 use rusty_v8 as v8;
 
@@ -34,4 +35,5 @@ pub fn setup(scope: &mut v8::ContextScope<v8::HandleScope>, context: v8::Local<v
     process::init(scope, global);
     exec::init(scope, global);
     serve::init(scope, global);
+    worker::init(scope, global);
 }

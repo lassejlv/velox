@@ -1,4 +1,5 @@
 use crate::event_loop::EventLoopHandle;
+use crate::permissions;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
@@ -116,6 +117,12 @@ fn read_file_sync(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
 
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     match fs::read(&path) {
         Ok(bytes) => {
             let uint8_array = create_uint8_array(scope, &bytes);
@@ -131,6 +138,12 @@ fn read_text_file_sync(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -149,6 +162,13 @@ fn read_file(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
     rv.set(promise.into());
@@ -184,6 +204,13 @@ fn read_text_file(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
     rv.set(promise.into());
@@ -223,6 +250,12 @@ fn write_file_sync(
     let path = args.get(0).to_rust_string_lossy(scope);
     let data = args.get(1);
 
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     if !data.is_typed_array() {
         throw_error(scope, "writeFileSync: data must be a Uint8Array");
         return;
@@ -248,6 +281,12 @@ fn write_text_file_sync(
     let path = args.get(0).to_rust_string_lossy(scope);
     let data = args.get(1).to_rust_string_lossy(scope);
 
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     if let Err(e) = fs::write(&path, data.as_bytes()) {
         throw_error(scope, &format!("Failed to write file '{}': {}", path, e));
     }
@@ -262,6 +301,12 @@ fn write_file(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
     let data = args.get(1);
+
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     if !data.is_typed_array() {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
@@ -316,6 +361,12 @@ fn write_text_file(
     let path = args.get(0).to_rust_string_lossy(scope);
     let data = args.get(1).to_rust_string_lossy(scope);
 
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
     rv.set(promise.into());
@@ -352,6 +403,12 @@ fn append_file(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
     let data = args.get(1);
+
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     // Handle both string and Uint8Array
     let bytes: Vec<u8> = if data.is_string() {
@@ -421,6 +478,12 @@ fn read_dir_sync(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
 
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     match fs::read_dir(&path) {
         Ok(entries) => {
             let array = v8::Array::new(scope, 0);
@@ -474,6 +537,13 @@ fn read_dir(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
     rv.set(promise.into());
@@ -559,6 +629,12 @@ fn mkdir_sync(
     let path = args.get(0).to_rust_string_lossy(scope);
     let recursive = get_recursive_option(scope, args.get(1));
 
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let result = if recursive {
         fs::create_dir_all(&path)
     } else {
@@ -580,6 +656,12 @@ fn mkdir(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
     let recursive = get_recursive_option(scope, args.get(1));
+
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -629,6 +711,12 @@ fn remove_sync(
     let path = args.get(0).to_rust_string_lossy(scope);
     let recursive = get_recursive_option(scope, args.get(1));
 
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let p = Path::new(&path);
     let result = if p.is_dir() {
         if recursive {
@@ -652,6 +740,12 @@ fn remove(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
     let recursive = get_recursive_option(scope, args.get(1));
+
+    // Check write permission
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -704,6 +798,16 @@ fn rename_file(
     let from = args.get(0).to_rust_string_lossy(scope);
     let to = args.get(1).to_rust_string_lossy(scope);
 
+    // Check read permission for source and write permission for destination
+    if let Err(e) = permissions::check_read(&from) {
+        throw_error(scope, &e);
+        return;
+    }
+    if let Err(e) = permissions::check_write(&to) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
     rv.set(promise.into());
@@ -740,6 +844,16 @@ fn copy_file(
 ) {
     let from = args.get(0).to_rust_string_lossy(scope);
     let to = args.get(1).to_rust_string_lossy(scope);
+
+    // Check read permission for source and write permission for destination
+    if let Err(e) = permissions::check_read(&from) {
+        throw_error(scope, &e);
+        return;
+    }
+    if let Err(e) = permissions::check_write(&to) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -890,6 +1004,12 @@ fn stat_sync(
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
 
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {
             let info = FileInfoData::from_metadata(&path, &metadata);
@@ -902,6 +1022,12 @@ fn stat_sync(
 
 fn stat(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -941,6 +1067,13 @@ fn exists_sync(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
+
     let exists = Path::new(&path).exists();
     let result = v8::Boolean::new(scope, exists);
     rv.set(result.into());
@@ -952,6 +1085,12 @@ fn exists(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -983,6 +1122,12 @@ fn symlink(
 ) {
     let target = args.get(0).to_rust_string_lossy(scope);
     let path = args.get(1).to_rust_string_lossy(scope);
+
+    // Check write permission for the symlink path
+    if let Err(e) = permissions::check_write(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -1022,6 +1167,12 @@ fn read_link(
     mut rv: v8::ReturnValue,
 ) {
     let path = args.get(0).to_rust_string_lossy(scope);
+
+    // Check read permission
+    if let Err(e) = permissions::check_read(&path) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);

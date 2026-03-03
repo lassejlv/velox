@@ -14,3 +14,11 @@ pub fn error(msg: &str) -> String {
 pub fn location(file: &str, line: usize, col: usize) -> String {
     format!("{CYAN}{file}{RESET}:{YELLOW}{line}{RESET}:{YELLOW}{col}{RESET}")
 }
+
+pub fn green(msg: &str) -> String {
+    format!("{GREEN}{msg}{RESET}")
+}
+
+pub fn yellow(msg: &str) -> String {
+    format!("{YELLOW}{msg}{RESET}")
+}

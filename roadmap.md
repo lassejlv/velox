@@ -259,7 +259,7 @@ Checklist:
 - [x] Request/Response objects (web standard)
 - [x] Graceful shutdown
 - [x] Async handler support (Promise<Response>)
-- [ ] onError callback
+- [x] onError callback
 - [ ] TLS/HTTPS support
 
 ---
@@ -312,11 +312,11 @@ Checklist:
 ## Phase 9: Performance & Stability
 
 - [ ] V8 snapshot support (faster startup)
-- [ ] Worker threads (`new Worker()`)
+- [x] Worker threads (`new Worker()`)
 - [ ] Memory limits (`--max-memory`)
 - [ ] CPU time limits
-- [ ] Graceful shutdown (SIGINT, SIGTERM)
-- [ ] Permissions system (`--allow-read`, `--allow-net`, etc.)
+- [x] Graceful shutdown (SIGINT, SIGTERM)
+- [x] Permissions system (`--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`, `--allow-env`, `--allow-all`)
 
 ---
 
@@ -340,7 +340,16 @@ Checklist:
 - Watch mode, fmt, check, test commands implemented
 - Remaining: source maps, compile to binary, better stack traces
 
-**Next up: Phase 9: Performance & Stability**
+**Hono Framework Compatibility** → ✅ COMPLETE
+- Full URL support for Request objects
+- Fixed Response status handling for undefined values
+- Tested with actual Hono npm package
+
+**Phase 9: Performance & Stability** → IN PROGRESS
+- Graceful shutdown (SIGINT/SIGTERM) implemented
+- Worker threads (`new Worker()`) implemented
+- Permissions system (`--allow-read`, `--allow-write`, `--allow-net`, `--allow-run`, `--allow-env`, `--allow-all`) implemented
+- Next: Memory limits, V8 snapshots
 
 ## Implementation Guide
 

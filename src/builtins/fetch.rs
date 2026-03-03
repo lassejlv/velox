@@ -1,4 +1,5 @@
 use crate::event_loop::EventLoopHandle;
+use crate::permissions;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,6 +31,13 @@ fn fetch(
     } else {
         args.get(0).to_rust_string_lossy(scope)
     };
+
+    // Extract host from URL for permission check
+    let host = extract_host(&url);
+    if let Err(e) = permissions::check_net(&host) {
+        throw_error(scope, &e);
+        return;
+    }
 
     let mut method = "GET".to_string();
     let mut body: Option<String> = None;
@@ -238,4 +246,31 @@ fn throw_error(scope: &mut v8::HandleScope, message: &str) {
     let msg = v8::String::new(scope, message).unwrap();
     let exception = v8::Exception::error(scope, msg);
     scope.throw_exception(exception);
+}
+
+/// Extract host (with optional port) from a URL for permission checking
+fn extract_host(url: &str) -> String {
+    // Simple URL parsing - handle http://, https://, etc.
+    let url = url.trim();
+    let without_scheme = if let Some(pos) = url.find("://") {
+        &url[pos + 3..]
+    } else {
+        url
+    };
+
+    // Get the host part (before path)
+    let host_part = if let Some(pos) = without_scheme.find('/') {
+        &without_scheme[..pos]
+    } else {
+        without_scheme
+    };
+
+    // Remove user:pass@ if present
+    let host_port = if let Some(pos) = host_part.find('@') {
+        &host_part[pos + 1..]
+    } else {
+        host_part
+    };
+
+    host_port.to_string()
 }

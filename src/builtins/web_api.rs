@@ -788,8 +788,11 @@ fn response_constructor(
             // status
             let status_key = v8::String::new(scope, "status").unwrap();
             if let Some(status_val) = opts_obj.get(scope, status_key.into()) {
-                if let Some(s) = status_val.uint32_value(scope) {
-                    status = s as u16;
+                // Only convert to u16 if not undefined (undefined becomes 0 which is wrong)
+                if !status_val.is_undefined() && !status_val.is_null() {
+                    if let Some(s) = status_val.uint32_value(scope) {
+                        status = s as u16;
+                    }
                 }
             }
 

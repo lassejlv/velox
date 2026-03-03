@@ -2,8 +2,10 @@ mod builtins;
 mod colors;
 mod event_loop;
 mod modules;
+mod permissions;
 mod repl;
 mod runtime;
+mod shutdown;
 mod transpiler;
 mod watch;
 
@@ -14,6 +16,9 @@ use std::path::Path;
 use std::process;
 
 fn main() {
+    // Initialize graceful shutdown handler (Ctrl+C)
+    shutdown::init();
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -30,17 +35,21 @@ fn main() {
                 process::exit(1);
             }
 
-            // Parse flags and collect script arguments
+            // Parse permission flags first
+            let (perms, remaining_args) = permissions::parse_flags(&args[2..]);
+            permissions::init(perms);
+
+            // Parse other flags and collect script arguments
             let mut import_map_path: Option<String> = None;
             let mut script_path: Option<String> = None;
             let mut script_args: Vec<String> = Vec::new();
             let mut watch_mode = false;
-            let mut i = 2;
+            let mut i = 0;
 
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--import-map" if i + 1 < args.len() => {
-                        import_map_path = Some(args[i + 1].clone());
+            while i < remaining_args.len() {
+                match remaining_args[i].as_str() {
+                    "--import-map" if i + 1 < remaining_args.len() => {
+                        import_map_path = Some(remaining_args[i + 1].clone());
                         i += 2;
                     }
                     "--watch" | "-w" => {
@@ -48,11 +57,11 @@ fn main() {
                         i += 1;
                     }
                     _ if script_path.is_none() => {
-                        script_path = Some(args[i].clone());
+                        script_path = Some(remaining_args[i].clone());
                         i += 1;
                     }
                     _ => {
-                        script_args.push(args[i].clone());
+                        script_args.push(remaining_args[i].clone());
                         i += 1;
                     }
                 }
@@ -82,6 +91,9 @@ fn main() {
         "test" => {
             run_test(&args[2..]);
         }
+        "init" => {
+            run_init(&args[2..]);
+        }
         "repl" => {
             repl::run();
         }
@@ -105,6 +117,7 @@ fn print_usage(program: &str) {
     );
     eprintln!("\n{}Commands:{}", colors::BOLD, colors::RESET);
     eprintln!("  run <file>    Run a JavaScript/TypeScript file");
+    eprintln!("  init          Initialize a new Velox project");
     eprintln!("  fmt [files]   Format source files");
     eprintln!("  check [files] Type-check source files");
     eprintln!("  test [files]  Run test files");
@@ -112,6 +125,13 @@ fn print_usage(program: &str) {
     eprintln!("\n{}Options:{}", colors::BOLD, colors::RESET);
     eprintln!("  --watch, -w            Watch for file changes and re-run");
     eprintln!("  --import-map <file>    Load import map from JSON file");
+    eprintln!("\n{}Permissions:{}", colors::BOLD, colors::RESET);
+    eprintln!("  --allow-all, -A        Allow all permissions");
+    eprintln!("  --allow-read[=<path>]  Allow file system read access");
+    eprintln!("  --allow-write[=<path>] Allow file system write access");
+    eprintln!("  --allow-net[=<host>]   Allow network access");
+    eprintln!("  --allow-run[=<prog>]   Allow running subprocesses");
+    eprintln!("  --allow-env[=<var>]    Allow environment variable access");
     eprintln!("\nRun with no arguments to start REPL");
 }
 
@@ -381,4 +401,213 @@ fn is_test_file(path: &str) -> bool {
         || name.contains("_test.")
         || name.starts_with("test_"))
         && is_formattable(path)
+}
+
+fn run_init(args: &[String]) {
+    // Get project name from args or current directory name
+    let project_name = if !args.is_empty() {
+        args[0].clone()
+    } else {
+        env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "velox-project".to_string())
+    };
+
+    // Check if we're initializing in a new directory or current directory
+    let project_dir = if !args.is_empty() {
+        let dir = Path::new(&args[0]);
+        if !dir.exists() {
+            if let Err(e) = fs::create_dir_all(dir) {
+                eprintln!(
+                    "{}",
+                    colors::error(&format!("Failed to create directory: {}", e))
+                );
+                process::exit(1);
+            }
+        }
+        dir.to_path_buf()
+    } else {
+        env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf())
+    };
+
+    println!(
+        "{}Initializing Velox project in {}{}",
+        colors::CYAN,
+        project_dir.display(),
+        colors::RESET
+    );
+
+    // Create velox.d.ts
+    let velox_dts = include_str!("../templates/velox.d.ts");
+    let velox_dts_path = project_dir.join("velox.d.ts");
+    if !velox_dts_path.exists() {
+        if let Err(e) = fs::write(&velox_dts_path, velox_dts) {
+            eprintln!(
+                "{}",
+                colors::error(&format!("Failed to create velox.d.ts: {}", e))
+            );
+        } else {
+            println!("  {} velox.d.ts", colors::green("created"));
+        }
+    } else {
+        println!(
+            "  {} velox.d.ts (already exists)",
+            colors::yellow("skipped")
+        );
+    }
+
+    // Create tsconfig.json
+    let tsconfig = format!(
+        r#"{{
+  "compilerOptions": {{
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": ["ES2022"],
+    "types": ["./velox.d.ts"]
+  }},
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}}
+"#
+    );
+    let tsconfig_path = project_dir.join("tsconfig.json");
+    if !tsconfig_path.exists() {
+        if let Err(e) = fs::write(&tsconfig_path, tsconfig) {
+            eprintln!(
+                "{}",
+                colors::error(&format!("Failed to create tsconfig.json: {}", e))
+            );
+        } else {
+            println!("  {} tsconfig.json", colors::green("created"));
+        }
+    } else {
+        println!(
+            "  {} tsconfig.json (already exists)",
+            colors::yellow("skipped")
+        );
+    }
+
+    // Create package.json if it doesn't exist
+    let package_json = format!(
+        r#"{{
+  "name": "{}",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {{
+    "start": "velox run main.ts",
+    "dev": "velox run --watch main.ts",
+    "test": "velox test",
+    "fmt": "velox fmt",
+    "check": "velox check"
+  }}
+}}
+"#,
+        project_name
+    );
+    let package_json_path = project_dir.join("package.json");
+    if !package_json_path.exists() {
+        if let Err(e) = fs::write(&package_json_path, package_json) {
+            eprintln!(
+                "{}",
+                colors::error(&format!("Failed to create package.json: {}", e))
+            );
+        } else {
+            println!("  {} package.json", colors::green("created"));
+        }
+    } else {
+        println!(
+            "  {} package.json (already exists)",
+            colors::yellow("skipped")
+        );
+    }
+
+    // Create main.ts entry file
+    let main_ts = r#"// Welcome to Velox!
+// Run with: velox run main.ts
+
+console.log("Hello from Velox!");
+
+// Example: Read environment variable
+const name = Velox.env.get("USER") || "world";
+console.log(`Hello, ${name}!`);
+
+// Example: File system
+// const content = await Velox.fs.readTextFile("./data.txt");
+
+// Example: HTTP server
+// Velox.serve({
+//   port: 3000,
+//   handler: (req) => new Response("Hello, World!"),
+//   onListen: ({ port }) => console.log(`Server running at http://localhost:${port}`),
+// });
+"#;
+    let main_ts_path = project_dir.join("main.ts");
+    if !main_ts_path.exists() {
+        if let Err(e) = fs::write(&main_ts_path, main_ts) {
+            eprintln!(
+                "{}",
+                colors::error(&format!("Failed to create main.ts: {}", e))
+            );
+        } else {
+            println!("  {} main.ts", colors::green("created"));
+        }
+    } else {
+        println!("  {} main.ts (already exists)", colors::yellow("skipped"));
+    }
+
+    // Create .gitignore if it doesn't exist
+    let gitignore = r#"# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+"#;
+    let gitignore_path = project_dir.join(".gitignore");
+    if !gitignore_path.exists() {
+        if let Err(e) = fs::write(&gitignore_path, gitignore) {
+            eprintln!(
+                "{}",
+                colors::error(&format!("Failed to create .gitignore: {}", e))
+            );
+        } else {
+            println!("  {} .gitignore", colors::green("created"));
+        }
+    } else {
+        println!(
+            "  {} .gitignore (already exists)",
+            colors::yellow("skipped")
+        );
+    }
+
+    println!(
+        "\n{}Done!{} Your Velox project is ready.",
+        colors::GREEN,
+        colors::RESET
+    );
+    println!("\nNext steps:");
+    println!("  {}cd {}{}", colors::CYAN, project_name, colors::RESET);
+    println!("  {}velox run main.ts{}", colors::CYAN, colors::RESET);
+    println!(
+        "\nRun {}velox --help{} for more commands.",
+        colors::CYAN,
+        colors::RESET
+    );
 }

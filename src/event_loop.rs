@@ -1,5 +1,7 @@
 use crate::builtins::serve;
 use crate::builtins::timers;
+use crate::builtins::worker;
+use crate::shutdown;
 use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -47,8 +49,18 @@ impl EventLoop {
         use std::sync::atomic::Ordering;
 
         loop {
+            // Check for shutdown signal (Ctrl+C)
+            if shutdown::is_shutdown_requested() {
+                // Shutdown all active servers gracefully
+                serve::shutdown_all_servers();
+                break;
+            }
+
             // Poll HTTP servers for incoming requests
             serve::poll_servers(scope);
+
+            // Poll workers for messages
+            worker::poll_workers(scope);
 
             match self.receiver.try_recv() {
                 Ok(EventLoopMessage::Promise(id, callback)) => {
@@ -67,8 +79,10 @@ impl EventLoop {
                     self.active_count.fetch_sub(1, Ordering::SeqCst);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // Check if we have active promises/timers OR active servers
-                    if self.active_count.load(Ordering::SeqCst) == 0 && !serve::has_active_servers()
+                    // Check if we have active promises/timers OR active servers OR active workers
+                    if self.active_count.load(Ordering::SeqCst) == 0
+                        && !serve::has_active_servers()
+                        && !worker::has_active_workers()
                     {
                         break;
                     }

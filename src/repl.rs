@@ -1,6 +1,7 @@
 use crate::builtins;
 use crate::colors;
 use crate::event_loop::EventLoop;
+use crate::shutdown;
 use crate::transpiler;
 use rusty_v8 as v8;
 use rustyline::error::ReadlineError;
@@ -154,11 +155,14 @@ fn run_repl(scope: &mut v8::ContextScope<v8::HandleScope>, event_loop: &EventLoo
                 event_loop.run(scope);
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl+C - clear current input
+                // Ctrl+C - clear current input or exit
                 if in_multiline {
                     input_buffer.clear();
                     in_multiline = false;
                     println!("^C");
+                } else if shutdown::is_shutdown_requested() {
+                    // User pressed Ctrl+C via our global handler, exit REPL
+                    break;
                 } else {
                     println!("^C (use .exit to quit)");
                 }
