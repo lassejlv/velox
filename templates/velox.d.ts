@@ -49,14 +49,14 @@ declare namespace Velox {
     function readDirSync(path: string): DirEntry[];
     function mkdir(
       path: string,
-      options?: { recursive?: boolean }
+      options?: { recursive?: boolean },
     ): Promise<void>;
     function mkdirSync(path: string, options?: { recursive?: boolean }): void;
 
     // File operations
     function remove(
       path: string,
-      options?: { recursive?: boolean }
+      options?: { recursive?: boolean },
     ): Promise<void>;
     function removeSync(path: string, options?: { recursive?: boolean }): void;
     function rename(from: string, to: string): Promise<void>;
@@ -69,6 +69,13 @@ declare namespace Velox {
     function existsSync(path: string): boolean;
 
     // Links
+    /**
+     * Creates a symbolic link.
+     *
+     * On Windows, this may require Developer Mode or elevated privileges,
+     * and the runtime chooses file vs directory symlink behavior based on
+     * whether the target currently resolves to a directory.
+     */
     function symlink(target: string, path: string): Promise<void>;
     function readLink(path: string): Promise<string>;
   }
@@ -104,6 +111,12 @@ interface FileInfo {
   mtime: Date | null;
   atime: Date | null;
   birthtime: Date | null;
+  /**
+   * Platform-dependent file mode.
+   *
+   * On Unix, this is the native permission/mode bits from the filesystem.
+   * On Windows, this is a simplified value derived from the readonly flag.
+   */
   mode: number;
 }
 

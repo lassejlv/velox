@@ -69,6 +69,8 @@ namespace Velox.fs {
   existsSync(path: string): boolean
 
   // Links
+  // Note: symlink behavior is platform-dependent.
+  // On Windows, creating symlinks may require Developer Mode or elevated privileges.
   symlink(target: string, path: string): Promise<void>
   readLink(path: string): Promise<string>
 }
@@ -82,6 +84,9 @@ interface FileInfo {
   mtime: Date | null
   atime: Date | null
   birthtime: Date | null
+  // Note: mode is platform-dependent.
+  // On Unix, this is the native file mode/permission bits.
+  // On Windows, this is an approximation and does not map to full Unix permissions.
   mode: number
 }
 

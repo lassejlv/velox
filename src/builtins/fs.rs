@@ -4,7 +4,6 @@ use rusty_v8 as v8;
 use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -915,7 +914,7 @@ impl FileInfoData {
             mtime: system_time_to_ms(metadata.modified().ok()),
             atime: system_time_to_ms(metadata.accessed().ok()),
             birthtime: system_time_to_ms(metadata.created().ok()),
-            mode: metadata.mode(),
+            mode: file_mode(metadata),
         }
     }
 }
@@ -926,6 +925,21 @@ fn system_time_to_ms(time: Option<SystemTime>) -> Option<f64> {
             .ok()
             .map(|d| d.as_secs_f64() * 1000.0)
     })
+}
+
+#[cfg(unix)]
+fn file_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.mode()
+}
+
+#[cfg(windows)]
+fn file_mode(metadata: &fs::Metadata) -> u32 {
+    if metadata.permissions().readonly() {
+        0o444
+    } else {
+        0o666
+    }
 }
 
 fn create_file_info_obj<'s>(
@@ -1138,27 +1152,39 @@ fn symlink(
         let handle = handle.as_ref().unwrap();
         let id = handle.register_resolver(scope, resolver);
 
-        handle.spawn(id, move || {
-            match std::os::unix::fs::symlink(&target, &path) {
-                Ok(()) => Box::new(
-                    |scope: &mut v8::HandleScope, resolver: v8::Local<v8::PromiseResolver>| {
-                        let undefined = v8::undefined(scope);
-                        resolver.resolve(scope, undefined.into());
+        handle.spawn(id, move || match create_symlink(&target, &path) {
+            Ok(()) => Box::new(
+                |scope: &mut v8::HandleScope, resolver: v8::Local<v8::PromiseResolver>| {
+                    let undefined = v8::undefined(scope);
+                    resolver.resolve(scope, undefined.into());
+                },
+            ),
+            Err(e) => {
+                let msg = format!("Failed to create symlink '{}' -> '{}': {}", path, target, e);
+                Box::new(
+                    move |scope: &mut v8::HandleScope, resolver: v8::Local<v8::PromiseResolver>| {
+                        let err = v8::String::new(scope, &msg).unwrap();
+                        resolver.reject(scope, err.into());
                     },
-                ),
-                Err(e) => {
-                    let msg = format!("Failed to create symlink '{}' -> '{}': {}", path, target, e);
-                    Box::new(
-                        move |scope: &mut v8::HandleScope,
-                              resolver: v8::Local<v8::PromiseResolver>| {
-                            let err = v8::String::new(scope, &msg).unwrap();
-                            resolver.reject(scope, err.into());
-                        },
-                    )
-                }
+                )
             }
         });
     });
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &str, path: &str) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &str, path: &str) -> std::io::Result<()> {
+    let target_path = Path::new(target);
+    if target_path.is_dir() {
+        std::os::windows::fs::symlink_dir(target, path)
+    } else {
+        std::os::windows::fs::symlink_file(target, path)
+    }
 }
 
 fn read_link(

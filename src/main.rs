@@ -30,82 +30,7 @@ fn main() {
 
     match args[1].as_str() {
         "run" => {
-            if args.len() < 3 {
-                eprintln!("{}", colors::error("missing file argument"));
-                print_usage(&args[0]);
-                process::exit(1);
-            }
-
-            // Parse permission flags first
-            let (perms, remaining_args) = permissions::parse_flags(&args[2..]);
-            permissions::init(perms);
-
-            // Parse other flags and collect script arguments
-            let mut import_map_path: Option<String> = None;
-            let mut script_path: Option<String> = None;
-            let mut script_args: Vec<String> = Vec::new();
-            let mut watch_mode = false;
-            let mut i = 0;
-
-            while i < remaining_args.len() {
-                match remaining_args[i].as_str() {
-                    "--import-map" if i + 1 < remaining_args.len() => {
-                        import_map_path = Some(remaining_args[i + 1].clone());
-                        i += 2;
-                    }
-                    "--watch" | "-w" => {
-                        watch_mode = true;
-                        i += 1;
-                    }
-                    _ if script_path.is_none() => {
-                        script_path = Some(remaining_args[i].clone());
-                        i += 1;
-                    }
-                    _ => {
-                        script_args.push(remaining_args[i].clone());
-                        i += 1;
-                    }
-                }
-            }
-
-            let script_path = match script_path {
-                Some(p) => p,
-                None => {
-                    eprintln!("{}", colors::error("missing file argument"));
-                    print_usage(&args[0]);
-                    process::exit(1);
-                }
-            };
-
-            if Path::new(&script_path).is_file() {
-                if watch_mode {
-                    watch::run_watch(&script_path, script_args, import_map_path);
-                } else {
-                    run_file(&script_path, script_args, import_map_path);
-                }
-            } else {
-                if watch_mode || import_map_path.is_some() {
-                    eprintln!(
-                        "{}",
-                        colors::error(
-                            "--watch and --import-map are only supported when running a file path"
-                        )
-                    );
-                    process::exit(1);
-                }
-
-                match pkg::run_project_script(&script_path, &script_args) {
-                    Ok(code) => {
-                        if code != 0 {
-                            process::exit(code);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("{}", colors::error(&e));
-                        process::exit(1);
-                    }
-                }
-            }
+            run_target(&args[0], &args[2..]);
         }
         "fmt" => {
             run_fmt(&args[2..]);
@@ -141,12 +66,7 @@ fn main() {
             repl::run();
         }
         _ => {
-            eprintln!(
-                "{}",
-                colors::error(&format!("unknown command '{}'", args[1]))
-            );
-            print_usage(&args[0]);
-            process::exit(1);
+            run_target(&args[0], &args[1..]);
         }
     }
 }
@@ -160,7 +80,7 @@ fn print_usage(program: &str) {
     );
     eprintln!("\n{}Commands:{}", colors::BOLD, colors::RESET);
     eprintln!("  run <target>  Run a file or package.json script");
-    eprintln!("  init          Initialize a new Velox project");
+    eprintln!("  init [dir]    Initialize a new Velox project in the current directory or a target directory");
     eprintln!("  add <pkg>     Add package(s) to package.json/node_modules");
     eprintln!("  install       Install dependencies from package.json");
     eprintln!("  cache         Manage package cache (dir/info/clear)");
@@ -174,6 +94,11 @@ fn print_usage(program: &str) {
     eprintln!("\n{}Options:{}", colors::BOLD, colors::RESET);
     eprintln!("  --watch, -w            Watch for file changes and re-run");
     eprintln!("  --import-map <file>    Load import map from JSON file");
+    eprintln!("\n{}Shortcuts:{}", colors::BOLD, colors::RESET);
+    eprintln!(
+        "  {0} <target> [args]    Same as `{0} run <target> [args]`",
+        program
+    );
     eprintln!("\n{}Permissions:{}", colors::BOLD, colors::RESET);
     eprintln!("  --allow-all, -A        Allow all permissions");
     eprintln!("  --allow-read[=<path>]  Allow file system read access");
@@ -182,6 +107,85 @@ fn print_usage(program: &str) {
     eprintln!("  --allow-run[=<prog>]   Allow running subprocesses");
     eprintln!("  --allow-env[=<var>]    Allow environment variable access");
     eprintln!("\nRun with no arguments to start REPL");
+}
+
+fn run_target(program: &str, args: &[String]) {
+    if args.is_empty() {
+        eprintln!("{}", colors::error("missing file argument"));
+        print_usage(program);
+        process::exit(1);
+    }
+
+    // Parse permission flags first
+    let (perms, remaining_args) = permissions::parse_flags(args);
+    permissions::init(perms);
+
+    // Parse other flags and collect script arguments
+    let mut import_map_path: Option<String> = None;
+    let mut script_path: Option<String> = None;
+    let mut script_args: Vec<String> = Vec::new();
+    let mut watch_mode = false;
+    let mut i = 0;
+
+    while i < remaining_args.len() {
+        match remaining_args[i].as_str() {
+            "--import-map" if i + 1 < remaining_args.len() => {
+                import_map_path = Some(remaining_args[i + 1].clone());
+                i += 2;
+            }
+            "--watch" | "-w" => {
+                watch_mode = true;
+                i += 1;
+            }
+            _ if script_path.is_none() => {
+                script_path = Some(remaining_args[i].clone());
+                i += 1;
+            }
+            _ => {
+                script_args.push(remaining_args[i].clone());
+                i += 1;
+            }
+        }
+    }
+
+    let script_path = match script_path {
+        Some(p) => p,
+        None => {
+            eprintln!("{}", colors::error("missing file argument"));
+            print_usage(program);
+            process::exit(1);
+        }
+    };
+
+    if Path::new(&script_path).is_file() {
+        if watch_mode {
+            watch::run_watch(&script_path, script_args, import_map_path);
+        } else {
+            run_file(&script_path, script_args, import_map_path);
+        }
+    } else {
+        if watch_mode || import_map_path.is_some() {
+            eprintln!(
+                "{}",
+                colors::error(
+                    "--watch and --import-map are only supported when running a file path"
+                )
+            );
+            process::exit(1);
+        }
+
+        match pkg::run_project_script(&script_path, &script_args) {
+            Ok(code) => {
+                if code != 0 {
+                    process::exit(code);
+                }
+            }
+            Err(e) => {
+                eprintln!("{}", colors::error(&e));
+                process::exit(1);
+            }
+        }
+    }
 }
 
 fn run_file(path: &str, script_args: Vec<String>, import_map_path: Option<String>) {
@@ -580,7 +584,7 @@ fn run_create(args: &[String]) {
     }
 
     if matches!(args[0].as_str(), "-h" | "--help") {
-        println!("Usage: velox create <name> [args...]");
+        eprintln!("\nUsage: velox create <name> [args...]");
         println!("Example: velox create vite my-app");
         println!("Runs: velox x create-<name> [args...]");
         return;
@@ -910,8 +914,10 @@ Thumbs.db
         colors::RESET
     );
     println!("\nNext steps:");
-    println!("  {}cd {}{}", colors::CYAN, project_name, colors::RESET);
-    println!("  {}velox run main.ts{}", colors::CYAN, colors::RESET);
+    if !args.is_empty() {
+        println!("  {}cd {}{}", colors::CYAN, args[0], colors::RESET);
+    }
+    println!("  {}velox main.ts{}", colors::CYAN, colors::RESET);
     println!(
         "\nRun {}velox --help{} for more commands.",
         colors::CYAN,
