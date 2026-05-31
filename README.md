@@ -19,6 +19,7 @@ Use `make`, not plain `cargo install` — Apple Silicon needs a JIT entitlement 
 ## Quick start
 
 ```sh
+velox init my-app                   # scaffold a new project
 velox app.ts                        # run a file
 velox -e 'console.log("hi")'        # inline eval
 velox                               # REPL
@@ -26,6 +27,10 @@ velox                               # REPL
 cargo run -- examples/http-server.ts
 curl localhost:3000
 ```
+
+`velox init [dir]` lays down `src/main.ts`, `package.json`, `tsconfig.json`, a
+copy of `velox.d.ts`, and `.gitignore`, then installs `@types/node` (so
+`node:*` imports type-check). Pass `--no-install` to skip npm.
 
 ## Documentation
 

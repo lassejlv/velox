@@ -4,6 +4,7 @@
 mod crypto;
 mod event_loop;
 mod fetch;
+mod init;
 mod inspect;
 mod module;
 mod node;
@@ -29,7 +30,8 @@ use crate::runtime::Runtime;
 #[command(
     name = "velox",
     version,
-    about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore"
+    about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore",
+    after_help = "Commands:\n  init [DIR]    Scaffold a new velox project (see `velox init --help`)"
 )]
 struct Cli {
     /// Script to run (.ts/.tsx/.js/.jsx). Omit to start the REPL.
@@ -49,6 +51,19 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    // `velox init [dir]` is handled before clap so it doesn't collide with the
+    // positional `file` arg (and `velox script.ts` keeps working unchanged).
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.get(1).map(String::as_str) == Some("init") {
+        if raw.iter().any(|a| a == "-h" || a == "--help") {
+            println!("Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node via npm.");
+            return ExitCode::SUCCESS;
+        }
+        let no_install = raw.iter().any(|a| a == "--no-install");
+        let dir = raw.get(2).filter(|a| !a.starts_with('-')).map(String::as_str);
+        return init::run(dir, no_install);
+    }
+
     let cli = Cli::parse();
     if let Some(path) = &cli.env_file {
         load_env_file(path);

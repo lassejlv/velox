@@ -2,6 +2,19 @@
 
 [← Getting started](getting-started.md) · [Docs home](README.md) · **Usage** · [Next: Examples →](examples.md)
 
+## Start a project
+
+```sh
+velox init            # scaffold in the current directory
+velox init my-app     # scaffold in ./my-app
+```
+
+`init` writes `src/main.ts` (a starter HTTP server), `package.json` (with
+`dev`/`start` scripts), `tsconfig.json`, a copy of `velox.d.ts`, and
+`.gitignore`, then runs `npm install -D @types/node` so `node:*` imports
+type-check in your editor. Existing files are never overwritten, so it's safe to
+re-run. Pass `--no-install` to skip the npm step.
+
 ## Run a file
 
 ```sh
@@ -17,6 +30,7 @@ Relative `import`s and `node_modules` are resolved and bundled automatically.
 | Flag | Description |
 |------|-------------|
 | *(no args)* | Start the REPL |
+| `init [DIR]` | Scaffold a new project (`--no-install` to skip npm) |
 | `FILE` | Run a script |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |
 | `-w`, `--watch` | Re-run when the entry or any bundled import changes |
