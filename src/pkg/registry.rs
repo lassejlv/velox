@@ -178,11 +178,36 @@ fn dechunk(mut data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Fetch and parse the (abbreviated) package document for `name`.
+/// Fetch and parse the (abbreviated) package document for `name`. Served from
+/// the global metadata cache when fresh; on a network failure, falls back to a
+/// stale cache entry if one exists (so installs work offline).
 pub fn fetch_metadata(name: &str) -> Result<serde_json::Value, String> {
+    use super::cache;
+
+    if let Some(cached) = cache::read_metadata(name)
+        && let Ok(value) = serde_json::from_slice(&cached)
+    {
+        return Ok(value);
+    }
+
     let url = format!("{}/{}", registry_base(), encode_name(name));
-    let body = https_get(&url, "application/vnd.npm.install-v1+json")?;
-    serde_json::from_slice(&body).map_err(|e| format!("parse metadata for {name}: {e}"))
+    match https_get(&url, "application/vnd.npm.install-v1+json") {
+        Ok(body) => {
+            let value = serde_json::from_slice(&body)
+                .map_err(|e| format!("parse metadata for {name}: {e}"))?;
+            cache::write_metadata(name, &body);
+            Ok(value)
+        }
+        Err(net_err) => {
+            // Offline fallback: any cached copy beats failing outright.
+            if let Some(stale) = cache::read_metadata_stale(name)
+                && let Ok(value) = serde_json::from_slice(&stale)
+            {
+                return Ok(value);
+            }
+            Err(net_err)
+        }
+    }
 }
 
 /// Percent-encode a scoped package name's `/` (e.g. `@scope/pkg` → `@scope%2fpkg`).

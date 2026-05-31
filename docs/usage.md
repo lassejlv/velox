@@ -34,10 +34,13 @@ and keeps `package.json` tidy. Point it at a private registry with
 `$VELOX_REGISTRY` (or `$npm_config_registry`). Install scripts are **not** run.
 
 **Parallel + cached.** Registry metadata and tarball downloads both fan out
-across worker threads. Downloaded tarballs go into a global cache
-(`~/.velox/cache`, override with `$VELOX_CACHE`) shared by every project, so a
-package is fetched from the network at most once. With a warm cache, installing
-from a lockfile is near-instant and works offline.
+across worker threads. Both go into a global cache (`~/.velox/cache`, override
+with `$VELOX_CACHE`) shared by every project: tarballs are content-cached
+forever (fetched at most once machine-wide), and package metadata is cached with
+a freshness TTL (default 10 min, `$VELOX_METADATA_TTL` seconds to change, `0` to
+disable). So re-resolving the same graph — every `add`/`install` without a
+lockfile — is near-instant on repeat instead of dozens of network round-trips,
+and installs work offline from cache.
 
 **Lockfile.** Resolution is pinned to `velox.lock` (YAML). When it exists,
 `velox install` installs exactly those versions — no resolution, fully
@@ -64,6 +67,31 @@ velox script.js
 ```
 
 Relative `import`s and `node_modules` are resolved and bundled automatically.
+
+### Default-export server (Bun-style)
+
+If a script's `export default` is a server object (`{ port?, fetch }`) or a web
+app exposing `.fetch` (Hono, Elysia, …), velox serves it automatically — no
+`Velox.serve(...)` or `.listen()` needed:
+
+```ts
+// app.ts  →  velox app.ts  →  serving on http://localhost:3000
+import { Hono } from "hono";
+const app = new Hono();
+app.get("/", (c) => c.text("hi"));
+export default app;
+```
+
+```ts
+// or the plain object form
+export default {
+  port: 3000,
+  fetch(req) { return new Response("hi"); },
+};
+```
+
+See [`examples/serve-default.ts`](../examples/serve-default.ts). A default export
+without a `fetch` method (or no default export) starts no server.
 
 ## CLI flags
 

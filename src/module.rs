@@ -551,7 +551,7 @@ impl Graph {
                const module = {{ exports: {{}} }};\n  \
                __cache['{0}'] = module;\n  \
                Promise.resolve(__modules['{0}'](module, module.exports, require))\n    \
-                 .then(undefined, function (e) {{ __velox_uncaught(String(e) + (e && e.stack ? '\\n' + String(e.stack) : '')); }});\n\
+                 .then(function () {{ __velox_maybe_serve(module.exports); }}, function (e) {{ __velox_uncaught(String(e) + (e && e.stack ? '\\n' + String(e.stack) : '')); }});\n\
              }})();\n",
             entry_id
         ));
@@ -674,6 +674,21 @@ function __velox_ns(m) {
 // the bundle registry (JSC's own module loader can't see node_modules).
 function __velox_import(id) {
   return Promise.resolve().then(function () { return __velox_ns(require(id)); });
+}
+// Bun-style auto-serve: if the entry module's `export default` is a server
+// object (`{ port?, fetch }`) or a web-framework app exposing `.fetch`
+// (Hono/Elysia/…), start a server for it automatically. Opt out by exporting
+// something without a `fetch` method, or just call `.listen()`/`Velox.serve`
+// yourself.
+function __velox_maybe_serve(exports) {
+  var def = exports && exports.default;
+  if (!def || (typeof def !== 'object' && typeof def !== 'function')) return;
+  if (typeof def.fetch !== 'function') return;
+  if (globalThis.__velox_served) return;
+  if (globalThis.Velox && typeof globalThis.Velox.serve === 'function') {
+    globalThis.__velox_served = true;
+    globalThis.Velox.serve(def);
+  }
 }
 "#;
 

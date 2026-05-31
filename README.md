@@ -28,6 +28,17 @@ cargo run -- examples/http-server.ts
 curl localhost:3000
 ```
 
+A script whose `export default` is a server object (`{ port?, fetch }`) or a web
+app with a `.fetch` (Hono, Elysia, …) is **served automatically** — Bun-style,
+no `Velox.serve(...)` needed (see [`examples/serve-default.ts`](examples/serve-default.ts)):
+
+```ts
+import { Hono } from "hono";
+const app = new Hono();
+app.get("/", (c) => c.text("hi"));
+export default app;            // velox app.ts → http://localhost:3000
+```
+
 `velox init [dir]` lays down `src/main.ts`, `package.json`, `tsconfig.json`, a
 copy of `velox.d.ts`, and `.gitignore`, then installs `@types/node` with velox's
 own package manager (so `node:*` imports type-check). Pass `--no-install` to
