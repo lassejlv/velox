@@ -75,37 +75,62 @@ function promisify(syncFn) {
 
 // --- streaming (one-shot) --------------------------------------------------
 
-// Create a Transform that accumulates every chunk and emits the full codec
+// A Transform subclass that accumulates every chunk and emits the full codec
 // output once the writable side ends. Not incremental — fine for whole files.
-function makeTransform(syncFn) {
-  return function (options) {
-    var chunks = [];
-    return new Transform({
-      transform: function (chunk, encoding, cb) {
-        chunks.push(globalThis.Buffer.isBuffer(chunk)
-          ? chunk
-          : globalThis.Buffer.from(chunk, encoding || 'utf8'));
-        cb();
-      },
-      flush: function (cb) {
-        var out;
-        try { out = syncFn(globalThis.Buffer.concat(chunks)); }
-        catch (e) { cb(e); return; }
-        cb(null, out);
-      },
-    });
+// These are real constructor classes (Node exposes `zlib.Inflate`/`Deflate`/…);
+// libraries like pngjs do `util.inherits(MyInflate, zlib.Inflate)`.
+function makeZlibClass(syncFn) {
+  function ZlibStream(options) {
+    if (!(this instanceof ZlibStream)) return new ZlibStream(options);
+    Transform.call(this, options);
+    this._chunks = [];
+    this._zlibSync = syncFn;
+    this.bytesWritten = 0;
+  }
+  ZlibStream.prototype = Object.create(Transform.prototype);
+  ZlibStream.prototype.constructor = ZlibStream;
+  ZlibStream.prototype._transform = function (chunk, encoding, cb) {
+    var buf = globalThis.Buffer.isBuffer(chunk)
+      ? chunk
+      : globalThis.Buffer.from(chunk, encoding || 'utf8');
+    this._chunks.push(buf);
+    this.bytesWritten += buf.length;
+    cb();
   };
+  ZlibStream.prototype._flush = function (cb) {
+    var out;
+    try { out = this._zlibSync(globalThis.Buffer.concat(this._chunks)); }
+    catch (e) { cb(e); return; }
+    cb(null, out);
+  };
+  // Node's no-op tuning methods.
+  ZlibStream.prototype.params = function (level, strategy, cb) { if (cb) queueMicrotask(cb); };
+  ZlibStream.prototype.reset = function () { this._chunks = []; this.bytesWritten = 0; };
+  ZlibStream.prototype.flush = function (kind, cb) { if (typeof kind === 'function') { kind(); } else if (cb) cb(); };
+  return ZlibStream;
 }
 
-var createGzip = makeTransform(gzipSync);
-var createGunzip = makeTransform(gunzipSync);
-var createDeflate = makeTransform(deflateSync);
-var createInflate = makeTransform(inflateSync);
-var createDeflateRaw = makeTransform(deflateRawSync);
-var createInflateRaw = makeTransform(inflateRawSync);
-var createUnzip = makeTransform(unzipSync);
-var createBrotliCompress = makeTransform(brotliCompressSync);
-var createBrotliDecompress = makeTransform(brotliDecompressSync);
+// The class constructors (Node-named).
+var Gzip = makeZlibClass(gzipSync);
+var Gunzip = makeZlibClass(gunzipSync);
+var Deflate = makeZlibClass(deflateSync);
+var Inflate = makeZlibClass(inflateSync);
+var DeflateRaw = makeZlibClass(deflateRawSync);
+var InflateRaw = makeZlibClass(inflateRawSync);
+var Unzip = makeZlibClass(unzipSync);
+var BrotliCompress = makeZlibClass(brotliCompressSync);
+var BrotliDecompress = makeZlibClass(brotliDecompressSync);
+
+// The `create*` factories build an instance of the matching class.
+function createGzip(o) { return new Gzip(o); }
+function createGunzip(o) { return new Gunzip(o); }
+function createDeflate(o) { return new Deflate(o); }
+function createInflate(o) { return new Inflate(o); }
+function createDeflateRaw(o) { return new DeflateRaw(o); }
+function createInflateRaw(o) { return new InflateRaw(o); }
+function createUnzip(o) { return new Unzip(o); }
+function createBrotliCompress(o) { return new BrotliCompress(o); }
+function createBrotliDecompress(o) { return new BrotliDecompress(o); }
 
 // --- constants & codes -----------------------------------------------------
 
@@ -200,6 +225,17 @@ module.exports = {
   createDeflateRaw: createDeflateRaw,
   createInflateRaw: createInflateRaw,
   createUnzip: createUnzip,
+
+  // Class constructors (Node exposes these; pngjs et al. subclass them).
+  Gzip: Gzip,
+  Gunzip: Gunzip,
+  Deflate: Deflate,
+  Inflate: Inflate,
+  DeflateRaw: DeflateRaw,
+  InflateRaw: InflateRaw,
+  Unzip: Unzip,
+  BrotliCompress: BrotliCompress,
+  BrotliDecompress: BrotliDecompress,
 
   constants: constants,
   codes: codes,

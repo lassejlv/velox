@@ -47,4 +47,27 @@ exports.availableParallelism = function () { return info().cpus || 1; };
 exports.userInfo = function () {
   return { username: '', homedir: exports.homedir(), shell: null, uid: -1, gid: -1 };
 };
-exports.constants = { signals: {}, errno: {}, priority: {} };
+// Darwin (macOS) signal numbers — velox is macOS-only.
+var signals = {
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6,
+  SIGBUS: 10, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 30, SIGSEGV: 11, SIGUSR2: 31,
+  SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 20, SIGCONT: 19, SIGSTOP: 17,
+  SIGTSTP: 18, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 16, SIGXCPU: 24, SIGXFSZ: 25,
+  SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 23, SIGINFO: 29, SIGSYS: 12,
+};
+// Darwin errno numbers (common subset).
+var errno = {
+  E2BIG: 7, EACCES: 13, EADDRINUSE: 48, EADDRNOTAVAIL: 49, EAGAIN: 35, EBADF: 9,
+  EBUSY: 16, ECANCELED: 89, ECONNABORTED: 53, ECONNREFUSED: 61, ECONNRESET: 54,
+  EEXIST: 17, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 65, EINTR: 4, EINVAL: 22,
+  EIO: 5, EISDIR: 21, ELOOP: 62, EMFILE: 24, EMLINK: 31, ENAMETOOLONG: 63,
+  ENFILE: 23, ENODEV: 19, ENOENT: 2, ENOMEM: 12, ENOSPC: 28, ENOTDIR: 20,
+  ENOTEMPTY: 66, ENOTSOCK: 38, ENOTTY: 25, ENXIO: 6, EPERM: 1, EPIPE: 32,
+  EROFS: 30, ESPIPE: 29, ESRCH: 3, ETIMEDOUT: 60, EXDEV: 18,
+};
+exports.constants = {
+  signals: signals,
+  errno: errno,
+  priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 },
+  UV_UDP_REUSEADDR: 4,
+};

@@ -76,6 +76,8 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("tls", include_str!("builtins/tls.js")),
     ("https", include_str!("builtins/https.js")),
     ("vm", include_str!("builtins/vm.js")),
+    ("v8", include_str!("builtins/v8.js")),
+    ("_http_common", include_str!("builtins/_http_common.js")),
 ];
 
 /// Installs the global `Buffer` (and `TextEncoder`/`TextDecoder`). Evaluated at
@@ -199,6 +201,7 @@ pub const GLOBALS_PRELUDE: &str = r#"
     env: env,
     argv: argv,
     argv0: argv[0] || "velox",
+    execArgv: [],
     execPath: argv[0] || "velox",
     pid: 1,
     ppid: 0,

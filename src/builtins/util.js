@@ -633,6 +633,23 @@ function parseArgs(config) {
   return result;
 }
 
+// Strip ANSI/VT control sequences (Node 16.11+: util.stripVTControlCharacters).
+// Built from escapes so the ESC/CSI bytes are explicit.
+var ANSI_RE = new RegExp(
+  '[\\u001B\\u009B][[\\]()#;?]*' +
+  '(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\\u0007)' +
+  '|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~]))',
+  'g'
+)
+function stripVTControlCharacters(str) {
+  if (typeof str !== 'string') throw new TypeError('The "str" argument must be of type string.');
+  return str.replace(ANSI_RE, '');
+}
+
+// Promise-with-resolvers style helper Node exposes as util.deferred-ish; and
+// styleText (Node 20.12+) for ANSI styling — minimal passthrough.
+function styleText(format, text) { return text; }
+
 module.exports = {
   // Core
   inspect,
@@ -647,6 +664,11 @@ module.exports = {
   types,
   isDeepStrictEqual,
   parseArgs,
+  stripVTControlCharacters,
+  styleText,
+  TextEncoder: globalThis.TextEncoder,
+  TextDecoder: globalThis.TextDecoder,
+  _extend: function (a, b) { return Object.assign(a, b); },
 
   // Legacy type checks
   isArray,

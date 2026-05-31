@@ -90,6 +90,27 @@ check("util.isDeepStrictEqual", () => { if (!util.isDeepStrictEqual({ a: [1] }, 
 check("util.types.isAsyncFunction", () => { if (!util.types.isAsyncFunction(async () => {})) throw new Error("iaf"); });
 check("util.parseArgs", () => { if (typeof util.parseArgs !== "function") throw new Error("no parseArgs"); const { values } = util.parseArgs({ args: ["--foo", "bar"], options: { foo: { type: "string" } }, strict: false }); if (values.foo !== "bar") throw new Error("pa=" + JSON.stringify(values)); });
 
+// zlib class constructors (Node exposes zlib.Inflate/Deflate/Gzip; pngjs et al.
+// subclass them via util.inherits). create* must produce instances of them.
+check("zlib class constructors", () => {
+  const zlib = require("node:zlib");
+  if (typeof zlib.Inflate !== "function" || typeof zlib.Gzip !== "function" || typeof zlib.BrotliCompress !== "function") throw new Error("missing class");
+  if (!(zlib.createGzip() instanceof zlib.Gzip)) throw new Error("createGzip not Gzip");
+  // util.inherits over it must work (the pngjs pattern).
+  function Sub(this: any, o: any) { (zlib.Inflate as any).call(this, o); }
+  util.inherits(Sub, zlib.Inflate);
+  if (!(new (Sub as any)() instanceof zlib.Inflate)) throw new Error("inherits");
+});
+check("zlib stream roundtrip", async () => {
+  const zlib = require("node:zlib");
+  const { pipeline } = require("node:stream/promises");
+  const { Readable, Writable } = require("node:stream");
+  const input = "zlib-stream-".repeat(50);
+  const out: any[] = [];
+  await pipeline(Readable.from([Buffer.from(input)]), zlib.createGzip(), new Writable({ write(c: any, e: any, cb: any) { out.push(c); cb(); } }));
+  if (zlib.gunzipSync(Buffer.concat(out)).toString() !== input) throw new Error("roundtrip");
+});
+
 await new Promise((r) => setTimeout(r, 100));
 let pass = 0, fail = 0;
 for (const [name, ok, err] of results) { if (ok) pass++; else { fail++; console.log("FAIL " + name + ": " + err); } }

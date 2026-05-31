@@ -48,6 +48,18 @@ function Socket(options) {
   this._corkBuf = [];
   this.bytesRead = 0;
   this.bytesWritten = 0;
+
+  // Node sockets carry a libuv `_handle` whose `_parentWrap` points back at the
+  // socket. velox has no libuv handle, but some libraries (got/http2-wrapper)
+  // read `socket._handle._parentWrap` to recover the JS socket — provide a
+  // minimal stand-in with no-op control methods.
+  var self = this;
+  this._handle = {
+    _parentWrap: self,
+    setNoDelay: function () {}, setKeepAlive: function () {},
+    readStart: function () {}, readStop: function () {},
+    ref: function () {}, unref: function () {},
+  };
 }
 inherits(Socket, EventEmitter);
 

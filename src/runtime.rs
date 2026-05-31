@@ -163,6 +163,8 @@ impl Runtime {
         // The `Velox` global (lazy node: builtins + serve/fs conveniences) — last,
         // since it leans on fetch, Buffer, Request/Response and the native loader.
         let _ = runtime.eval(crate::node::VELOX_PRELUDE);
+        // Full `crypto.subtle` — after VELOX_PRELUDE so its lazy `require('node:crypto')` works.
+        let _ = runtime.eval(crate::crypto::WEB_CRYPTO_PRELUDE);
         // If launched by `child_process.fork`, connect the IPC channel so
         // `process.send`/`process.on('message')` work. No-op otherwise.
         let _ = runtime.eval(crate::node::FORK_IPC_PRELUDE);

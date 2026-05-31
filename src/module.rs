@@ -403,14 +403,14 @@ impl Graph {
                         // `export * as ns from './m'`
                         Some(name) => {
                             format!(
-                                "exports[{}] = require('{}');",
+                                "exports[{}] = __velox_require('{}');",
                                 js_string(name_str(name)),
                                 id
                             )
                         }
                         // `export * from './m'`
                         None => format!(
-                            "{{ const __m = require('{}'); for (const __k in __m) {{ \
+                            "{{ const __m = __velox_require('{}'); for (const __k in __m) {{ \
                                if (__k !== 'default') exports[__k] = __m[__k]; }} }}",
                             id
                         ),
@@ -424,6 +424,12 @@ impl Graph {
                 _ => {}
             }
         }
+
+        // Any import/export edit means this module used ESM syntax. Mark it
+        // `__esModule` (as esbuild/tsc/Node do for transpiled ESM) so the
+        // default-import interop routes its default through `.default` rather
+        // than treating the whole `exports` object as the default.
+        let is_esm = !edits.is_empty();
 
         // Follow CommonJS `require('<literal>')` the same way we follow `import`:
         // resolve each to a bundled module id and rewrite the specifier. A
@@ -457,7 +463,13 @@ impl Graph {
         // `import.meta` is module-only syntax that JSC rejects in a script, so
         // rewrite it to a per-module object defined in the wrapper preamble
         // (carries the module's own `url`/`dirname`/`filename`/`resolve`).
-        let body = apply_edits(js, edits).replace("import.meta", "__velox_module_meta");
+        let mut body = apply_edits(js, edits).replace("import.meta", "__velox_module_meta");
+        if is_esm {
+            body.insert_str(
+                0,
+                "Object.defineProperty(exports, '__esModule', { value: true });\n",
+            );
+        }
         Ok((body, collector.has_top_level_await))
     }
 
@@ -506,10 +518,14 @@ impl Graph {
             } else {
                 ""
             };
+            // `require` is passed as `__velox_require` and re-bound to `const
+            // require` in the preamble — UNLESS the module declares its own
+            // (the ESM `const require = createRequire(import.meta.url)` pattern,
+            // e.g. yargs), in which case a param named `require` would collide.
             out.push_str(&format!(
-                "__modules['{id}'] = {async_kw}function (module, exports, require) {{\n"
+                "__modules['{id}'] = {async_kw}function (module, exports, __velox_require) {{\n"
             ));
-            out.push_str(&module_preamble(self.paths.get(id)));
+            out.push_str(&module_preamble(self.paths.get(id), body));
             out.push_str(body);
             out.push_str("\n};\n");
         }
@@ -546,7 +562,7 @@ impl Graph {
 /// Per-module preamble injected at the top of each wrapper: gives the module
 /// its own `__filename`/`__dirname`, an `import.meta` stand-in, a dirname-aware
 /// `require.resolve`, and populates `module.filename`/`module.path`.
-fn module_preamble(path: Option<&PathBuf>) -> String {
+fn module_preamble(path: Option<&PathBuf>, body: &str) -> String {
     let Some(path) = path else {
         return String::new();
     };
@@ -559,17 +575,59 @@ fn module_preamble(path: Option<&PathBuf>) -> String {
     let f = serde_json::to_string(filename.as_ref()).unwrap_or_else(|_| "\"\"".into());
     let d = serde_json::to_string(&dirname).unwrap_or_else(|_| "\"\"".into());
     let u = serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".into());
-    format!(
-        "const __filename = {f};\nconst __dirname = {d};\n\
-         const __velox_module_meta = {{ url: {u}, filename: __filename, dirname: __dirname, \
+
+    // Some originally-ESM modules declare their own `__dirname`/`__filename`
+    // (legal in real ESM, where Node injects neither — e.g. yargs' esm shim does
+    // `const __dirname = ...`). Injecting our own `const` then collides ("Cannot
+    // declare a const variable twice"). Skip the binding the module defines
+    // itself, and reference the string literals elsewhere so there's no TDZ.
+    let mut out = String::new();
+    out.push_str(&format!("const __velox_pdir = {d};\n"));
+    // Re-bind the renamed `require` param — unless the module brings its own.
+    if !declares_binding(body, "require") {
+        out.push_str(
+            "const require = __velox_require;\n\
+             require.resolve = function (id) { \
+               if (typeof id !== 'string' || id.startsWith('node:')) return id; \
+               if (id.startsWith('.') || id.startsWith('/')) { \
+                 try { return require('node:path').resolve(__velox_pdir, id); } catch (e) { return id; } \
+               } return id; };\n",
+        );
+    }
+    if !declares_binding(body, "__filename") {
+        out.push_str(&format!("const __filename = {f};\n"));
+    }
+    if !declares_binding(body, "__dirname") {
+        out.push_str(&format!("const __dirname = {d};\n"));
+    }
+    out.push_str(&format!(
+        "const __velox_module_meta = {{ url: {u}, filename: {f}, dirname: {d}, \
          resolve: function (s) {{ try {{ return new URL(s, {u}).href; }} catch (e) {{ return s; }} }} }};\n\
-         module.filename = __filename; module.path = __dirname;\n\
-         require.resolve = function (id) {{ \
-           if (typeof id !== 'string' || id.startsWith('node:')) return id; \
-           if (id.startsWith('.') || id.startsWith('/')) {{ \
-             try {{ return require('node:path').resolve(__dirname, id); }} catch (e) {{ return id; }} \
-           }} return id; }};\n"
-    )
+         module.filename = {f}; module.path = {d};\n"
+    ));
+    out
+}
+
+/// True if `body` contains a top-level-ish `const`/`let`/`var <name>` or a
+/// destructured declaration binding `<name>`. A conservative substring scan —
+/// false positives only cause us to skip an injected binding the module is
+/// already providing, which is the safe direction.
+fn declares_binding(body: &str, name: &str) -> bool {
+    for kw in ["const ", "let ", "var "] {
+        let mut search = body;
+        while let Some(pos) = search.find(kw) {
+            let after = &search[pos + kw.len()..];
+            let trimmed = after.trim_start();
+            if let Some(rest) = trimmed.strip_prefix(name) {
+                // Ensure it's a whole identifier (next char isn't ident-continuation).
+                if !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '$') {
+                    return true;
+                }
+            }
+            search = &search[pos + kw.len()..];
+        }
+    }
+    false
 }
 
 /// Runtime glue prepended to every bundle: the registry and lazy `require`.
@@ -605,7 +663,11 @@ function __velox_ns(m) {
   if (m && (typeof m === 'object' || typeof m === 'function')) {
     for (const k in m) { try { ns[k] = m[k]; } catch (e) {} }
   }
-  if (!('default' in ns)) ns.default = (m && m.default !== undefined) ? m.default : m;
+  // The default export of a plain CommonJS module is the WHOLE `module.exports`
+  // (Node interop) — even if it happens to carry its own `.default` property
+  // (e.g. winston defines an `exports.default` getter returning a subset). Only
+  // a transpiled-ESM module (`__esModule`) routes default through `.default`.
+  ns.default = (m && m.__esModule && ('default' in m)) ? m.default : m;
   return ns;
 }
 // Dynamic import: a promise of the resolved module's namespace, going through
@@ -617,7 +679,10 @@ function __velox_import(id) {
 
 /// Rewrite a single `import` declaration into CommonJS bindings.
 fn rewrite_import(decl: &oxc::ast::ast::ImportDeclaration, id: &str) -> String {
-    let request = format!("require('{}')", id);
+    // Use the unshadowable `__velox_require` param, not `require`: import glue
+    // runs at module top, before any user `const require = createRequire(...)`
+    // (the ESM-shim pattern in yargs etc.) would be initialized.
+    let request = format!("__velox_require('{}')", id);
 
     // Side-effect-only import: `import './m'`.
     let Some(specifiers) = &decl.specifiers else {
@@ -635,11 +700,14 @@ fn rewrite_import(decl: &oxc::ast::ast::ImportDeclaration, id: &str) -> String {
     for spec in specifiers {
         match spec {
             ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                // CJS interop: a CommonJS module (e.g. a `node:*` shim) has no
-                // `.default`, so fall back to the whole `module.exports`.
+                // CJS interop (Node `esModuleInterop`): a plain CommonJS module's
+                // default import is the whole `module.exports`; only a transpiled
+                // ESM module (`__esModule`) routes the default through `.default`.
+                // (winston defines its own `exports.default` getter returning a
+                // subset — preferring `.default` would wrongly pick that.)
                 out.push_str(&format!(
-                    " const {0} = {1}.default !== undefined ? {1}.default : {1};",
-                    &s.local.name, tmp
+                    " const {0} = ({1} && {1}.__esModule && '{2}' in {1}) ? {1}.default : {1};",
+                    &s.local.name, tmp, "default"
                 ));
             }
             ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
@@ -728,7 +796,7 @@ fn rewrite_export_specifiers(decl: &oxc::ast::ast::ExportNamedDeclaration) -> St
 /// Rewrite `export { a, b as c } from './m'` (re-export from another module).
 fn rewrite_reexport_named(decl: &oxc::ast::ast::ExportNamedDeclaration, id: &str) -> String {
     let tmp = format!("__re{}", decl.span.start);
-    let mut out = format!("const {} = require('{}');", tmp, id);
+    let mut out = format!("const {} = __velox_require('{}');", tmp, id);
     for spec in &decl.specifiers {
         let local = name_str(&spec.local);
         let exported = name_str(&spec.exported);

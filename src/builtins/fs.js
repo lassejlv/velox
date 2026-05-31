@@ -44,10 +44,26 @@ Stats.prototype.isCharacterDevice = function () { return false; };
 Stats.prototype.isFIFO = function () { return false; };
 Stats.prototype.isSocket = function () { return false; };
 
-function Dirent(name, type) { this.name = name; this._type = type; }
+function Dirent(name, type, parentPath) {
+  this.name = name;
+  this._type = type;
+  this.parentPath = parentPath || '';
+  this.path = this.parentPath; // deprecated Node alias
+}
 Dirent.prototype.isFile = function () { return this._type === 'file'; };
 Dirent.prototype.isDirectory = function () { return this._type === 'dir'; };
 Dirent.prototype.isSymbolicLink = function () { return this._type === 'symlink'; };
+Dirent.prototype.isBlockDevice = function () { return false; };
+Dirent.prototype.isCharacterDevice = function () { return false; };
+Dirent.prototype.isFIFO = function () { return false; };
+Dirent.prototype.isSocket = function () { return false; };
+
+// Build a Dirent for `name` under directory `dir`, resolving its type via lstat.
+function direntFor(dir, name) {
+  var t = 'other';
+  try { t = JSON.parse(__velox_stat(fsPath(dir) + '/' + name, false))._type; } catch (e) {}
+  return new Dirent(name, t, String(dir));
+}
 
 // --- synchronous API -------------------------------------------------------
 
@@ -76,11 +92,7 @@ function lstatSync(p) { return new Stats(JSON.parse(__velox_stat(fsPath(p), fals
 function readdirSync(p, options) {
   var names = JSON.parse(__velox_readdir(String(p)));
   if (options && options.withFileTypes) {
-    return names.map(function (n) {
-      var t = 'other';
-      try { t = JSON.parse(__velox_stat(fsPath(p) + '/' + n, false))._type; } catch (e) {}
-      return new Dirent(n, t);
-    });
+    return names.map(function (n) { return direntFor(p, n); });
   }
   return names;
 }
@@ -383,8 +395,14 @@ function lstatAsync(p, options, cb) {
   fsOpAsync('lstat', p, cb, function (t) { return new Stats(JSON.parse(t)); });
 }
 function readdirAsync(p, options, cb) {
-  if (typeof options === 'function') { cb = options; }
-  fsOpAsync('readdir', p, cb, function (t) { return JSON.parse(t); });
+  if (typeof options === 'function') { cb = options; options = undefined; }
+  fsOpAsync('readdir', p, cb, function (t) {
+    var names = JSON.parse(t);
+    if (options && options.withFileTypes) {
+      return names.map(function (n) { return direntFor(p, n); });
+    }
+    return names;
+  });
 }
 function realpathAsync(p, options, cb) {
   if (typeof options === 'function') { cb = options; }

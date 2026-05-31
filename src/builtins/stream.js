@@ -118,6 +118,7 @@ function ReadableState(options, stream) {
   this.destroyed = false;
   this.errored = null;
   this.closeEmitted = false;
+  this.emitClose = options.emitClose !== false;
   this.defaultEncoding = options.defaultEncoding || 'utf8';
   this.encoding = options.encoding || null;
   this.readingMore = false;
@@ -415,6 +416,17 @@ function endReadable(stream) {
     nextTick(function () {
       if (!state.closeEmitted) {
         stream.emit('end');
+        // Modern streams auto-destroy after 'end' and emit 'close' (unless
+        // emitClose is disabled or the stream is also a still-writable Duplex).
+        if (state.emitClose !== false && !stream._writableState) {
+          nextTick(function () {
+            if (!state.closeEmitted) {
+              state.closeEmitted = true;
+              state.destroyed = true;
+              stream.emit('close');
+            }
+          });
+        }
       }
     });
   }
@@ -629,6 +641,7 @@ function WritableState(options, stream) {
   this.errored = null;
   this.defaultEncoding = options.defaultEncoding || 'utf8';
   this.closeEmitted = false;
+  this.emitClose = options.emitClose !== false;
   this.prefinished = false;
 }
 
@@ -767,6 +780,21 @@ function finishMaybe(stream, state) {
       state.finished = true;
       stream.writable = false;
       stream.emit('finish');
+      // Modern writables auto-destroy after 'finish' and emit 'close' — but a
+      // Duplex whose readable side hasn't ended yet must wait (its readable
+      // end-path emits the single shared 'close').
+      if (state.emitClose && !state.closeEmitted) {
+        var rState = stream._readableState;
+        if (!rState || rState.endEmitted || rState.closeEmitted) {
+          nextTick(function () {
+            if (!state.closeEmitted) {
+              state.closeEmitted = true;
+              state.destroyed = true;
+              stream.emit('close');
+            }
+          });
+        }
+      }
     }
   }
 
@@ -867,6 +895,86 @@ inherits(Duplex, Readable);
 // destroy on a Duplex must tear down both halves; use the shared destroy.
 Duplex.prototype.destroy = function (err) { return destroy(this, err); };
 Duplex.prototype._destroy = function (err, cb) { cb(err); };
+
+// --- Web Streams interop (Readable/Writable/Duplex .fromWeb/.toWeb) ---------
+// Bridge WHATWG ReadableStream/WritableStream <-> Node streams. Used by
+// libraries like execa (Duplex.fromWeb over a TransformStream).
+Readable.fromWeb = function (readableStream, options) {
+  options = options || {};
+  var reader = readableStream.getReader();
+  var r = new Readable({
+    objectMode: options.objectMode,
+    highWaterMark: options.highWaterMark,
+    read: function () {
+      var self = this;
+      reader.read().then(function (res) {
+        if (res.done) self.push(null);
+        else self.push(res.value);
+      }, function (err) { self.destroy(err); });
+    },
+    destroy: function (err, cb) {
+      reader.cancel(err).then(function () { cb(err); }, function () { cb(err); });
+    },
+  });
+  return r;
+};
+Writable.fromWeb = function (writableStream, options) {
+  options = options || {};
+  var writer = writableStream.getWriter();
+  return new Writable({
+    objectMode: options.objectMode,
+    highWaterMark: options.highWaterMark,
+    write: function (chunk, enc, cb) { writer.write(chunk).then(function () { cb(); }, cb); },
+    final: function (cb) { writer.close().then(function () { cb(); }, cb); },
+    destroy: function (err, cb) { writer.abort(err).then(function () { cb(err); }, function () { cb(err); }); },
+  });
+};
+Duplex.fromWeb = function (pair, options) {
+  options = options || {};
+  var reader = pair.readable.getReader();
+  var writer = pair.writable.getWriter();
+  var d = new Duplex({
+    objectMode: options.objectMode,
+    highWaterMark: options.highWaterMark,
+    allowHalfOpen: options.allowHalfOpen,
+    write: function (chunk, enc, cb) { writer.write(chunk).then(function () { cb(); }, cb); },
+    final: function (cb) { writer.close().then(function () { cb(); }, cb); },
+    read: function () {
+      var self = this;
+      reader.read().then(function (res) {
+        if (res.done) self.push(null);
+        else self.push(res.value);
+      }, function (err) { self.destroy(err); });
+    },
+    destroy: function (err, cb) {
+      Promise.all([
+        reader.cancel(err).catch(function () {}),
+        writer.abort(err).catch(function () {}),
+      ]).then(function () { cb(err); });
+    },
+  });
+  return d;
+};
+// Convert a Node Readable into a WHATWG ReadableStream.
+Readable.prototype.toWeb = function () {
+  var stream = this;
+  return new globalThis.ReadableStream({
+    start: function (controller) {
+      stream.on('data', function (chunk) { controller.enqueue(chunk); });
+      stream.on('end', function () { try { controller.close(); } catch (e) {} });
+      stream.on('error', function (err) { controller.error(err); });
+    },
+    cancel: function () { stream.destroy(); },
+  });
+};
+Writable.prototype.toWeb = function () {
+  var stream = this;
+  return new globalThis.WritableStream({
+    write: function (chunk) { return new Promise(function (res, rej) { stream.write(chunk, function (e) { e ? rej(e) : res(); }); }); },
+    close: function () { return new Promise(function (res) { stream.end(res); }); },
+    abort: function (err) { stream.destroy(err); },
+  });
+};
 
 // ===========================================================================
 // Transform — Duplex where writes pass through _transform into the readable.
@@ -1117,6 +1225,20 @@ module.exports.PassThrough = PassThrough;
 module.exports.pipeline = pipeline;
 module.exports.finished = finished;
 module.exports.promises = { pipeline: pipelinePromise, finished: finishedPromise };
+// Node's `stream` module re-exports EventEmitter (Stream's base class); some
+// libraries do `class X extends require('stream').EventEmitter` (e.g. node-cron).
+module.exports.EventEmitter = EventEmitter;
+exports.EventEmitter = EventEmitter;
+
+// Default highWaterMark accessors (Node 19+). Byte mode: 64 KiB; objectMode: 16.
+var defaultHWM = 64 * 1024;
+var defaultHWMObject = 16;
+function getDefaultHighWaterMark(objectMode) { return objectMode ? defaultHWMObject : defaultHWM; }
+function setDefaultHighWaterMark(objectMode, value) { if (objectMode) defaultHWMObject = value; else defaultHWM = value; }
+module.exports.getDefaultHighWaterMark = getDefaultHighWaterMark;
+module.exports.setDefaultHighWaterMark = setDefaultHighWaterMark;
+exports.getDefaultHighWaterMark = getDefaultHighWaterMark;
+exports.setDefaultHighWaterMark = setDefaultHighWaterMark;
 
 // Named exports on `exports` too (some bundlers read these).
 exports.Stream = Stream;

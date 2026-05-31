@@ -146,6 +146,10 @@ function ChildProcess() {
     write: function (chunk, enc, cb) { cb(); },
   });
   this.stdin.on('error', function () {});
+  // Node exposes a `.stdio` array [stdin, stdout, stderr, ...extra]; libraries
+  // like execa spread it (`[...subprocess.stdio]`).
+  this.stdio = [this.stdin, this.stdout, this.stderr];
+  this.channel = null;
 }
 ChildProcess.prototype = Object.create(EventEmitter.prototype);
 ChildProcess.prototype.constructor = ChildProcess;
@@ -178,6 +182,17 @@ function startChild(child, file, args, options) {
       child.stdout.push(null);
       child.stderr.push(null);
       return;
+    }
+
+    // Node emits 'spawn' once the child is successfully started (never on a
+    // spawn failure, handled above). Libraries like execa await it.
+    child.emit('spawn');
+
+    // The child has fully run; its stdin pipe is closed. End the writable side
+    // so consumers waiting on stdin completion (e.g. execa, which awaits every
+    // stdio stream) don't hang. Guard against a double-end.
+    if (child.stdin && !child.stdin._writableState.ending) {
+      try { child.stdin.end(); } catch (e) {}
     }
 
     // Feed captured output into the readable sides, then EOF them.

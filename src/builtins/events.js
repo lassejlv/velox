@@ -117,5 +117,103 @@ EventEmitter.listenerCount = function (emitter, type) {
     : (emitter._events && emitter._events[type] ? emitter._events[type].length : 0);
 };
 
+// Module-level `events.setMaxListeners(n, ...targets)` (Node 15+). Applies to
+// EventEmitters and EventTargets (e.g. AbortSignal); tolerant of either.
+function setMaxListeners(n) {
+  if (n === undefined) n = EventEmitter.defaultMaxListeners;
+  for (var i = 1; i < arguments.length; i++) {
+    var t = arguments[i];
+    if (!t) continue;
+    if (typeof t.setMaxListeners === 'function') { try { t.setMaxListeners(n); } catch (e) {} }
+    else { try { t._maxListeners = n; } catch (e) {} }
+  }
+}
+function getEventListeners(target, type) {
+  if (target && typeof target.listeners === 'function') return target.listeners(type);
+  if (target && target._events && target._events[type]) return target._events[type].slice();
+  return [];
+}
+// `events.addAbortListener(signal, listener)` → returns a Disposable-ish handle.
+function addAbortListener(signal, listener) {
+  if (signal && signal.aborted) { queueMicrotask(function () { listener({ target: signal }); }); }
+  else if (signal && typeof signal.addEventListener === 'function') { signal.addEventListener('abort', listener, { once: true }); }
+  return { remove: function () { if (signal && signal.removeEventListener) signal.removeEventListener('abort', listener); } };
+}
+
+// `events.on(emitter, eventName, options)` → async iterator yielding the event
+// argument arrays. Supports `{ signal }` for abort. (`highWaterMark` is ignored;
+// velox buffers unboundedly.) Mirrors Node's behaviour closely enough for
+// libraries like execa that iterate `on(stream, 'data', {signal})`.
+function on(emitter, event, options) {
+  options = options || {};
+  var signal = options.signal;
+  var unconsumed = [];   // event arg-arrays awaiting a consumer
+  var queued = [];       // { resolve, reject } awaiting an event
+  var finished = false;
+  var error = null;
+
+  function eventHandler() {
+    var args = Array.prototype.slice.call(arguments);
+    if (queued.length) queued.shift().resolve({ value: args, done: false });
+    else unconsumed.push(args);
+  }
+  function errorHandler(err) {
+    error = err; finished = true;
+    if (queued.length) { queued.shift().reject(err); }
+    cleanup();
+  }
+  function cleanup() {
+    emitter.removeListener(event, eventHandler);
+    if (event !== 'error') emitter.removeListener('error', errorHandler);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+  function onAbort() {
+    var err = (signal && signal.reason) || new Error('The operation was aborted');
+    if (!err.name) err.name = 'AbortError';
+    finished = true;
+    cleanup();
+    while (queued.length) queued.shift().reject(err);
+    // After abort, surface done on subsequent pulls.
+    error = null;
+  }
+
+  emitter.on(event, eventHandler);
+  if (event !== 'error') emitter.on('error', errorHandler);
+  if (signal) {
+    if (signal.aborted) { queueMicrotask(onAbort); }
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  var iterator = {
+    next: function () {
+      if (unconsumed.length) return Promise.resolve({ value: unconsumed.shift(), done: false });
+      if (error) { var e = error; error = null; return Promise.reject(e); }
+      if (finished) return Promise.resolve({ value: undefined, done: true });
+      return new Promise(function (resolve, reject) { queued.push({ resolve: resolve, reject: reject }); });
+    },
+    'return': function () { finished = true; cleanup(); return Promise.resolve({ value: undefined, done: true }); },
+    'throw': function (err) { finished = true; cleanup(); return Promise.reject(err); },
+  };
+  iterator[Symbol.asyncIterator] = function () { return this; };
+  return iterator;
+}
+
+EventEmitter.on = on;
+EventEmitter.setMaxListeners = setMaxListeners;
+EventEmitter.getEventListeners = getEventListeners;
+EventEmitter.addAbortListener = addAbortListener;
+EventEmitter.usingDomains = false;
+EventEmitter.errorMonitor = Symbol('events.errorMonitor');
+EventEmitter.captureRejectionSymbol = Symbol.for('nodejs.rejection');
+
 module.exports = EventEmitter;
 module.exports.EventEmitter = EventEmitter;
+module.exports.on = on;
+module.exports.setMaxListeners = setMaxListeners;
+module.exports.getEventListeners = getEventListeners;
+module.exports.addAbortListener = addAbortListener;
+module.exports.once = EventEmitter.once;
+module.exports.listenerCount = EventEmitter.listenerCount;
+module.exports.errorMonitor = EventEmitter.errorMonitor;
+module.exports.captureRejectionSymbol = EventEmitter.captureRejectionSymbol;
+module.exports.default = EventEmitter;

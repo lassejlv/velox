@@ -51,6 +51,11 @@ pub const CRYPTO_PRELUDE: &str = r#"
 })();
 "#;
 
+/// Full `crypto.subtle` (SubtleCrypto) built on top of `node:crypto`. Evaluated
+/// after the Velox prelude so the global `require` is available; replaces the
+/// digest-only `subtle` from `CRYPTO_PRELUDE`.
+pub const WEB_CRYPTO_PRELUDE: &str = include_str!("builtins/web_crypto.js");
+
 /// Register the native crypto functions.
 pub fn install(ctx: JSContextRef) {
     unsafe {
