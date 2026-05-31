@@ -2,11 +2,12 @@
 //!
 //! Lays down `src/main.ts`, `package.json`, `tsconfig.json`, a copy of the
 //! bundled `velox.d.ts` type definitions, and a `.gitignore`, then installs
-//! `@types/node` via npm (so `node:*` imports type-check in an editor).
-//! Existing files are never overwritten — `init` is safe to re-run.
+//! `@types/node` with velox's own package manager (so `node:*` imports
+//! type-check in an editor). Existing files are never overwritten — `init` is
+//! safe to re-run.
 
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use owo_colors::OwoColorize;
 
@@ -82,7 +83,13 @@ pub fn run(dir: Option<&str>, no_install: bool) -> ExitCode {
     wrote_any |= write_file(root, ".gitignore", GITIGNORE);
 
     if !no_install {
-        install_types(root);
+        // Install @types/node using velox's own package manager. The pkg
+        // commands operate on the current directory, so switch into the new
+        // project first (the process exits right after, so this is safe).
+        if std::env::set_current_dir(root).is_ok() {
+            println!();
+            let _ = crate::pkg::add(&["@types/node".to_string()], true);
+        }
     }
 
     println!();
@@ -166,32 +173,3 @@ fn project_name(root: &Path) -> String {
     }
 }
 
-/// Install `@types/node` so `node:*` imports type-check. Best-effort: if npm
-/// isn't on PATH, print a hint instead of failing.
-fn install_types(root: &Path) {
-    println!();
-    println!("  {} installing {} …", "↓".cyan(), "@types/node".bold());
-    let status = Command::new("npm")
-        .args(["install", "--silent", "--save-dev", "@types/node"])
-        .current_dir(root)
-        .status();
-    match status {
-        Ok(s) if s.success() => {
-            println!("  {} @types/node installed", "✓".green().bold());
-        }
-        Ok(_) => {
-            println!(
-                "  {} npm install failed — run {} yourself later.",
-                "•".yellow(),
-                "npm install -D @types/node".bold()
-            );
-        }
-        Err(_) => {
-            println!(
-                "  {} npm not found — run {} once it's available.",
-                "•".yellow(),
-                "npm install -D @types/node".bold()
-            );
-        }
-    }
-}

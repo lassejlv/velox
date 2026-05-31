@@ -32,7 +32,7 @@ use crate::runtime::Runtime;
     name = "velox",
     version,
     about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore",
-    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n\nRun `velox <command> --help` for details."
+    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  run [script]           Run a package.json script\n\nRun `velox <command> --help` for details."
 )]
 struct Cli {
     /// Script to run (.ts/.tsx/.js/.jsx). Omit to start the REPL.
@@ -94,7 +94,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
     match cmd {
         "init" => {
             if has_help {
-                println!("Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node via npm.");
+                println!("Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node.");
                 return Some(ExitCode::SUCCESS);
             }
             let no_install = rest.iter().any(|a| a == "--no-install");
@@ -129,6 +129,27 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 return Some(ExitCode::SUCCESS);
             }
             Some(pkg::remove(&positionals()))
+        }
+        "run" | "run-script" => {
+            if has_help {
+                println!("Usage: velox run [SCRIPT] [-- args...]\n\n  Run a package.json script (no SCRIPT lists them). pre/post hooks run too.");
+                return Some(ExitCode::SUCCESS);
+            }
+            // First token after `run` is the script name; the remainder (minus a
+            // leading `--`) is passed through to the script verbatim.
+            let name = rest.first().filter(|a| !a.starts_with('-'));
+            let extra: Vec<String> = match name {
+                Some(_) => {
+                    let after = &rest[1..];
+                    let after = match after.first() {
+                        Some(sep) if sep == "--" => &after[1..],
+                        _ => after,
+                    };
+                    after.to_vec()
+                }
+                None => Vec::new(),
+            };
+            Some(pkg::run_script(name.map(String::as_str), &extra))
         }
         _ => None,
     }

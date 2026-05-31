@@ -29,8 +29,9 @@ curl localhost:3000
 ```
 
 `velox init [dir]` lays down `src/main.ts`, `package.json`, `tsconfig.json`, a
-copy of `velox.d.ts`, and `.gitignore`, then installs `@types/node` (so
-`node:*` imports type-check). Pass `--no-install` to skip npm.
+copy of `velox.d.ts`, and `.gitignore`, then installs `@types/node` with velox's
+own package manager (so `node:*` imports type-check). Pass `--no-install` to
+skip it.
 
 ## Packages
 

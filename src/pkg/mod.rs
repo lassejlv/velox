@@ -8,13 +8,19 @@
 //! It speaks the npm registry directly (see [`registry`]); resolution is a flat
 //! `node_modules` (see [`resolve`]). No install scripts are run.
 
+mod parallel;
 mod registry;
 mod resolve;
 mod semver;
 mod tarball;
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
+
+use parallel::par_map;
+
+/// How many tarballs to download + extract concurrently.
+const DOWNLOAD_WORKERS: usize = 12;
 
 use base64::Engine;
 use owo_colors::OwoColorize;
@@ -153,23 +159,29 @@ fn run_install(roots: &[(String, String)], verb: &str) -> ExitCode {
         resolved.len()
     );
 
-    let nm = node_modules_dir();
-    let mut installed = 0;
-    let mut skipped = 0;
-    for r in &resolved {
-        match install_one(r, &nm) {
-            Ok(true) => {
-                installed += 1;
-                println!("  {} {}@{}", "↓".cyan(), r.name, r.version.to_string().dimmed());
-            }
-            Ok(false) => skipped += 1,
-            Err(e) => return fail(&format!("{}@{}: {e}", r.name, r.version)),
-        }
-    }
-
-    // Record a simple lockfile for reproducibility.
+    // Record the lockfile from the resolution (independent of download success).
     if let Err(e) = write_lockfile(&resolved) {
         eprintln!("  {} could not write velox-lock.json: {e}", "!".yellow());
+    }
+
+    // Download + extract every package concurrently.
+    let nm = node_modules_dir();
+    let outcomes = par_map(resolved, DOWNLOAD_WORKERS, |r| {
+        let result = install_one(&r, &nm);
+        if let Ok(true) = &result {
+            println!("  {} {}@{}", "↓".cyan(), r.name, r.version.to_string().dimmed());
+        }
+        (r.name, r.version, result)
+    });
+
+    let mut installed = 0;
+    let mut skipped = 0;
+    for (name, version, result) in &outcomes {
+        match result {
+            Ok(true) => installed += 1,
+            Ok(false) => skipped += 1,
+            Err(e) => return fail(&format!("{name}@{version}: {e}")),
+        }
     }
 
     println!();
@@ -378,6 +390,105 @@ fn save_range(requested: &str, resolved: &Version) -> String {
         r.to_string()
     } else {
         format!("^{resolved}")
+    }
+}
+
+// --- run scripts -------------------------------------------------------------
+
+/// `velox run [name] [-- args...]` — run a `package.json` script (with `pre`/
+/// `post` hooks, like npm). No name lists the available scripts.
+pub fn run_script(name: Option<&str>, extra: &[String]) -> ExitCode {
+    let pkg = match load_package_json(&PathBuf::from("package.json")) {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+    let scripts = pkg["scripts"].as_object();
+
+    let Some(name) = name else {
+        list_scripts(scripts);
+        return ExitCode::SUCCESS;
+    };
+
+    let lookup = |key: &str| -> Option<String> {
+        scripts
+            .and_then(|s| s.get(key))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    };
+
+    let Some(main) = lookup(name) else {
+        eprintln!("  {} no script named \"{name}\" in package.json", "✖".red().bold());
+        list_scripts(scripts);
+        return ExitCode::FAILURE;
+    };
+
+    // npm-style pre/post hooks.
+    if let Some(pre) = lookup(&format!("pre{name}"))
+        && let Some(code) = exec_script(&format!("pre{name}"), &pre, &[])
+        && code != 0
+    {
+        return ExitCode::from(code as u8);
+    }
+    let code = match exec_script(name, &main, extra) {
+        Some(c) => c,
+        None => return ExitCode::FAILURE,
+    };
+    if code != 0 {
+        return ExitCode::from(code as u8);
+    }
+    if let Some(post) = lookup(&format!("post{name}"))
+        && let Some(c) = exec_script(&format!("post{name}"), &post, &[])
+        && c != 0
+    {
+        return ExitCode::from(c as u8);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Run a single script command through `sh -c`, with `node_modules/.bin` and the
+/// velox executable's directory prepended to `PATH` (so scripts that call local
+/// binaries or `velox` resolve). Returns the exit code, or None on spawn error.
+fn exec_script(label: &str, command: &str, extra: &[String]) -> Option<i32> {
+    let full = if extra.is_empty() {
+        command.to_string()
+    } else {
+        format!("{command} {}", extra.join(" "))
+    };
+    println!("  {} {} {}", "›".cyan().bold(), label.bold(), command.dimmed());
+
+    let mut path = String::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        path.push_str(&dir.to_string_lossy());
+        path.push(':');
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        path.push_str(&cwd.join("node_modules/.bin").to_string_lossy());
+        path.push(':');
+    }
+    if let Ok(existing) = std::env::var("PATH") {
+        path.push_str(&existing);
+    }
+
+    match Command::new("sh").arg("-c").arg(&full).env("PATH", path).status() {
+        Ok(status) => Some(status.code().unwrap_or(1)),
+        Err(e) => {
+            eprintln!("  {} could not run script: {e}", "✖".red().bold());
+            None
+        }
+    }
+}
+
+fn list_scripts(scripts: Option<&Map<String, Value>>) {
+    match scripts {
+        Some(map) if !map.is_empty() => {
+            println!("  {}", "available scripts".bold());
+            for (name, cmd) in map {
+                println!("    {:<14} {}", name.green(), cmd.as_str().unwrap_or("").dimmed());
+            }
+        }
+        _ => println!("  {} no scripts defined in package.json", "•".dimmed()),
     }
 }
 
