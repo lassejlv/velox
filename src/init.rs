@@ -51,7 +51,7 @@ const TSCONFIG: &str = r#"{
 }
 "#;
 
-const GITIGNORE: &str = "node_modules/\n*.log\n.DS_Store\n";
+const GITIGNORE: &str = "node_modules/\n*.log\n.DS_Store\n\n# local env files (secrets) — keep .env out of git too if it has secrets\n.env.local\n.env.*.local\n";
 
 /// Entry point for the `init` subcommand.
 pub fn run(dir: Option<&str>, no_install: bool) -> ExitCode {

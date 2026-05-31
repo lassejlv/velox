@@ -93,6 +93,21 @@ export default {
 See [`examples/serve-default.ts`](../examples/serve-default.ts). A default export
 without a `fetch` method (or no default export) starts no server.
 
+### Environment files
+
+velox auto-loads conventional `.env` files from the current directory before
+running a file/eval/REPL — no flag needed:
+
+- `.env`
+- `.env.local`
+- `.env.<NODE_ENV>` and `.env.<NODE_ENV>.local` (only when `NODE_ENV` is set)
+
+More specific files win (e.g. `.env.production` over `.env`), but a variable
+already set in the real shell environment is **never** overwritten, and an
+explicit `--env-file` overrides the auto-loaded files. Values support `#`
+comments, `export KEY=…` prefixes, and single/double-quoted strings. `.env.local`
+/ `.env.*.local` are gitignored by `velox init`.
+
 ## CLI flags
 
 | Flag | Description |
@@ -106,7 +121,7 @@ without a `fetch` method (or no default export) starts no server.
 | `FILE` | Run a script |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |
 | `-w`, `--watch` | Re-run when the entry or any bundled import changes |
-| `--env-file PATH` | Load `KEY=VALUE` pairs into `process.env` before running |
+| `--env-file PATH` | Load `KEY=VALUE` pairs into `process.env` (overrides auto-loaded `.env`) |
 
 Examples:
 

@@ -64,6 +64,8 @@ fn main() -> ExitCode {
     if let Some(path) = &cli.env_file {
         load_env_file(path);
     }
+    // Auto-load conventional `.env` files (after `--env-file`, which wins).
+    auto_load_env();
     if let Some(code) = cli.eval {
         return run_source(&code, "[eval].ts");
     }
@@ -155,13 +157,44 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
     }
 }
 
-/// Parse a `.env` file and set each `KEY=VALUE` into the process environment
-/// (so `process.env` picks them up). Supports `#` comments, `export` prefixes,
-/// blank lines, and single/double-quoted values.
+/// Load an explicit `--env-file` (overrides existing variables; reports an error
+/// if the file is missing).
 fn load_env_file(path: &Path) {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    if !apply_env_file(path, true) {
         ui::report_runtime_error(&format!("--env-file: cannot read {}", path.display()));
-        return;
+    }
+}
+
+/// Auto-load conventional `.env` files from the current directory (Bun/Vite
+/// style): `.env` and `.env.local`, plus `.env.<NODE_ENV>` and
+/// `.env.<NODE_ENV>.local` when `NODE_ENV` is set. More specific files win, but
+/// a variable already present in the real environment (or set by `--env-file`)
+/// is never overwritten. Missing files are skipped silently.
+fn auto_load_env() {
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(mode) = std::env::var("NODE_ENV") {
+        let mode = mode.trim();
+        if !mode.is_empty() {
+            files.push(format!(".env.{mode}.local"));
+            files.push(format!(".env.{mode}"));
+        }
+    }
+    files.push(".env.local".to_string());
+    files.push(".env".to_string());
+    // Highest priority first; never override an already-set variable.
+    for file in files {
+        apply_env_file(Path::new(&file), false);
+    }
+}
+
+/// Parse a `.env` file and set its `KEY=VALUE` pairs into the process
+/// environment (so `process.env` picks them up). When `override_existing` is
+/// false, variables already present in the environment are left untouched.
+/// Returns whether the file could be read. Supports `#` comments, `export`
+/// prefixes, blank lines, and single/double-quoted values.
+fn apply_env_file(path: &Path, override_existing: bool) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
     };
     for line in text.lines() {
         let line = line.trim();
@@ -180,10 +213,14 @@ fn load_env_file(path: &Path) {
         {
             value = &value[1..value.len() - 1];
         }
-        if !key.is_empty() {
+        if key.is_empty() {
+            continue;
+        }
+        if override_existing || std::env::var_os(key).is_none() {
             unsafe { std::env::set_var(key, value) };
         }
     }
+    true
 }
 
 /// `--watch`: run the script, then re-run whenever any bundled source file's
