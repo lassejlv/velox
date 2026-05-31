@@ -8,6 +8,7 @@ mod init;
 mod inspect;
 mod module;
 mod node;
+mod pkg;
 mod repl;
 mod runtime;
 mod server;
@@ -31,7 +32,7 @@ use crate::runtime::Runtime;
     name = "velox",
     version,
     about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore",
-    after_help = "Commands:\n  init [DIR]    Scaffold a new velox project (see `velox init --help`)"
+    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n\nRun `velox <command> --help` for details."
 )]
 struct Cli {
     /// Script to run (.ts/.tsx/.js/.jsx). Omit to start the REPL.
@@ -51,17 +52,12 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    // `velox init [dir]` is handled before clap so it doesn't collide with the
-    // positional `file` arg (and `velox script.ts` keeps working unchanged).
+    // Subcommands (init / install / add / remove) are handled before clap so
+    // they don't collide with the positional `file` arg — `velox script.ts`
+    // keeps working unchanged.
     let raw: Vec<String> = std::env::args().collect();
-    if raw.get(1).map(String::as_str) == Some("init") {
-        if raw.iter().any(|a| a == "-h" || a == "--help") {
-            println!("Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node via npm.");
-            return ExitCode::SUCCESS;
-        }
-        let no_install = raw.iter().any(|a| a == "--no-install");
-        let dir = raw.get(2).filter(|a| !a.starts_with('-')).map(String::as_str);
-        return init::run(dir, no_install);
+    if let Some(code) = dispatch_subcommand(&raw) {
+        return code;
     }
 
     let cli = Cli::parse();
@@ -78,6 +74,63 @@ fn main() -> ExitCode {
             repl::start();
             ExitCode::SUCCESS
         }
+    }
+}
+
+/// Handle the project/package subcommands (`init`, `install`, `add`, `remove`).
+/// Returns `Some(code)` when a subcommand ran, or `None` to fall through to the
+/// normal run-a-file / REPL path.
+fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
+    let cmd = raw.get(1).map(String::as_str)?;
+    let rest = &raw[raw.len().min(2)..];
+    let has_help = rest.iter().any(|a| a == "-h" || a == "--help");
+    let positionals = || {
+        rest.iter()
+            .filter(|a| !a.starts_with('-'))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    match cmd {
+        "init" => {
+            if has_help {
+                println!("Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node via npm.");
+                return Some(ExitCode::SUCCESS);
+            }
+            let no_install = rest.iter().any(|a| a == "--no-install");
+            let dir = positionals().into_iter().next();
+            Some(init::run(dir.as_deref(), no_install))
+        }
+        "install" | "i" => {
+            if has_help {
+                println!("Usage: velox install\n\n  Install all dependencies from package.json into node_modules.");
+                return Some(ExitCode::SUCCESS);
+            }
+            // `velox install <pkg>` is an alias for `add` (npm-compatible).
+            let pkgs = positionals();
+            if pkgs.is_empty() {
+                Some(pkg::install())
+            } else {
+                let dev = rest.iter().any(|a| a == "--dev" || a == "-D" || a == "--save-dev");
+                Some(pkg::add(&pkgs, dev))
+            }
+        }
+        "add" | "a" => {
+            if has_help {
+                println!("Usage: velox add [--dev] <pkg>[@version]...\n\n  Add packages to package.json and install them.\n\nOptions:\n  -D, --dev   Save to devDependencies.");
+                return Some(ExitCode::SUCCESS);
+            }
+            let dev = rest.iter().any(|a| a == "--dev" || a == "-D" || a == "--save-dev");
+            Some(pkg::add(&positionals(), dev))
+        }
+        "remove" | "rm" | "uninstall" | "un" => {
+            if has_help {
+                println!("Usage: velox remove <pkg>...\n\n  Remove packages from package.json and node_modules.");
+                return Some(ExitCode::SUCCESS);
+            }
+            Some(pkg::remove(&positionals()))
+        }
+        _ => None,
     }
 }
 

@@ -32,6 +32,24 @@ curl localhost:3000
 copy of `velox.d.ts`, and `.gitignore`, then installs `@types/node` (so
 `node:*` imports type-check). Pass `--no-install` to skip npm.
 
+## Packages
+
+velox has a built-in package manager that speaks the npm registry directly — no
+npm required — and installs into `node_modules` so bundled `import`/`require`
+finds them:
+
+```sh
+velox add express              # add + install (pins ^version)
+velox add -D vitest            # save to devDependencies
+velox add lodash@4.17.21       # a specific version or range
+velox install                  # install everything in package.json
+velox remove express           # uninstall
+```
+
+It resolves the full dependency graph (semver ranges, dist-tags), verifies each
+tarball's `sha512`/`sha1` integrity, and writes a `velox-lock.json`. Set
+`$VELOX_REGISTRY` to use a private registry.
+
 ## Documentation
 
 | | |
