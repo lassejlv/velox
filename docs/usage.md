@@ -26,6 +26,9 @@ velox add -D vitest            # add to devDependencies
 velox add lodash@^4            # a version or range (default: latest, pinned ^)
 velox install                  # install (from velox.lock if present, else resolve)
 velox remove express           # uninstall (updates velox.lock)
+velox update [--latest] [pkg]  # upgrade in-range (or bump ranges with --latest)
+velox outdated                 # list deps with a newer version available
+velox x cowsay "hi"            # run a package's executable (npx-style)
 ```
 
 It resolves the transitive dependency graph (caret/tilde/x-range/comparator
@@ -44,7 +47,24 @@ and installs work offline from cache.
 
 **Lockfile.** Resolution is pinned to `velox.lock` (YAML). When it exists,
 `velox install` installs exactly those versions — no resolution, fully
-reproducible — while `add`/`remove` update it. Commit it to version control.
+reproducible — while `add`/`remove`/`update` keep it in sync. Commit it.
+
+**Workspaces.** Monorepos are supported via npm's `"workspaces"` glob array in
+the root `package.json` **or** a `pnpm-workspace.yaml` with a `packages:` list
+(e.g. `packages/*`). `velox install` (run anywhere inside the workspace)
+resolves every member's external dependencies together, hoists them into the
+root `node_modules`, and symlinks each member there so cross-package imports
+resolve. A `workspace:*` (or member-named) dependency links the local package
+instead of fetching from the registry.
+
+**`velox x`** (npx-style) downloads a package and its dependencies into the
+cache and runs its executable with velox as the runtime — `velox x <pkg>[@ver]
+[args…]`. The store is cached, so the second run is instant.
+
+**`velox outdated` / `velox update`.** `outdated` prints a Current/Wanted/Latest
+table of direct dependencies behind the registry. `update` re-resolves to the
+newest version inside each `package.json` range (and rewrites the lockfile);
+`update --latest [pkg…]` first bumps the targeted ranges to `^<latest>`.
 
 ## Run scripts
 
@@ -115,10 +135,13 @@ comments, `export KEY=…` prefixes, and single/double-quoted strings. `.env.loc
 | *(no args)* | Start the REPL |
 | `init [DIR]` | Scaffold a new project (`--no-install` to skip @types/node) |
 | `add [-D] <pkg>…` | Add packages and install them |
-| `install` | Install dependencies from package.json |
+| `install` | Install dependencies (workspace-aware) |
 | `remove <pkg>…` | Uninstall packages |
+| `update [--latest] [pkg…]` | Upgrade dependencies |
+| `outdated` | List dependencies with newer versions |
+| `x <pkg> [args…]` | Run a package's executable (npx-style) |
 | `run [script]` | Run a package.json script |
-| `FILE` | Run a script |
+| `FILE [args…]` | Run a script (args go to `process.argv`) |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |
 | `-w`, `--watch` | Re-run when the entry or any bundled import changes |
 | `--env-file PATH` | Load `KEY=VALUE` pairs into `process.env` (overrides auto-loaded `.env`) |

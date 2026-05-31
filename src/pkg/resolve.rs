@@ -144,7 +144,7 @@ fn range_matches(range_str: &str, v: &Version) -> bool {
 }
 
 /// Whether a dependency range refers to the npm registry (vs git/url/file/etc.).
-fn is_registry_range(range: &str) -> bool {
+pub fn is_registry_range(range: &str) -> bool {
     let r = range.trim();
     !(r.contains('/') && (r.contains(':') || r.starts_with("git") || r.starts_with("file")))
         && !r.starts_with("workspace:")

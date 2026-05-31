@@ -32,7 +32,7 @@ use crate::runtime::Runtime;
     name = "velox",
     version,
     about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore",
-    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  run [script]           Run a package.json script\n\nRun `velox <command> --help` for details."
+    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  update [--latest]      Upgrade dependencies\n  outdated               List dependencies with newer versions\n  run [script]           Run a package.json script\n  x <pkg> [args]         Run a package's executable (npx-style)\n\nRun `velox <command> --help` for details."
 )]
 struct Cli {
     /// Script to run (.ts/.tsx/.js/.jsx). Omit to start the REPL.
@@ -49,6 +49,12 @@ struct Cli {
     /// Re-run the script whenever it (or one of its imports) changes.
     #[arg(short = 'w', long = "watch")]
     watch: bool,
+
+    /// Arguments passed through to the script (available via `process.argv`).
+    /// Everything after the file name — including flags — goes to the script.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[allow(dead_code)] // surfaced to JS through `process.argv` (std::env::args).
+    script_args: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -131,6 +137,31 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 return Some(ExitCode::SUCCESS);
             }
             Some(pkg::remove(&positionals()))
+        }
+        "outdated" => {
+            if has_help {
+                println!("Usage: velox outdated\n\n  Show direct dependencies that have a newer version available.");
+                return Some(ExitCode::SUCCESS);
+            }
+            Some(pkg::outdated())
+        }
+        "update" | "up" | "upgrade" => {
+            if has_help {
+                println!("Usage: velox update [--latest] [pkg...]\n\n  Upgrade dependencies to the newest version in range (or, with --latest,\n  bump the range to the newest published version first).");
+                return Some(ExitCode::SUCCESS);
+            }
+            let latest = rest.iter().any(|a| a == "--latest" || a == "-L");
+            Some(pkg::update(&positionals(), latest))
+        }
+        "x" | "exec" | "dlx" => {
+            if has_help || rest.is_empty() {
+                println!("Usage: velox x <pkg>[@version] [args...]\n\n  Download a package (and its deps) and run its executable with velox.");
+                return Some(ExitCode::SUCCESS);
+            }
+            // First arg is the package spec; everything after is passed to the tool.
+            let spec = rest[0].clone();
+            let tool_args: Vec<String> = rest[1..].to_vec();
+            Some(pkg::x(&spec, &tool_args))
         }
         "run" | "run-script" => {
             if has_help {

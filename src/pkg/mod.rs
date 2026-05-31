@@ -15,6 +15,7 @@ mod registry;
 mod resolve;
 mod semver;
 mod tarball;
+mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -30,11 +31,16 @@ use serde_json::{Map, Value};
 use sha2::Digest;
 
 use resolve::Resolved;
-use semver::Version;
+use semver::{Range, Version};
 
-/// `velox install` — install the locked graph if `velox.lock` exists (fast,
-/// reproducible, no resolution), otherwise resolve from `package.json`.
+/// `velox install` — install everything. In a monorepo (npm `workspaces` or a
+/// `pnpm-workspace.yaml`) all members' deps are installed together. Otherwise:
+/// the locked graph from `velox.lock` if present (fast, reproducible), else
+/// resolve from `package.json`.
 pub fn install() -> ExitCode {
+    if let Some(root) = current_workspace_root() {
+        return install_workspace(&root, "install");
+    }
     if let Some(locked) = lockfile::read() {
         println!();
         println!(
@@ -57,6 +63,79 @@ pub fn install() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     run_install(&roots, "install")
+}
+
+/// The workspace root for the current directory, if any.
+fn current_workspace_root() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    workspace::find_root(&cwd)
+}
+
+/// Install a whole workspace: resolve the union of every member's external
+/// dependencies, hoist them into the root `node_modules`, then symlink each
+/// member so cross-package imports resolve.
+fn install_workspace(root: &Path, verb: &str) -> ExitCode {
+    let Some(ws) = workspace::discover(root) else {
+        return fail("could not read workspace");
+    };
+    // Operate from the workspace root (node_modules + lockfile live there).
+    if std::env::set_current_dir(root).is_err() {
+        return fail(&format!("cannot enter workspace root {}", root.display()));
+    }
+
+    println!();
+    println!(
+        "  {} {} {}",
+        "velox".cyan().bold(),
+        verb.dimmed(),
+        format!("· workspace with {} package(s)", ws.members.len()).dimmed()
+    );
+    for m in &ws.members {
+        println!("  {} {}", "•".dimmed(), m.name.dimmed());
+    }
+
+    // Gather external dependency roots from the root manifest + every member,
+    // excluding workspace-local packages and non-registry specifiers.
+    let members: std::collections::BTreeSet<String> = ws.member_names().into_iter().collect();
+    let mut roots: Vec<(String, String)> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut add_manifest = |manifest: &Value, roots: &mut Vec<(String, String)>| {
+        for (name, range) in gather_roots(manifest, true) {
+            if members.contains(&name) || !resolve::is_registry_range(&range) {
+                continue;
+            }
+            if seen.insert(name.clone()) {
+                roots.push((name, range));
+            }
+        }
+    };
+    if let Ok(root_manifest) = load_package_json(&PathBuf::from("package.json")) {
+        add_manifest(&root_manifest, &mut roots);
+    }
+    for m in &ws.members {
+        add_manifest(&m.manifest, &mut roots);
+    }
+
+    // Resolve + install the hoisted external graph.
+    let code = if roots.is_empty() {
+        println!("  {} no external dependencies", "•".dimmed());
+        ExitCode::SUCCESS
+    } else {
+        run_install(&roots, verb)
+    };
+
+    // Symlink every member into the root node_modules.
+    let nm = node_modules_dir();
+    let mut linked = 0;
+    for m in &ws.members {
+        let link = nm.join(&m.name);
+        match workspace::symlink_dir(&m.dir, &link) {
+            Ok(()) => linked += 1,
+            Err(e) => eprintln!("  {} {}", "!".yellow(), e),
+        }
+    }
+    println!("  {} linked {linked} workspace package(s)", "✓".green().bold());
+    code
 }
 
 /// `velox add <specs...>` — add packages, persist to package.json, install.
@@ -109,7 +188,11 @@ pub fn add(specs: &[String], dev: bool) -> ExitCode {
         return fail(&e);
     }
 
-    // Install the full graph (existing deps + the new ones).
+    // In a workspace, reinstall the whole workspace (so hoisting + member links
+    // stay consistent); otherwise just this project's graph.
+    if let Some(root) = current_workspace_root() {
+        return install_workspace(&root, "add");
+    }
     let roots = gather_roots(&pkg, true);
     run_install(&roots, "add")
 }
@@ -152,6 +235,252 @@ pub fn remove(names: &[String]) -> ExitCode {
     println!();
     println!("  {} removed {removed} package(s)", "✓".green().bold());
     ExitCode::SUCCESS
+}
+
+// --- outdated / update -------------------------------------------------------
+
+/// `velox outdated` — show direct dependencies with a newer version available.
+pub fn outdated() -> ExitCode {
+    let deps = collect_direct_deps();
+    if deps.is_empty() {
+        println!("  {} no dependencies", "•".dimmed());
+        return ExitCode::SUCCESS;
+    }
+
+    let nm = node_modules_dir();
+    let rows = par_map(deps, resolve_workers(), |(name, range)| {
+        let meta = registry::fetch_metadata(&name).ok()?;
+        let versions: Vec<Version> = meta["versions"]
+            .as_object()
+            .map(|o| o.keys().filter_map(|k| Version::parse(k)).collect())
+            .unwrap_or_default();
+        let wanted = Range::parse(&range).max_satisfying(&versions).cloned();
+        let latest = meta["dist-tags"]["latest"].as_str().and_then(Version::parse);
+        let current = installed_version(&nm.join(&name));
+        Some((name, range, current, wanted, latest))
+    });
+
+    let mut shown = 0;
+    println!();
+    println!(
+        "  {:<26} {:>12} {:>12} {:>12}",
+        "Package".bold(),
+        "Current".bold(),
+        "Wanted".bold(),
+        "Latest".bold()
+    );
+    for row in rows.into_iter().flatten() {
+        let (name, _range, current, wanted, latest) = row;
+        let cur_s = current.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+        let want_s = wanted.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+        let latest_s = latest.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+        // Only list packages that aren't already at the latest.
+        let up_to_date = matches!((&current, &latest), (Some(c), Some(l)) if c >= l);
+        if up_to_date {
+            continue;
+        }
+        shown += 1;
+        let behind_wanted = matches!((&current, &wanted), (Some(c), Some(w)) if c < w);
+        println!(
+            "  {:<26} {:>12} {:>12} {:>12}",
+            name,
+            cur_s,
+            if behind_wanted { want_s.yellow().to_string() } else { want_s },
+            latest_s.green().to_string(),
+        );
+    }
+    println!();
+    if shown == 0 {
+        println!("  {} everything is up to date", "✓".green().bold());
+    } else {
+        println!("  {} {shown} package(s) can be updated — run `velox update`", "•".dimmed());
+    }
+    ExitCode::SUCCESS
+}
+
+/// `velox update [pkgs] [--latest]` — upgrade dependencies. Without `--latest`,
+/// re-resolves to the newest version inside each existing range (npm-update
+/// style); with `--latest`, bumps the targeted ranges to `^<latest>` first.
+pub fn update(pkgs: &[String], latest: bool) -> ExitCode {
+    let pkg_path = PathBuf::from("package.json");
+    let mut pkg = match load_package_json(&pkg_path) {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+
+    if latest {
+        println!();
+        println!("  {} {} {}", "velox".cyan().bold(), "update".dimmed(), "· bumping ranges to latest".dimmed());
+        let targets: Vec<String> = if pkgs.is_empty() {
+            direct_dep_names(&pkg)
+        } else {
+            pkgs.to_vec()
+        };
+        for name in &targets {
+            match registry::fetch_metadata(name) {
+                Ok(meta) => {
+                    if let Some(latest_v) = meta["dist-tags"]["latest"].as_str()
+                        && set_dep_range(&mut pkg, name, &format!("^{latest_v}"))
+                    {
+                        println!("  {} {name} {}", "✓".green().bold(), format!("^{latest_v}").dimmed());
+                    }
+                }
+                Err(e) => eprintln!("  {} {name}: {e}", "!".yellow()),
+            }
+        }
+        if let Err(e) = write_package_json(&pkg_path, &pkg) {
+            return fail(&e);
+        }
+    }
+
+    // Force a fresh resolution from package.json ranges (ignoring lockfile pins),
+    // which picks the newest in-range version and rewrites velox.lock.
+    if let Some(root) = current_workspace_root() {
+        return install_workspace(&root, "update");
+    }
+    let roots = gather_roots(&pkg, true);
+    if roots.is_empty() {
+        println!("  {} no dependencies to update", "•".dimmed());
+        return ExitCode::SUCCESS;
+    }
+    run_install(&roots, "update")
+}
+
+/// Collect direct deps (name, range) for outdated/update — workspace-aware.
+fn collect_direct_deps() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut push = |manifest: &Value| {
+        for (name, range) in gather_roots(manifest, true) {
+            if resolve::is_registry_range(&range) && seen.insert(name.clone()) {
+                out.push((name, range));
+            }
+        }
+    };
+    if let Some(root) = current_workspace_root()
+        && let Some(ws) = workspace::discover(&root)
+    {
+        if let Ok(m) = load_package_json(&root.join("package.json")) {
+            push(&m);
+        }
+        for m in &ws.members {
+            push(&m.manifest);
+        }
+        return out;
+    }
+    if let Ok(pkg) = load_package_json(&PathBuf::from("package.json")) {
+        push(&pkg);
+    }
+    out
+}
+
+fn direct_dep_names(pkg: &Value) -> Vec<String> {
+    gather_roots(pkg, true).into_iter().map(|(n, _)| n).collect()
+}
+
+/// Set the range for `name` in whichever dependency field it appears in.
+/// Returns false if the package isn't a direct dependency.
+fn set_dep_range(pkg: &mut Value, name: &str, range: &str) -> bool {
+    if let Some(obj) = pkg.as_object_mut() {
+        for field in ["dependencies", "devDependencies", "optionalDependencies"] {
+            if let Some(map) = obj.get_mut(field).and_then(|v| v.as_object_mut())
+                && map.contains_key(name)
+            {
+                map.insert(name.to_string(), Value::String(range.to_string()));
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn installed_version(dest: &Path) -> Option<Version> {
+    let text = std::fs::read_to_string(dest.join("package.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value["version"].as_str().and_then(Version::parse)
+}
+
+fn resolve_workers() -> usize {
+    16
+}
+
+// --- velox x (npx-style runner) ----------------------------------------------
+
+/// `velox x <pkg>[@version] [args...]` — fetch a package (and its deps) into a
+/// cached store and run its bin with velox as the runtime. Like `npx`, but the
+/// tool executes on JavaScriptCore.
+pub fn x(spec: &str, args: &[String]) -> ExitCode {
+    let (name, range) = parse_spec(spec);
+    println!();
+    println!("  {} {} {}", "velox".cyan().bold(), "x".dimmed(), format!("· {spec}").dimmed());
+
+    let resolved = match resolve::resolve(&[(name.clone(), range)]) {
+        Ok(r) => r,
+        Err(e) => return fail(&e),
+    };
+    let Some(top) = resolved.iter().find(|r| r.name == name) else {
+        return fail(&format!("could not resolve {spec}"));
+    };
+    let version = top.version.to_string();
+
+    let Some(store) = x_store(&name, &version) else {
+        return fail("no cache directory available (set $HOME or $VELOX_CACHE)");
+    };
+    let nm = store.join("node_modules");
+
+    // Install the tool + its dependencies into the store (skips if present).
+    let pkg_dir = nm.join(&name);
+    if !pkg_dir.join("package.json").exists() {
+        if let Err(e) = std::fs::create_dir_all(&nm) {
+            return fail(&format!("mkdir {}: {e}", nm.display()));
+        }
+        let outcomes = par_map(resolved.clone(), DOWNLOAD_WORKERS, |r| install_one(&r, &nm));
+        for outcome in outcomes {
+            if let Err(e) = outcome {
+                return fail(&e);
+            }
+        }
+    }
+
+    // Locate the executable from the tool's `bin` field.
+    let bin = match find_bin(&pkg_dir, &name) {
+        Some(b) => b,
+        None => return fail(&format!("{name} does not expose an executable")),
+    };
+
+    let velox_exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => return fail(&format!("cannot locate velox executable: {e}")),
+    };
+    println!("  {} {name}@{version}", "↯".cyan().bold());
+    match Command::new(velox_exe).arg(&bin).args(args).status() {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(e) => fail(&format!("failed to run {name}: {e}")),
+    }
+}
+
+fn x_store(name: &str, version: &str) -> Option<PathBuf> {
+    cache::root().map(|r| r.join("_x").join(name).join(version))
+}
+
+/// Resolve the `bin` entry of an installed package to an absolute path. A string
+/// `bin` is the package's single executable; an object maps names to paths.
+fn find_bin(pkg_dir: &Path, name: &str) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(pkg_dir.join("package.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let rel = match &value["bin"] {
+        Value::String(s) => s.clone(),
+        Value::Object(map) => {
+            // Prefer the bin named like the package (its unscoped tail), else any.
+            let short = name.rsplit('/').next().unwrap_or(name);
+            map.get(short)
+                .or_else(|| map.values().next())
+                .and_then(|v| v.as_str())
+                .map(String::from)?
+        }
+        _ => return None,
+    };
+    Some(pkg_dir.join(rel))
 }
 
 // --- shared install pipeline ------------------------------------------------

@@ -317,6 +317,9 @@ impl Graph {
             path: path.to_path_buf(),
             source,
         })?;
+        // Strip a leading `#!` shebang (executable scripts / npm `bin` files) —
+        // JSC rejects it. Keep the newline so reported line numbers don't shift.
+        let source = strip_shebang(source);
 
         // A `.json` module exports its parsed contents (JSON is a subset of JS
         // object-literal syntax, so it's a valid right-hand side as-is).
@@ -557,6 +560,18 @@ impl Graph {
         ));
         out
     }
+}
+
+/// Remove a leading `#!`-shebang line, replacing it with a blank line so that
+/// line numbers in diagnostics stay aligned with the original source.
+fn strip_shebang(source: String) -> String {
+    if source.starts_with("#!") {
+        return match source.find('\n') {
+            Some(nl) => source[nl..].to_string(),
+            None => String::new(),
+        };
+    }
+    source
 }
 
 /// Per-module preamble injected at the top of each wrapper: gives the module
