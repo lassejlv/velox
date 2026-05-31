@@ -66,6 +66,22 @@ table of direct dependencies behind the registry. `update` re-resolves to the
 newest version inside each `package.json` range (and rewrites the lockfile);
 `update --latest [pkg…]` first bumps the targeted ranges to `^<latest>`.
 
+## Compile to a standalone executable
+
+```sh
+velox build app.ts                 # → ./app  (self-contained, ~7 MB)
+velox build src/cli.ts --out mycli # → ./mycli
+./app arg1 arg2                    # runs with no velox install needed
+```
+
+`velox build` bundles the entry and all its dependencies, then appends the
+bundle to a copy of velox to produce a single self-contained, **JIT-enabled**
+executable — no velox, Node, or `node_modules` required at runtime. The script's
+args arrive as `process.argv[1..]`, and a Bun-style default-export server is
+auto-served. (Strict `codesign -v` notes the appended bundle as trailing data,
+but the binary runs with full JIT — the same as Bun/Deno compiled output.)
+macOS arm64 only.
+
 ## Run scripts
 
 ```sh
@@ -140,6 +156,7 @@ comments, `export KEY=…` prefixes, and single/double-quoted strings. `.env.loc
 | `update [--latest] [pkg…]` | Upgrade dependencies |
 | `outdated` | List dependencies with newer versions |
 | `x <pkg> [args…]` | Run a package's executable (npx-style) |
+| `build <entry> [--out N]` | Compile to a standalone executable |
 | `run [script]` | Run a package.json script |
 | `FILE [args…]` | Run a script (args go to `process.argv`) |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |

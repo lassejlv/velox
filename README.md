@@ -60,10 +60,18 @@ velox remove express           # uninstall
 
 It resolves the full dependency graph (semver ranges, dist-tags) with parallel
 metadata + downloads, verifies each tarball's `sha512`/`sha1` integrity, and
-writes a YAML `velox.lock`. Tarballs are kept in a **global cache**
+writes a YAML `velox.lock`. Tarballs and metadata are kept in a **global cache**
 (`~/.velox/cache`, or `$VELOX_CACHE`) shared across projects, so repeat installs
-are near-instant and offline-friendly — `velox install` from a lockfile with a
-warm cache takes milliseconds. Set `$VELOX_REGISTRY` for a private registry.
+are near-instant and offline-friendly. There's also `velox update`, `outdated`,
+npm/pnpm **workspaces**, and `velox x <pkg>` (npx-style). Set `$VELOX_REGISTRY`
+for a private registry.
+
+## Compile
+
+```sh
+velox build app.ts        # → ./app — a single self-contained, JIT-enabled binary
+./app                     # no velox / Node / node_modules needed
+```
 
 ## Documentation
 

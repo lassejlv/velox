@@ -32,7 +32,7 @@ use crate::runtime::Runtime;
     name = "velox",
     version,
     about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore",
-    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  update [--latest]      Upgrade dependencies\n  outdated               List dependencies with newer versions\n  run [script]           Run a package.json script\n  x <pkg> [args]         Run a package's executable (npx-style)\n\nRun `velox <command> --help` for details."
+    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  update [--latest]      Upgrade dependencies\n  outdated               List dependencies with newer versions\n  run [script]           Run a package.json script\n  x <pkg> [args]         Run a package's executable (npx-style)\n  build <entry>          Compile to a standalone executable\n\nRun `velox <command> --help` for details."
 )]
 struct Cli {
     /// Script to run (.ts/.tsx/.js/.jsx). Omit to start the REPL.
@@ -58,6 +58,12 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    // A compiled standalone binary (`velox build`) carries its bundle appended
+    // to this executable — run it directly, ignoring CLI parsing.
+    if let Some(bundle) = embedded_bundle() {
+        return run_bundle(&bundle);
+    }
+
     // Subcommands (init / install / add / remove) are handled before clap so
     // they don't collide with the positional `file` arg — `velox script.ts`
     // keeps working unchanged.
@@ -137,6 +143,30 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 return Some(ExitCode::SUCCESS);
             }
             Some(pkg::remove(&positionals()))
+        }
+        "build" | "compile" => {
+            if has_help {
+                println!("Usage: velox build <entry> [--out NAME]\n\n  Bundle <entry> and its deps into a standalone, code-signed executable.");
+                return Some(ExitCode::SUCCESS);
+            }
+            let positional = positionals();
+            let Some(entry) = positional.first() else {
+                eprintln!("velox build: missing entry file (try `velox build app.ts`)");
+                return Some(ExitCode::FAILURE);
+            };
+            // `--out NAME` / `-o NAME`, else the entry's stem.
+            let out = rest
+                .iter()
+                .position(|a| a == "--out" || a == "-o")
+                .and_then(|i| rest.get(i + 1))
+                .cloned()
+                .unwrap_or_else(|| {
+                    Path::new(entry)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "app".to_string())
+                });
+            Some(build_executable(Path::new(entry), Path::new(&out)))
         }
         "outdated" => {
             if has_help {
@@ -327,9 +357,14 @@ fn run_file(path: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    run_bundle(&js)
+}
 
+/// Evaluate an already-bundled script on a fresh runtime and drain the event
+/// loop. Shared by `run_file`, `--eval`, and compiled (embedded) binaries.
+fn run_bundle(js: &str) -> ExitCode {
     let runtime = Runtime::new();
-    match runtime.eval(&js) {
+    match runtime.eval(js) {
         Ok(_) => {
             // Run queued timers/promises to completion.
             if runtime.run_event_loop() {
@@ -345,3 +380,142 @@ fn run_file(path: &Path) -> ExitCode {
         }
     }
 }
+
+// --- `velox build` — standalone executables ---------------------------------
+//
+// A compiled binary is a copy of the velox executable with the bundled script
+// appended, followed by a 16-byte trailer: `MAGIC (8) || payload_len (u64 LE)`.
+// At startup velox reads just that trailer; if the magic matches it runs the
+// embedded bundle instead of acting as a CLI. macOS code signatures cover only
+// the Mach-O image (their `codeLimit`), so the inherited signature stays valid
+// for the code and the JIT entitlement is honored — the appended payload simply
+// sits outside the signed region. (Strict `codesign -v` flags the trailing
+// data, but the binary executes with full JIT, like Bun/Deno compiled output.)
+
+const COMPILE_MAGIC: &[u8; 8] = b"VLXBNDL1";
+
+/// If the running executable carries an embedded bundle, return its source.
+/// Reads only the trailing 16 bytes unless the magic matches, so it's cheap for
+/// the normal (non-compiled) velox.
+fn embedded_bundle() -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let exe = std::env::current_exe().ok()?;
+    let mut file = std::fs::File::open(&exe).ok()?;
+    let size = file.metadata().ok()?.len();
+    if size < 16 {
+        return None;
+    }
+    file.seek(SeekFrom::End(-16)).ok()?;
+    let mut trailer = [0u8; 16];
+    file.read_exact(&mut trailer).ok()?;
+    if &trailer[..8] != COMPILE_MAGIC {
+        return None;
+    }
+    let len = u64::from_le_bytes(trailer[8..16].try_into().ok()?);
+    if len == 0 || len + 16 > size {
+        return None;
+    }
+    file.seek(SeekFrom::Start(size - 16 - len)).ok()?;
+    let mut payload = vec![0u8; len as usize];
+    file.read_exact(&mut payload).ok()?;
+    String::from_utf8(payload).ok()
+}
+
+/// `velox build <entry> [--out NAME]` — bundle the entry and emit a standalone,
+/// code-signed (JIT-enabled) executable.
+fn build_executable(entry: &Path, out: &Path) -> ExitCode {
+    use owo_colors::OwoColorize;
+    use std::io::Write;
+
+    let js = match module::bundle(entry) {
+        Ok(js) => js,
+        Err(error) => {
+            ui::report_module_error(&error.to_string());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            ui::report_runtime_error(&format!("build: cannot locate velox: {e}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut bytes = match std::fs::read(&exe) {
+        Ok(b) => b,
+        Err(e) => {
+            ui::report_runtime_error(&format!("build: cannot read velox binary: {e}"));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // If the running velox is itself a compiled binary, strip its trailer +
+    // payload first so we embed only the new bundle.
+    bytes.truncate(base_executable_len(&bytes));
+
+    // Write the signed velox image, then append the payload after it. The
+    // inherited signature's `codeLimit` covers only the Mach-O, so the trailing
+    // payload is outside the signed region and the JIT entitlement is preserved.
+    let payload = js.into_bytes();
+    let write_base = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(out)?;
+        f.write_all(&bytes)?;
+        f.flush()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = write_base {
+        ui::report_runtime_error(&format!("build: cannot write {}: {e}", out.display()));
+        return ExitCode::FAILURE;
+    }
+
+    // Append the payload AFTER the (inherited) signature. The signature's
+    // codeLimit covers only the Mach-O image, so the trailing payload sits
+    // outside the signed region — the signature stays valid for the code and
+    // the JIT entitlement is honored, while we can still read the payload at EOF.
+    let append = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().append(true).open(out)?;
+        f.write_all(&payload)?;
+        f.write_all(COMPILE_MAGIC)?;
+        f.write_all(&(payload.len() as u64).to_le_bytes())?;
+        f.flush()
+    })();
+    if let Err(e) = append {
+        ui::report_runtime_error(&format!("build: cannot append payload: {e}"));
+        return ExitCode::FAILURE;
+    }
+
+    let total = bytes.len() + payload.len() + 16;
+    let size_mb = total as f64 / 1_048_576.0;
+    println!(
+        "  {} {} {}",
+        "✓".green().bold(),
+        out.display(),
+        format!("({size_mb:.1} MB)").dimmed()
+    );
+    ExitCode::SUCCESS
+}
+
+/// Length of the Mach-O portion of `bytes` — i.e. the file with any existing
+/// compiled trailer + payload removed.
+fn base_executable_len(bytes: &[u8]) -> usize {
+    if bytes.len() < 16 {
+        return bytes.len();
+    }
+    let trailer = &bytes[bytes.len() - 16..];
+    if &trailer[..8] != COMPILE_MAGIC {
+        return bytes.len();
+    }
+    let len = u64::from_le_bytes(trailer[8..16].try_into().unwrap()) as usize;
+    if len + 16 <= bytes.len() {
+        bytes.len() - 16 - len
+    } else {
+        bytes.len()
+    }
+}
+
