@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # velox is macOS-only (system JavaScriptCore); Apple-silicon runner.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      # `cargo run`/`cargo test` auto-sign via scripts/sign-and-run.sh so JSC's
+      # JIT is enabled; ad-hoc codesign works on the runner.
+      - name: Full test suite (unit + compat suites + examples)
+        run: ./scripts/test-all.sh
+
+      - name: Node.js test suite (curated subset)
+        run: ./scripts/node-test.sh

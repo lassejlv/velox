@@ -1,0 +1,10 @@
+/target
+
+# `velox -e` stages a temp entry file here
+.velox-eval-*.ts
+
+# Node test files fetched on demand + run artifacts
+/tests/node/parallel/
+/tests/node/failures.log
+/tests/node/last-pass.txt
+/tests/node/last-fail.txt

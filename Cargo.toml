@@ -1,0 +1,55 @@
+[package]
+name = "velox"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "velox"
+path = "src/main.rs"
+
+# Optimized release build: small, fast binary. NB: no `panic = "abort"` — velox
+# relies on `extern "C-unwind"` to propagate JS exceptions across the FFI
+# boundary, which requires stack unwinding.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10.3"
+base64 = "0.22.1"
+brotli = "8.0.3"
+cbc = { version = "0.1", features = ["alloc"] }
+clap = { version = "4.6.1", features = ["derive"] }
+ctr = "0.9"
+digest = "0.11.3"
+flate2 = "1.1.9"
+getrandom = "0.4.2"
+hmac = "0.13.0"
+httparse = "1.10.1"
+libc = "0.2.186"
+md-5 = "0.11.0"
+mio = { version = "1.2.1", features = ["os-poll", "net"] }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-javascript-core = "0.3.2"
+owo-colors = "4.3.0"
+p256 = { version = "0.13", features = ["ecdh"] }
+oxc = { version = "0.133.0", features = ["semantic", "transformer", "codegen", "ast_visit"] }
+pbkdf2 = "0.13.0"
+rand = "0.8"
+rcgen = "0.14.8"
+ring = "0.17.14"
+rsa = { version = "0.9", features = ["pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.2.0"
+rustls-pki-types = "1.14.1"
+rustyline = "18.0.0"
+scrypt = "0.12.0"
+serde_json = "1.0.150"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+webpki-roots = "1.0.7"

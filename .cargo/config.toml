@@ -1,0 +1,5 @@
+# On Apple Silicon, sign the built binary with the JIT entitlement before running
+# so JavaScriptCore's JIT is enabled (otherwise it falls back to the much slower
+# interpreter). See scripts/sign-and-run.sh + velox.entitlements.
+[target.'cfg(all(target_arch = "aarch64", target_os = "macos"))']
+runner = "scripts/sign-and-run.sh"

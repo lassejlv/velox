@@ -1,0 +1,42 @@
+name: Release
+
+# Tag a release: `git tag v0.1.0 && git push --tags`. Builds the optimized,
+# JIT-entitlement-signed binary and attaches a tarball to the GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14 # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build + sign (JIT enabled)
+        run: make release
+
+      - name: Package
+        run: |
+          TARGET=aarch64-apple-darwin
+          DIST="velox-${GITHUB_REF_NAME}-${TARGET}"
+          mkdir -p "$DIST"
+          # The signature (with the allow-jit entitlement) travels in the binary,
+          # so the downloaded binary is JIT-enabled with no extra steps.
+          cp target/release/velox "$DIST/"
+          cp README.md LICENSE "$DIST/" 2>/dev/null || true
+          tar -czf "$DIST.tar.gz" "$DIST"
+          shasum -a 256 "$DIST.tar.gz" > "$DIST.tar.gz.sha256"
+          echo "ASSET=$DIST.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+          generate_release_notes: true

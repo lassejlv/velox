@@ -1,0 +1,764 @@
+//! Native crypto primitives: secure random bytes and message digests/HMAC.
+//! The `node:crypto` shim (`src/builtins/crypto.js`) and the global `crypto`
+//! object (`CRYPTO_PRELUDE`) are built on these. Data crosses as latin1 strings.
+
+use std::ptr;
+
+use aes::{Aes128, Aes192, Aes256};
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit as AeadKeyInit};
+use cbc::cipher::block_padding::Pkcs7;
+use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher};
+use digest::Digest;
+use hmac::{Hmac, KeyInit, Mac};
+use md5::Md5;
+use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
+use sha1::Sha1;
+use sha2::{Sha224, Sha256, Sha384, Sha512};
+
+use crate::event_loop::{arg_slice, register};
+use crate::node::{call_named, js_string, js_string_latin1, js_value_to_latin1};
+use crate::runtime::js_value_to_string;
+
+/// Installs `globalThis.crypto` (Web Crypto subset) on top of the natives.
+pub const CRYPTO_PRELUDE: &str = r#"
+(function () {
+  if (globalThis.crypto && globalThis.crypto.getRandomValues) return;
+  function getRandomValues(view) {
+    var bytes = Buffer.from(__velox_random_bytes(view.byteLength), "latin1");
+    new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(bytes);
+    return view;
+  }
+  function randomUUID() {
+    var b = Buffer.from(__velox_random_bytes(16), "latin1");
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    var h = b.toString("hex");
+    return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
+  }
+  globalThis.crypto = {
+    getRandomValues: getRandomValues,
+    randomUUID: randomUUID,
+    subtle: {
+      digest: function (algo, data) {
+        var name = String(algo && algo.name ? algo.name : algo).toLowerCase().replace(/-/g, "");
+        var latin1 = __velox_hash(name, Buffer.from(data).toString("latin1"));
+        var out = Buffer.from(latin1, "latin1");
+        return Promise.resolve(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
+      },
+    },
+  };
+})();
+"#;
+
+/// Register the native crypto functions.
+pub fn install(ctx: JSContextRef) {
+    unsafe {
+        register(ctx, c"__velox_random_bytes", random_bytes);
+        register(ctx, c"__velox_hash", hash_fn);
+        register(ctx, c"__velox_hmac", hmac_fn);
+        register(ctx, c"__velox_pbkdf2", pbkdf2_fn);
+        register(ctx, c"__velox_scrypt", scrypt_fn);
+        register(ctx, c"__velox_cipher", cipher_fn);
+        register(ctx, c"__velox_gen_ed25519", gen_ed25519_fn);
+        register(ctx, c"__velox_gen_ec", gen_ec_fn);
+        register(ctx, c"__velox_gen_rsa", gen_rsa_fn);
+        register(ctx, c"__velox_sign_ed25519", sign_ed25519_fn);
+        register(ctx, c"__velox_verify_ed25519", verify_ed25519_fn);
+        register(ctx, c"__velox_ecdh_generate", ecdh_generate_fn);
+        register(ctx, c"__velox_ecdh_pub", ecdh_pub_fn);
+        register(ctx, c"__velox_ecdh_compute", ecdh_compute_fn);
+    }
+}
+
+// --- ECDH key agreement (P-256, via the p256 crate) ------------------------
+
+/// `__velox_ecdh_generate()` → JSON `{ priv, pub }` (latin1: 32-byte scalar,
+/// 65-byte uncompressed SEC1 point).
+unsafe extern "C-unwind" fn ecdh_generate_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let mut rng = [0u8; 32];
+    if getrandom::fill(&mut rng).is_err() {
+        return unsafe { throw(ctx, exception, "ECDH key generation failed") };
+    }
+    // Reduce random bytes into a valid non-zero scalar by retrying via from_bytes.
+    let secret = loop {
+        if let Ok(s) = p256::SecretKey::from_slice(&rng) {
+            break s;
+        }
+        // Perturb and retry (extremely rare for random 32 bytes to be invalid).
+        rng[0] ^= 0x01;
+    };
+    let priv_bytes = secret.to_bytes();
+    let pub_point = secret.public_key().to_encoded_point(false);
+    let json = serde_json::json!({
+        "priv": latin1_string(priv_bytes.as_slice()),
+        "pub": latin1_string(pub_point.as_bytes()),
+    });
+    unsafe { js_string(ctx, &json.to_string()) }
+}
+
+/// `__velox_ecdh_pub(privLatin1, compressed)` → latin1 SEC1 public point.
+unsafe extern "C-unwind" fn ecdh_pub_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let args = arg_slice(argc, argv);
+    let priv_bytes = arg_bytes(ctx, args, 0);
+    let compressed = args
+        .get(1)
+        .map(|v| unsafe { JSValue::to_boolean(ctx, *v) })
+        .unwrap_or(false);
+    match p256::SecretKey::from_slice(&priv_bytes) {
+        Ok(secret) => {
+            let point = secret.public_key().to_encoded_point(compressed);
+            unsafe { js_string_latin1(ctx, point.as_bytes()) }
+        }
+        Err(_) => unsafe { throw(ctx, exception, "invalid ECDH private key") },
+    }
+}
+
+/// `__velox_ecdh_compute(privLatin1, otherPubLatin1)` → latin1 shared secret
+/// (32-byte X coordinate), matching Node's `ECDH.computeSecret`.
+unsafe extern "C-unwind" fn ecdh_compute_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let priv_bytes = arg_bytes(ctx, args, 0);
+    let pub_bytes = arg_bytes(ctx, args, 1);
+    let secret = match p256::SecretKey::from_slice(&priv_bytes) {
+        Ok(s) => s,
+        Err(_) => return unsafe { throw(ctx, exception, "invalid ECDH private key") },
+    };
+    let public = match p256::PublicKey::from_sec1_bytes(&pub_bytes) {
+        Ok(p) => p,
+        Err(_) => return unsafe { throw(ctx, exception, "invalid ECDH public key") },
+    };
+    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    unsafe { js_string_latin1(ctx, shared.raw_secret_bytes().as_slice()) }
+}
+
+/// Encode raw bytes as a latin1 `String` (one byte → one char) for JSON embedding.
+fn latin1_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
+}
+
+// --- asymmetric signing: Ed25519 + ECDSA P-256 (via ring) ------------------
+
+/// SubjectPublicKeyInfo DER prefix for an Ed25519 public key (RFC 8410).
+const ED25519_SPKI_PREFIX: &[u8] = &[
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+];
+
+/// SubjectPublicKeyInfo DER prefix for an EC P-256 (prime256v1) public key.
+const P256_SPKI_PREFIX: &[u8] = &[
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+    0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+];
+
+/// `__velox_gen_ed25519()` → JSON `{publicKey, privateKey}` (PEM).
+unsafe extern "C-unwind" fn gen_ed25519_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    match gen_ed25519() {
+        Ok((public_pem, private_pem)) => {
+            let json = serde_json::json!({ "publicKey": public_pem, "privateKey": private_pem });
+            unsafe { js_string(ctx, &json.to_string()) }
+        }
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+/// `__velox_sign_ed25519(privateKeyPem, data)` → signature.
+unsafe extern "C-unwind" fn sign_ed25519_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let key = arg_str(ctx, args, 0);
+    let data = arg_bytes(ctx, args, 1);
+    match sign_ed25519(&key, &data) {
+        Ok(sig) => unsafe { js_string_latin1(ctx, &sig) },
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+/// `__velox_verify_ed25519(publicKeyPem, data, signature)` → boolean.
+unsafe extern "C-unwind" fn verify_ed25519_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let key = arg_str(ctx, args, 0);
+    let data = arg_bytes(ctx, args, 1);
+    let sig = arg_bytes(ctx, args, 2);
+    unsafe { JSValue::new_boolean(ctx, verify_ed25519(&key, &data, &sig)) }
+}
+
+fn gen_ed25519() -> Result<(String, String), String> {
+    use ring::rand::SystemRandom;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = SystemRandom::new();
+    let pkcs8 =
+        Ed25519KeyPair::generate_pkcs8(&rng).map_err(|_| "key generation failed".to_string())?;
+    let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+        .map_err(|_| "key generation failed".to_string())?;
+
+    let private_pem = pem_encode("PRIVATE KEY", pkcs8.as_ref());
+    let mut spki = ED25519_SPKI_PREFIX.to_vec();
+    spki.extend_from_slice(keypair.public_key().as_ref());
+    let public_pem = pem_encode("PUBLIC KEY", &spki);
+    Ok((public_pem, private_pem))
+}
+
+/// `__velox_gen_ec()` → JSON `{publicKey, privateKey}` (PEM) for EC P-256.
+unsafe extern "C-unwind" fn gen_ec_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    match gen_ec() {
+        Ok((public_pem, private_pem)) => {
+            let json = serde_json::json!({ "publicKey": public_pem, "privateKey": private_pem });
+            unsafe { js_string(ctx, &json.to_string()) }
+        }
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+/// `__velox_gen_rsa(modulusLength)` → JSON `{publicKey, privateKey}` (PEM) for RSA.
+unsafe extern "C-unwind" fn gen_rsa_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let bits = {
+        let n = arg_num(ctx, args, 0) as usize;
+        if n == 0 { 2048 } else { n }
+    };
+    match gen_rsa(bits) {
+        Ok((public_pem, private_pem)) => {
+            let json = serde_json::json!({ "publicKey": public_pem, "privateKey": private_pem });
+            unsafe { js_string(ctx, &json.to_string()) }
+        }
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+fn gen_rsa(bits: usize) -> Result<(String, String), String> {
+    use rsa::pkcs1::LineEnding;
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use rsa::{RsaPrivateKey, RsaPublicKey};
+
+    if !(512..=4096).contains(&bits) {
+        return Err(format!("unsupported RSA modulus length {bits}"));
+    }
+    let mut rng = rand::thread_rng();
+    let private = RsaPrivateKey::new(&mut rng, bits).map_err(|e| format!("RSA keygen: {e}"))?;
+    let public = RsaPublicKey::from(&private);
+    // PKCS#8 private key + SPKI public key, both PEM — the shapes our ring-based
+    // sign/verify already accept.
+    let private_pem = private
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    let public_pem = public
+        .to_public_key_pem(LineEnding::LF)
+        .map_err(|e| e.to_string())?;
+    Ok((public_pem, private_pem))
+}
+
+fn gen_ec() -> Result<(String, String), String> {
+    use ring::rand::SystemRandom;
+    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
+
+    let rng = SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+        .map_err(|_| "EC key generation failed".to_string())?;
+    let keypair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+        .map_err(|_| "EC key generation failed".to_string())?;
+
+    let private_pem = pem_encode("PRIVATE KEY", pkcs8.as_ref());
+    let mut spki = P256_SPKI_PREFIX.to_vec();
+    spki.extend_from_slice(keypair.public_key().as_ref());
+    let public_pem = pem_encode("PUBLIC KEY", &spki);
+    Ok((public_pem, private_pem))
+}
+
+/// Sign with whichever key type the PEM holds (Ed25519, ECDSA P-256, or RSA).
+fn sign_ed25519(private_pem: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    use ring::rand::SystemRandom;
+    use ring::signature::{
+        ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, Ed25519KeyPair, RSA_PKCS1_SHA256, RsaKeyPair,
+    };
+
+    let der = pem_decode(private_pem)?;
+    if let Ok(keypair) = Ed25519KeyPair::from_pkcs8(&der) {
+        return Ok(keypair.sign(data).as_ref().to_vec());
+    }
+    let rng = SystemRandom::new();
+    if let Ok(keypair) = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &der, &rng) {
+        return keypair
+            .sign(&rng, data)
+            .map(|s| s.as_ref().to_vec())
+            .map_err(|_| "signing failed".to_string());
+    }
+    if let Ok(keypair) = RsaKeyPair::from_pkcs8(&der) {
+        let mut sig = vec![0u8; keypair.public().modulus_len()];
+        keypair
+            .sign(&RSA_PKCS1_SHA256, &rng, data, &mut sig)
+            .map_err(|_| "RSA signing failed".to_string())?;
+        return Ok(sig);
+    }
+    Err("unsupported private key (expected Ed25519, EC P-256, or RSA)".to_string())
+}
+
+/// Verify, dispatching on the public key's SPKI prefix / algorithm.
+fn verify_ed25519(public_pem: &str, data: &[u8], signature: &[u8]) -> bool {
+    use ring::signature::{
+        ECDSA_P256_SHA256_ASN1, ED25519, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey,
+    };
+    let Ok(der) = pem_decode(public_pem) else {
+        return false;
+    };
+    if der.len() == 32 {
+        return UnparsedPublicKey::new(&ED25519, &der)
+            .verify(data, signature)
+            .is_ok();
+    }
+    if der.starts_with(ED25519_SPKI_PREFIX) {
+        let key = &der[ED25519_SPKI_PREFIX.len()..];
+        return UnparsedPublicKey::new(&ED25519, key)
+            .verify(data, signature)
+            .is_ok();
+    }
+    if der.starts_with(P256_SPKI_PREFIX) {
+        let key = &der[P256_SPKI_PREFIX.len()..];
+        return UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, key)
+            .verify(data, signature)
+            .is_ok();
+    }
+    if let Some(pkcs1) = spki_to_rsa_pkcs1(&der) {
+        return UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, &pkcs1)
+            .verify(data, signature)
+            .is_ok();
+    }
+    false
+}
+
+/// Extract the PKCS#1 `RSAPublicKey` DER from an X.509 SPKI DER (ring's RSA
+/// verifier wants the bare PKCS#1 key, not the SPKI wrapper).
+fn spki_to_rsa_pkcs1(spki: &[u8]) -> Option<Vec<u8>> {
+    let (seq, _) = der_tlv(spki)?; // outer SEQUENCE value
+    let (_algid, after_algid) = der_tlv(seq)?; // skip AlgorithmIdentifier
+    let (bitstring, _) = der_tlv(after_algid)?; // BIT STRING value (with unused-bits byte)
+    bitstring.get(1..).map(<[u8]>::to_vec) // drop the unused-bits byte
+}
+
+/// Read one DER TLV: returns `(value, rest_after_this_tlv)`.
+fn der_tlv(input: &[u8]) -> Option<(&[u8], &[u8])> {
+    if input.len() < 2 {
+        return None;
+    }
+    let (len, header) = der_len(&input[1..])?;
+    let start = 1 + header;
+    let end = start.checked_add(len)?;
+    if end > input.len() {
+        return None;
+    }
+    Some((&input[start..end], &input[end..]))
+}
+
+/// Decode a DER length; returns `(length, bytes_consumed)`.
+fn der_len(input: &[u8]) -> Option<(usize, usize)> {
+    let first = *input.first()?;
+    if first < 0x80 {
+        return Some((first as usize, 1));
+    }
+    let n = (first & 0x7f) as usize;
+    if n == 0 || n > 4 || input.len() < 1 + n {
+        return None;
+    }
+    let mut len = 0usize;
+    for &b in &input[1..1 + n] {
+        len = (len << 8) | b as usize;
+    }
+    Some((len, 1 + n))
+}
+
+fn pem_encode(label: &str, der: &[u8]) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut out = format!("-----BEGIN {label}-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+        out.push('\n');
+    }
+    out.push_str(&format!("-----END {label}-----\n"));
+    out
+}
+
+fn pem_decode(pem: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| e.to_string())
+}
+
+/// `__velox_pbkdf2(digest, password, salt, iterations, keylen)` → derived key.
+unsafe extern "C-unwind" fn pbkdf2_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let digest = arg_str(ctx, args, 0);
+    let password = arg_bytes(ctx, args, 1);
+    let salt = arg_bytes(ctx, args, 2);
+    let iterations = arg_num(ctx, args, 3) as u32;
+    let keylen = arg_num(ctx, args, 4) as usize;
+    match pbkdf2_derive(&digest, &password, &salt, iterations.max(1), keylen) {
+        Some(out) => unsafe { js_string_latin1(ctx, &out) },
+        None => unsafe {
+            throw(
+                ctx,
+                exception,
+                &format!("unsupported pbkdf2 digest: {digest}"),
+            )
+        },
+    }
+}
+
+/// `__velox_scrypt(password, salt, N, r, p, keylen)` → derived key.
+unsafe extern "C-unwind" fn scrypt_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let password = arg_bytes(ctx, args, 0);
+    let salt = arg_bytes(ctx, args, 1);
+    let n = arg_num(ctx, args, 2) as u64;
+    let r = arg_num(ctx, args, 3) as u32;
+    let p = arg_num(ctx, args, 4) as u32;
+    let keylen = arg_num(ctx, args, 5) as usize;
+    match scrypt_derive(&password, &salt, n, r, p, keylen) {
+        Some(out) => unsafe { js_string_latin1(ctx, &out) },
+        None => unsafe { throw(ctx, exception, "invalid scrypt parameters") },
+    }
+}
+
+/// `__velox_cipher(op, algo, key, iv, data, aad)` → ciphertext/plaintext. For
+/// GCM, the 16-byte auth tag is appended to (encrypt) / expected at the end of
+/// (decrypt) the data.
+unsafe extern "C-unwind" fn cipher_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let op = arg_str(ctx, args, 0);
+    let algo = arg_str(ctx, args, 1);
+    let key = arg_bytes(ctx, args, 2);
+    let iv = arg_bytes(ctx, args, 3);
+    let data = arg_bytes(ctx, args, 4);
+    let aad = arg_bytes(ctx, args, 5);
+    match aes_cipher(&op, &algo, &key, &iv, &data, &aad) {
+        Ok(out) => unsafe { js_string_latin1(ctx, &out) },
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+fn pbkdf2_derive(
+    digest: &str,
+    password: &[u8],
+    salt: &[u8],
+    iters: u32,
+    keylen: usize,
+) -> Option<Vec<u8>> {
+    use pbkdf2::pbkdf2_hmac;
+    let mut out = vec![0u8; keylen];
+    match normalize(digest).as_str() {
+        "sha1" => pbkdf2_hmac::<Sha1>(password, salt, iters, &mut out),
+        "sha224" => pbkdf2_hmac::<Sha224>(password, salt, iters, &mut out),
+        "sha256" => pbkdf2_hmac::<Sha256>(password, salt, iters, &mut out),
+        "sha384" => pbkdf2_hmac::<Sha384>(password, salt, iters, &mut out),
+        "sha512" => pbkdf2_hmac::<Sha512>(password, salt, iters, &mut out),
+        _ => return None,
+    }
+    Some(out)
+}
+
+fn scrypt_derive(
+    password: &[u8],
+    salt: &[u8],
+    n: u64,
+    r: u32,
+    p: u32,
+    keylen: usize,
+) -> Option<Vec<u8>> {
+    let log_n = (n as f64).log2().round() as u8;
+    let params = scrypt::Params::new(log_n, r, p).ok()?;
+    let mut out = vec![0u8; keylen];
+    scrypt::scrypt(password, salt, &params, &mut out).ok()?;
+    Some(out)
+}
+
+fn aes_cipher(
+    op: &str,
+    algo: &str,
+    key: &[u8],
+    iv: &[u8],
+    data: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, String> {
+    let encrypt = op == "encrypt";
+    macro_rules! cbc_mode {
+        ($aes:ty) => {{
+            if encrypt {
+                let enc =
+                    cbc::Encryptor::<$aes>::new_from_slices(key, iv).map_err(|e| e.to_string())?;
+                Ok(enc.encrypt_padded_vec_mut::<Pkcs7>(data))
+            } else {
+                let dec =
+                    cbc::Decryptor::<$aes>::new_from_slices(key, iv).map_err(|e| e.to_string())?;
+                dec.decrypt_padded_vec_mut::<Pkcs7>(data)
+                    .map_err(|e| e.to_string())
+            }
+        }};
+    }
+    macro_rules! ctr_mode {
+        ($aes:ty) => {{
+            let mut c =
+                ctr::Ctr128BE::<$aes>::new_from_slices(key, iv).map_err(|e| e.to_string())?;
+            let mut buf = data.to_vec();
+            c.apply_keystream(&mut buf);
+            Ok(buf)
+        }};
+    }
+    macro_rules! gcm_mode {
+        ($gcm:ty) => {{
+            let cipher = <$gcm>::new_from_slice(key).map_err(|e| e.to_string())?;
+            let nonce = aes_gcm::Nonce::from_slice(iv);
+            let payload = aes_gcm::aead::Payload { msg: data, aad };
+            if encrypt {
+                cipher.encrypt(nonce, payload).map_err(|e| e.to_string())
+            } else {
+                cipher
+                    .decrypt(nonce, payload)
+                    .map_err(|_| "unable to authenticate data".to_string())
+            }
+        }};
+    }
+    match normalize_cipher(algo).as_str() {
+        "aes-128-cbc" => cbc_mode!(Aes128),
+        "aes-192-cbc" => cbc_mode!(Aes192),
+        "aes-256-cbc" => cbc_mode!(Aes256),
+        "aes-128-ctr" => ctr_mode!(Aes128),
+        "aes-192-ctr" => ctr_mode!(Aes192),
+        "aes-256-ctr" => ctr_mode!(Aes256),
+        "aes-128-gcm" => gcm_mode!(Aes128Gcm),
+        "aes-256-gcm" => gcm_mode!(Aes256Gcm),
+        other => Err(format!("unsupported cipher: {other}")),
+    }
+}
+
+fn normalize_cipher(algo: &str) -> String {
+    algo.to_ascii_lowercase()
+}
+
+fn arg_str(ctx: JSContextRef, args: &[JSValueRef], i: usize) -> String {
+    args.get(i)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default()
+}
+fn arg_bytes(ctx: JSContextRef, args: &[JSValueRef], i: usize) -> Vec<u8> {
+    args.get(i)
+        .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
+        .unwrap_or_default()
+}
+fn arg_num(ctx: JSContextRef, args: &[JSValueRef], i: usize) -> f64 {
+    args.get(i)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0)
+}
+
+/// `__velox_random_bytes(n)` → n secure random bytes as a latin1 string.
+unsafe extern "C-unwind" fn random_bytes(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let n = args
+        .first()
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0)
+        .max(0.0) as usize;
+    let n = n.min(64 * 1024 * 1024); // cap to keep things sane
+    let mut buf = vec![0u8; n];
+    let _ = getrandom::fill(&mut buf);
+    unsafe { js_string_latin1(ctx, &buf) }
+}
+
+/// `__velox_hash(algo, latin1data)` → digest as a latin1 string.
+unsafe extern "C-unwind" fn hash_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let algo = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let data = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
+        .unwrap_or_default();
+    match digest(&algo, &data) {
+        Some(out) => unsafe { js_string_latin1(ctx, &out) },
+        None => unsafe {
+            throw(
+                ctx,
+                exception,
+                &format!("Digest method not supported: {algo}"),
+            )
+        },
+    }
+}
+
+/// `__velox_hmac(algo, latin1key, latin1data)` → HMAC as a latin1 string.
+unsafe extern "C-unwind" fn hmac_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let algo = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let key = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
+        .unwrap_or_default();
+    let data = args
+        .get(2)
+        .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
+        .unwrap_or_default();
+    match hmac_digest(&algo, &key, &data) {
+        Some(out) => unsafe { js_string_latin1(ctx, &out) },
+        None => unsafe {
+            throw(
+                ctx,
+                exception,
+                &format!("HMAC algorithm not supported: {algo}"),
+            )
+        },
+    }
+}
+
+fn digest(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
+    Some(match normalize(algo).as_str() {
+        "md5" => Md5::digest(data).to_vec(),
+        "sha1" => Sha1::digest(data).to_vec(),
+        "sha224" => Sha224::digest(data).to_vec(),
+        "sha256" => Sha256::digest(data).to_vec(),
+        "sha384" => Sha384::digest(data).to_vec(),
+        "sha512" => Sha512::digest(data).to_vec(),
+        _ => return None,
+    })
+}
+
+fn hmac_digest(algo: &str, key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    macro_rules! mac {
+        ($hash:ty) => {{
+            let mut m = Hmac::<$hash>::new_from_slice(key).ok()?;
+            m.update(data);
+            m.finalize().into_bytes().to_vec()
+        }};
+    }
+    Some(match normalize(algo).as_str() {
+        "md5" => mac!(Md5),
+        "sha1" => mac!(Sha1),
+        "sha224" => mac!(Sha224),
+        "sha256" => mac!(Sha256),
+        "sha384" => mac!(Sha384),
+        "sha512" => mac!(Sha512),
+        _ => return None,
+    })
+}
+
+fn normalize(algo: &str) -> String {
+    algo.to_ascii_lowercase().replace('-', "")
+}
+
+/// Throw an `Error` (with a `.code`) by setting the callback's exception slot.
+unsafe fn throw(ctx: JSContextRef, exception: *mut JSValueRef, message: &str) -> JSValueRef {
+    unsafe {
+        let args = [js_string(ctx, "ERR_CRYPTO"), js_string(ctx, message)];
+        let error = call_named(ctx, c"__velox_fs_error", &args);
+        if !exception.is_null() {
+            *exception = error;
+        }
+        JSValue::new_undefined(ctx)
+    }
+}
