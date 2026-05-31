@@ -8,6 +8,8 @@
 //! It speaks the npm registry directly (see [`registry`]); resolution is a flat
 //! `node_modules` (see [`resolve`]). No install scripts are run.
 
+mod cache;
+mod lockfile;
 mod parallel;
 mod registry;
 mod resolve;
@@ -30,8 +32,20 @@ use sha2::Digest;
 use resolve::Resolved;
 use semver::Version;
 
-/// `velox install` — resolve and install everything in `package.json`.
+/// `velox install` — install the locked graph if `velox.lock` exists (fast,
+/// reproducible, no resolution), otherwise resolve from `package.json`.
 pub fn install() -> ExitCode {
+    if let Some(locked) = lockfile::read() {
+        println!();
+        println!(
+            "  {} {} {}",
+            "velox".cyan().bold(),
+            "install".dimmed(),
+            format!("· {} locked package(s) from {}", locked.len(), lockfile::LOCKFILE).dimmed()
+        );
+        return install_resolved(locked);
+    }
+
     let pkg_path = PathBuf::from("package.json");
     let pkg = match load_package_json(&pkg_path) {
         Ok(p) => p,
@@ -133,6 +147,8 @@ pub fn remove(names: &[String]) -> ExitCode {
     if let Err(e) = write_package_json(&pkg_path, &pkg) {
         return fail(&e);
     }
+    // Keep the lockfile in sync.
+    lockfile::remove_names(names);
     println!();
     println!("  {} removed {removed} package(s)", "✓".green().bold());
     ExitCode::SUCCESS
@@ -160,11 +176,16 @@ fn run_install(roots: &[(String, String)], verb: &str) -> ExitCode {
     );
 
     // Record the lockfile from the resolution (independent of download success).
-    if let Err(e) = write_lockfile(&resolved) {
-        eprintln!("  {} could not write velox-lock.json: {e}", "!".yellow());
+    if let Err(e) = lockfile::write(&resolved) {
+        eprintln!("  {} could not write {}: {e}", "!".yellow(), lockfile::LOCKFILE);
     }
 
-    // Download + extract every package concurrently.
+    install_resolved(resolved)
+}
+
+/// Download + extract a fully-resolved set of packages concurrently, reporting
+/// progress. Shared by `run_install` (resolve path) and `install` (lockfile).
+fn install_resolved(resolved: Vec<Resolved>) -> ExitCode {
     let nm = node_modules_dir();
     let outcomes = par_map(resolved, DOWNLOAD_WORKERS, |r| {
         let result = install_one(&r, &nm);
@@ -199,14 +220,26 @@ fn run_install(roots: &[(String, String)], verb: &str) -> ExitCode {
 }
 
 /// Download + verify + extract one package. Returns false if already present at
-/// the resolved version.
+/// the resolved version. Uses the global tarball cache, falling back to the
+/// registry on a miss (and populating the cache on download).
 fn install_one(r: &Resolved, nm: &Path) -> Result<bool, String> {
     let dest = nm.join(&r.name);
     if is_already_installed(&dest, &r.version) {
         return Ok(false);
     }
-    let bytes = registry::https_get(&r.tarball, "application/octet-stream")?;
-    verify_integrity(&bytes, r)?;
+    let version = r.version.to_string();
+
+    // Prefer a cached tarball; ignore it if it fails verification.
+    let bytes = match cache::read(&r.name, &version) {
+        Some(b) if verify_integrity(&b, r).is_ok() => b,
+        _ => {
+            let b = registry::https_get(&r.tarball, "application/octet-stream")?;
+            verify_integrity(&b, r)?;
+            cache::write(&r.name, &version, &b);
+            b
+        }
+    };
+
     if dest.exists() {
         let _ = std::fs::remove_dir_all(&dest);
     }
@@ -333,25 +366,6 @@ fn write_package_json(path: &Path, pkg: &Value) -> Result<(), String> {
 
 fn json_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""))
-}
-
-fn write_lockfile(resolved: &[Resolved]) -> Result<(), String> {
-    let mut packages = Map::new();
-    for r in resolved {
-        let mut entry = Map::new();
-        entry.insert("version".into(), Value::String(r.version.to_string()));
-        entry.insert("resolved".into(), Value::String(r.tarball.clone()));
-        if let Some(i) = &r.integrity {
-            entry.insert("integrity".into(), Value::String(i.clone()));
-        }
-        packages.insert(r.name.clone(), Value::Object(entry));
-    }
-    let mut root = Map::new();
-    root.insert("lockfileVersion".into(), Value::Number(1.into()));
-    root.insert("packages".into(), Value::Object(packages));
-    let text = serde_json::to_string_pretty(&Value::Object(root))
-        .map_err(|e| format!("serialize lockfile: {e}"))?;
-    std::fs::write("velox-lock.json", text + "\n").map_err(|e| format!("write lockfile: {e}"))
 }
 
 // --- spec parsing ------------------------------------------------------------

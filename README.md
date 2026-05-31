@@ -43,13 +43,16 @@ finds them:
 velox add express              # add + install (pins ^version)
 velox add -D vitest            # save to devDependencies
 velox add lodash@4.17.21       # a specific version or range
-velox install                  # install everything in package.json
+velox install                  # install (from velox.lock if present)
 velox remove express           # uninstall
 ```
 
-It resolves the full dependency graph (semver ranges, dist-tags), verifies each
-tarball's `sha512`/`sha1` integrity, and writes a `velox-lock.json`. Set
-`$VELOX_REGISTRY` to use a private registry.
+It resolves the full dependency graph (semver ranges, dist-tags) with parallel
+metadata + downloads, verifies each tarball's `sha512`/`sha1` integrity, and
+writes a YAML `velox.lock`. Tarballs are kept in a **global cache**
+(`~/.velox/cache`, or `$VELOX_CACHE`) shared across projects, so repeat installs
+are near-instant and offline-friendly — `velox install` from a lockfile with a
+warm cache takes milliseconds. Set `$VELOX_REGISTRY` for a private registry.
 
 ## Documentation
 

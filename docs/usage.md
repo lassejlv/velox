@@ -24,15 +24,24 @@ needed) and installs into `node_modules`:
 velox add express              # add to dependencies + install
 velox add -D vitest            # add to devDependencies
 velox add lodash@^4            # a version or range (default: latest, pinned ^)
-velox install                  # install everything in package.json
-velox remove express           # uninstall
+velox install                  # install (from velox.lock if present, else resolve)
+velox remove express           # uninstall (updates velox.lock)
 ```
 
 It resolves the transitive dependency graph (caret/tilde/x-range/comparator
 semver plus dist-tags), verifies each tarball's `sha512` (or `sha1`) integrity,
-writes `velox-lock.json`, and keeps `package.json` tidy. Point it at a private
-registry with `$VELOX_REGISTRY` (or `$npm_config_registry`). Install scripts are
-**not** run. Installs are parallel (metadata and downloads both fan out).
+and keeps `package.json` tidy. Point it at a private registry with
+`$VELOX_REGISTRY` (or `$npm_config_registry`). Install scripts are **not** run.
+
+**Parallel + cached.** Registry metadata and tarball downloads both fan out
+across worker threads. Downloaded tarballs go into a global cache
+(`~/.velox/cache`, override with `$VELOX_CACHE`) shared by every project, so a
+package is fetched from the network at most once. With a warm cache, installing
+from a lockfile is near-instant and works offline.
+
+**Lockfile.** Resolution is pinned to `velox.lock` (YAML). When it exists,
+`velox install` installs exactly those versions — no resolution, fully
+reproducible — while `add`/`remove` update it. Commit it to version control.
 
 ## Run scripts
 
