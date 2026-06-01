@@ -35,6 +35,30 @@ describe("velox-test", () => {
     it("runs beforeEach (2)", () => { expect(n).toBe(2); });
   });
 
+  it("mocks + spies (vi)", () => {
+    const fn = vi.fn((n: number) => n + 1);
+    expect(fn(1)).toBe(2);
+    expect(fn).toHaveBeenCalledWith(1);
+
+    const obj = { greet: (name: string) => `hi ${name}` };
+    const spy = vi.spyOn(obj, "greet");
+    obj.greet("velox");
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("inline snapshots", () => {
+    expect({ ok: true, items: [1, 2] }).toMatchInlineSnapshot(`
+      {
+        items: [
+          1,
+          2
+        ],
+        ok: true
+      }
+    `);
+  });
+
   it.skip("is skipped", () => { expect(true).toBe(false); });
   it.todo("is a reminder to write later");
 });

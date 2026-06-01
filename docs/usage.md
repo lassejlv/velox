@@ -116,6 +116,24 @@ with timeouts, and a full `expect` (`toBe`, `toEqual`, `toThrow`, `toContain`,
 `toHaveProperty`, `toMatchObject`, `toBeCloseTo`, `.not`, `.resolves`/`.rejects`,
 `expect.any`, …). Exits non-zero if any test fails.
 
+**Mocks + snapshots.** `vi` (also `jest`) provides spies and mocks:
+
+```ts
+const fetchUser = vi.fn().mockResolvedValue({ id: 1 });
+const spy = vi.spyOn(console, "log");
+await fetchUser();
+expect(fetchUser).toHaveBeenCalledTimes(1);
+expect(spy).toHaveBeenCalledWith("hi");
+spy.mockRestore();
+
+expect({ ok: true }).toMatchInlineSnapshot(`{ ok: true }`);
+```
+
+`vi.fn`/`vi.spyOn` with `.mockReturnValue`/`.mockResolvedValue`/`.mockImplementation`
+(+ `…Once`), the `toHaveBeenCalled*`/`toHaveReturned*` matchers, and
+`toMatchInlineSnapshot`. The runner's types live in `velox-test.d.ts` (shipped by
+`velox init`) so test files type-check.
+
 ## Run scripts
 
 ```sh

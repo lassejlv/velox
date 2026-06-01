@@ -14,6 +14,9 @@ use owo_colors::OwoColorize;
 /// The bundled Velox type definitions, copied into new projects.
 const VELOX_DTS: &str = include_str!("../velox.d.ts");
 
+/// Type definitions for the built-in test runner (`velox test`).
+const VELOX_TEST_DTS: &str = include_str!("../velox-test.d.ts");
+
 const MAIN_TS: &str = r#"/// <reference path="../velox.d.ts" />
 
 // A tiny HTTP server to get you started. Run it with:
@@ -47,7 +50,7 @@ const TSCONFIG: &str = r#"{
     "verbatimModuleSyntax": false,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "velox.d.ts"]
+  "include": ["src/**/*.ts", "velox.d.ts", "velox-test.d.ts"]
 }
 "#;
 
@@ -80,6 +83,7 @@ pub fn run(dir: Option<&str>, no_install: bool) -> ExitCode {
     wrote_any |= write_file(root, "package.json", &pkg);
     wrote_any |= write_file(root, "tsconfig.json", TSCONFIG);
     wrote_any |= write_file(root, "velox.d.ts", VELOX_DTS);
+    wrote_any |= write_file(root, "velox-test.d.ts", VELOX_TEST_DTS);
     wrote_any |= write_file(root, ".gitignore", GITIGNORE);
 
     if !no_install {

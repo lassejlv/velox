@@ -133,7 +133,10 @@ var MATCHERS = [
   'toBeUndefined', 'toBeDefined', 'toBeNaN', 'toContain', 'toContainEqual',
   'toHaveLength', 'toHaveProperty', 'toBeGreaterThan', 'toBeGreaterThanOrEqual',
   'toBeLessThan', 'toBeLessThanOrEqual', 'toBeCloseTo', 'toMatch', 'toMatchObject',
-  'toThrow', 'toThrowError', 'toBeInstanceOf',
+  'toThrow', 'toThrowError', 'toBeInstanceOf', 'toHaveBeenCalled',
+  'toHaveBeenCalledTimes', 'toHaveBeenCalledWith', 'toHaveBeenLastCalledWith',
+  'toHaveBeenNthCalledWith', 'toHaveReturned', 'toHaveReturnedWith',
+  'toMatchInlineSnapshot',
 ];
 
 Expectation.prototype.toBe = function (expected) {
@@ -212,6 +215,147 @@ Expectation.prototype.toThrow = function (expected) {
   assert(this, pass, threw ? ('expected error to match ' + formatValue(expected)) : 'expected function to throw', 'expected function not to throw');
 };
 Expectation.prototype.toThrowError = Expectation.prototype.toThrow;
+
+// --- spies / mocks (Vitest-style `vi`) --------------------------------------
+
+var __mocks = [];
+
+function mockFn(impl) {
+  var f = function () {
+    var args = Array.prototype.slice.call(arguments);
+    f.mock.calls.push(args);
+    f.mock.lastCall = args;
+    var use = f._once.length ? f._once.shift() : (f._impl || impl);
+    try {
+      var ret = use ? use.apply(this, args) : undefined;
+      f.mock.results.push({ type: 'return', value: ret });
+      return ret;
+    } catch (e) {
+      f.mock.results.push({ type: 'throw', value: e });
+      throw e;
+    }
+  };
+  f._isMockFunction = true;
+  f._impl = impl;
+  f._once = [];
+  f.mock = { calls: [], results: [], lastCall: undefined };
+  f.mockImplementation = function (g) { f._impl = g; return f; };
+  f.mockImplementationOnce = function (g) { f._once.push(g); return f; };
+  f.mockReturnValue = function (v) { f._impl = function () { return v; }; return f; };
+  f.mockReturnValueOnce = function (v) { f._once.push(function () { return v; }); return f; };
+  f.mockResolvedValue = function (v) { f._impl = function () { return Promise.resolve(v); }; return f; };
+  f.mockResolvedValueOnce = function (v) { f._once.push(function () { return Promise.resolve(v); }); return f; };
+  f.mockRejectedValue = function (v) { f._impl = function () { return Promise.reject(v); }; return f; };
+  f.mockReturnThis = function () { f._impl = function () { return this; }; return f; };
+  f.mockName = function () { return f; };
+  f.getMockName = function () { return 'vi.fn()'; };
+  f.mockClear = function () { f.mock.calls = []; f.mock.results = []; f.mock.lastCall = undefined; return f; };
+  f.mockReset = function () { f.mockClear(); f._impl = undefined; f._once = []; return f; };
+  __mocks.push(f);
+  return f;
+}
+
+function spyOn(obj, method) {
+  var original = obj[method];
+  var spy = mockFn(typeof original === 'function' ? original : undefined);
+  spy.mockRestore = function () { obj[method] = original; };
+  obj[method] = spy;
+  return spy;
+}
+
+var vi = {
+  fn: mockFn,
+  spyOn: spyOn,
+  isMockFunction: function (v) { return !!(v && v._isMockFunction); },
+  clearAllMocks: function () { __mocks.forEach(function (m) { m.mockClear(); }); return vi; },
+  resetAllMocks: function () { __mocks.forEach(function (m) { m.mockReset(); }); return vi; },
+  restoreAllMocks: function () { __mocks.forEach(function (m) { if (m.mockRestore) m.mockRestore(); }); return vi; },
+};
+
+// Spy/mock matchers.
+function callsOf(self) {
+  if (!self.received || !self.received.mock) throw new AssertionError('received value is not a mock function');
+  return self.received.mock;
+}
+Expectation.prototype.toHaveBeenCalled = function () {
+  var m = callsOf(this);
+  assert(this, m.calls.length > 0, 'expected mock to have been called', 'expected mock not to have been called');
+};
+Expectation.prototype.toHaveBeenCalledTimes = function (n) {
+  var m = callsOf(this);
+  assert(this, m.calls.length === n, 'expected mock to have been called ' + n + ' time(s), but was called ' + m.calls.length, 'expected mock not to have been called ' + n + ' time(s)');
+};
+Expectation.prototype.toHaveBeenCalledWith = function () {
+  var want = Array.prototype.slice.call(arguments);
+  var m = callsOf(this);
+  var pass = m.calls.some(function (c) { return deepEqual(c, want, false); });
+  assert(this, pass, 'expected mock to have been called with ' + formatValue(want), 'expected mock not to have been called with ' + formatValue(want));
+};
+Expectation.prototype.toHaveBeenLastCalledWith = function () {
+  var want = Array.prototype.slice.call(arguments);
+  var m = callsOf(this);
+  assert(this, deepEqual(m.lastCall, want, false), 'expected last call with ' + formatValue(want) + ', got ' + formatValue(m.lastCall), 'expected last call not to be ' + formatValue(want));
+};
+Expectation.prototype.toHaveBeenNthCalledWith = function (nth) {
+  var want = Array.prototype.slice.call(arguments, 1);
+  var m = callsOf(this);
+  assert(this, deepEqual(m.calls[nth - 1], want, false), 'expected call #' + nth + ' with ' + formatValue(want), 'expected call #' + nth + ' not to be ' + formatValue(want));
+};
+Expectation.prototype.toHaveReturned = function () {
+  var m = callsOf(this);
+  assert(this, m.results.some(function (r) { return r.type === 'return'; }), 'expected mock to have returned', 'expected mock not to have returned');
+};
+Expectation.prototype.toHaveReturnedWith = function (value) {
+  var m = callsOf(this);
+  assert(this, m.results.some(function (r) { return r.type === 'return' && deepEqual(r.value, value, false); }), 'expected mock to have returned ' + formatValue(value), 'expected mock not to have returned ' + formatValue(value));
+};
+
+// --- inline snapshots -------------------------------------------------------
+
+Expectation.prototype.toMatchInlineSnapshot = function (expected) {
+  var actual = serializeSnapshot(this.received, '');
+  if (expected === undefined) {
+    throw new AssertionError(
+      'inline snapshot not provided — received:\n' + actual +
+      '\n(paste it into toMatchInlineSnapshot(`...`))'
+    );
+  }
+  assert(
+    this,
+    normalizeSnap(actual) === normalizeSnap(String(expected)),
+    'inline snapshot mismatch\n--- expected\n' + String(expected).trim() + '\n--- received\n' + actual,
+    'expected not to match the inline snapshot'
+  );
+};
+Expectation.prototype.toMatchObject = Expectation.prototype.toMatchObject; // keep
+
+function normalizeSnap(s) {
+  return s.split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l.length; }).join('\n');
+}
+function serializeSnapshot(v, indent) {
+  var ni = indent + '  ';
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  var t = typeof v;
+  if (t === 'string') return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  if (t === 'number' || t === 'boolean') return String(v);
+  if (t === 'bigint') return String(v) + 'n';
+  if (t === 'function') return '[Function ' + (v.name || 'anonymous') + ']';
+  if (v instanceof Date) return 'Date(' + v.toISOString() + ')';
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]';
+    return '[\n' + v.map(function (x) { return ni + serializeSnapshot(x, ni); }).join(',\n') + '\n' + indent + ']';
+  }
+  if (t === 'object') {
+    var keys = Object.keys(v).sort();
+    if (keys.length === 0) return '{}';
+    return '{\n' + keys.map(function (k) {
+      var key = /^[A-Za-z_$][\w$]*$/.test(k) ? k : '"' + k + '"';
+      return ni + key + ': ' + serializeSnapshot(v[k], ni);
+    }).join(',\n') + '\n' + indent + '}';
+  }
+  return String(v);
+}
 
 // --- equality + matching helpers --------------------------------------------
 
@@ -337,6 +481,7 @@ function register() {
   var g = globalThis;
   g.describe = describe; g.it = it; g.test = test; g.expect = expect;
   g.beforeAll = beforeAll; g.afterAll = afterAll; g.beforeEach = beforeEach; g.afterEach = afterEach;
+  g.vi = vi; g.jest = vi; // jest alias for compatibility
 }
 
 // run(): execute the collected suite and report; sets process.exitCode.
@@ -376,5 +521,5 @@ async function run() {
   return stats.fail === 0;
 }
 
-module.exports = { register: register, run: run, describe: describe, it: it, test: test, expect: expect, beforeAll: beforeAll, afterAll: afterAll, beforeEach: beforeEach, afterEach: afterEach };
+module.exports = { register: register, run: run, describe: describe, it: it, test: test, expect: expect, vi: vi, beforeAll: beforeAll, afterAll: afterAll, beforeEach: beforeEach, afterEach: afterEach };
 module.exports.default = module.exports;
