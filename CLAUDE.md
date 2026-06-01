@@ -13,13 +13,22 @@ It ships a partial Node.js standard library so real npm packages run.
 
 ```sh
 cargo run -- examples/hello.ts     # run a file (.ts/.tsx/.js/.jsx)
-cargo run                          # REPL
+cargo run                          # REPL (supports top-level await)
 cargo run -- examples/http-server.ts   # then: curl localhost:3000
+cargo run -- test                  # built-in test runner (--coverage, -w, -u, -t)
+cargo run -- bench                 # built-in benchmark runner
 cargo build / cargo clippy / cargo fmt / cargo test
 ```
 
 `examples/*.ts` are the smoke tests; `cargo test` runs the `module.rs` unit
 tests (resolution/rewriting). Verify changes by running the examples.
+
+The runtime also has a built-in **test runner** (`velox test` — describe/it/
+expect, vi mocks/spies, inline + file snapshots, `--coverage` with branch
+coverage + threshold gate + lcov, `-t` name filter, `-w` watch; framework in
+`builtins/test.js`), a **benchmark runner** (`velox bench`; `builtins/bench.js`),
+and **source-mapped stack traces** (`src/sourcemap.rs` maps bundle frames back to
+original source for uncaught errors + `console.log(error)`).
 
 ## Pipeline
 
@@ -122,10 +131,12 @@ prelude evals it once via `new Function` and caches). The bundle's scoped
 ## Node-compat regression
 
 `examples/node-compat-{core,io,modern,extra}.ts` are PASS/FAIL probe suites
-(148 checks) covering path/os/fs/Buffer/crypto/streams, modules/zlib/net/http/
-child_process, Promise/AbortSignal/web-crypto/timers, and console/fs-fds/key-
-objects/parseArgs. Run them after touching any builtin shim or native — they
-catch regressions the `examples/*.ts` smoke tests miss.
+(~178 checks) covering path/os/fs/Buffer/crypto/streams, modules/zlib/net/http/
+child_process, Promise/AbortSignal/web-crypto/timers, console/fs-fds/key-objects/
+parseArgs, plus the newer web/Node surface (navigator, Text/Compression streams,
+streaming TextDecoder, stream/consumers, fs.glob, crypto.hash, util.styleText).
+Run them after touching any builtin shim or native — they catch regressions the
+`examples/*.ts` smoke tests miss. Add a `check(...)` line when adding an API.
 
 ## Known limitations
 
