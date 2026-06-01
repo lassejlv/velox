@@ -219,10 +219,13 @@ function chunkLength(state, chunk) {
 function onEofChunk(stream, state) {
   if (state.ended) return;
   state.ended = true;
-  if (state.length === 0) {
-    state.needReadable = false;
-    emitReadable(stream);
+  // In flowing mode, drive the flow loop so any remaining buffer drains and
+  // 'end' is emitted now — `flow()` isn't otherwise re-entered after EOF, so
+  // consumers using 'data'+'end' (e.g. raw-body / express.json) would hang.
+  if (state.flowing) {
+    flow(stream);
   } else {
+    state.needReadable = false;
     emitReadable(stream);
   }
 }
