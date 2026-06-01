@@ -1462,6 +1462,19 @@
   // ---------------------------------------------------------------------------
   // Install globals
   // ---------------------------------------------------------------------------
+  // Node's Buffer static methods are enumerable own properties; `class` statics
+  // are non-enumerable, so libraries that copy Buffer's statics with a `for...in`
+  // loop (safer-buffer → iconv-lite, used by express's body-parser) would miss
+  // `isBuffer`/`from`/`alloc`/… and crash. Re-define them as enumerable to match.
+  Object.getOwnPropertyNames(Buffer).forEach(function (k) {
+    if (k === 'length' || k === 'name' || k === 'prototype') return;
+    var d = Object.getOwnPropertyDescriptor(Buffer, k);
+    if (d && d.configurable && !d.enumerable) {
+      d.enumerable = true;
+      Object.defineProperty(Buffer, k, d);
+    }
+  });
+
   globalThis.Buffer = Buffer;
   if (typeof globalThis.TextEncoder === 'undefined') {
     globalThis.TextEncoder = VTextEncoder;
