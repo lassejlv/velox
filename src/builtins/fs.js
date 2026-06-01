@@ -481,6 +481,81 @@ var constants = {
   COPYFILE_EXCL: 1,
 };
 
+// node:fs glob (Node 22): walk from `cwd` and match each relative path with
+// path.matchesGlob. `pattern` may be a string or an array; `options` accepts
+// `cwd`, `exclude` (fn or glob array), and `withFileTypes`.
+function globSync(pattern, options) {
+  options = options || {};
+  var path = require('node:path');
+  var cwd = options.cwd || (globalThis.process && process.cwd ? process.cwd() : '.');
+  var patterns = Array.isArray(pattern) ? pattern : [pattern];
+  var withFileTypes = !!options.withFileTypes;
+  var exclude = options.exclude;
+  function isExcluded(rel) {
+    if (typeof exclude === 'function') return !!exclude(rel);
+    if (Array.isArray(exclude)) return exclude.some(function (p) { return path.matchesGlob(rel, p); });
+    return false;
+  }
+  var out = [];
+  function walk(dir, rel) {
+    var entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (var i = 0; i < entries.length; i++) {
+      var ent = entries[i];
+      var childRel = rel ? rel + '/' + ent.name : ent.name;
+      if (isExcluded(childRel)) continue;
+      for (var j = 0; j < patterns.length; j++) {
+        if (path.matchesGlob(childRel, patterns[j])) { out.push(withFileTypes ? ent : childRel); break; }
+      }
+      if (ent.isDirectory()) walk(path.join(dir, ent.name), childRel);
+    }
+  }
+  // Start the walk at the pattern's literal directory prefix (for a single
+  // pattern) so a scoped glob doesn't descend the whole tree.
+  var startRel = '';
+  if (patterns.length === 1) {
+    var segs = String(patterns[0]).split('/');
+    var base = [];
+    for (var s = 0; s < segs.length - 1; s++) {
+      if (/[*?[\]{}()!+@]/.test(segs[s])) break;
+      base.push(segs[s]);
+    }
+    startRel = base.join('/');
+  }
+  walk(startRel ? path.join(cwd, startRel) : cwd, startRel);
+  return out;
+}
+
+function globAsyncIterator(pattern, options) {
+  var items = globSync(pattern, options);
+  var i = 0;
+  var iter = {
+    next: function () {
+      return Promise.resolve(
+        i < items.length ? { value: items[i++], done: false } : { value: undefined, done: true }
+      );
+    },
+  };
+  iter[Symbol.asyncIterator] = function () { return iter; };
+  return iter;
+}
+
+// `fs.glob(pattern[, options], callback)` calls back with (err, matches); with
+// no callback it returns an async iterator.
+function glob(pattern, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  if (typeof callback === 'function') {
+    try {
+      var m = globSync(pattern, options);
+      Promise.resolve().then(function () { callback(null, m); });
+    } catch (e) {
+      Promise.resolve().then(function () { callback(e); });
+    }
+    return;
+  }
+  return globAsyncIterator(pattern, options);
+}
+
 var promises = {
   readFile: function (p, o) { return new Promise(function (res, rej) { readFile(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   writeFile: function (p, d, o) { return new Promise(function (res, rej) { writeFile(p, d, o, function (e) { e ? rej(e) : res(); }); }); },
@@ -498,6 +573,7 @@ var promises = {
   realpath: promisify(realpathSync),
   access: promisify(accessSync),
   mkdtemp: promisify(mkdtempSync),
+  glob: function (pattern, options) { return globAsyncIterator(pattern, options); },
 };
 
 module.exports = {
@@ -508,6 +584,8 @@ module.exports = {
   statSync: statSync,
   lstatSync: lstatSync,
   readdirSync: readdirSync,
+  globSync: globSync,
+  glob: glob,
   mkdirSync: mkdirSync,
   rmSync: rmSync,
   rmdirSync: rmdirSync,
