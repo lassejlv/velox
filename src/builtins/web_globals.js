@@ -407,6 +407,12 @@
       },
       clearMarks: function clearMarks() {},
       clearMeasures: function clearMeasures() {},
+      clearResourceTimings: function clearResourceTimings() {},
+      setResourceTimingBufferSize: function setResourceTimingBufferSize() {},
+      // Node/undici call this to record a resource-timing entry after fetch;
+      // velox doesn't keep the entry buffer, so it's a no-op (the symbol must
+      // exist — undici's fetch finalizer invokes it unconditionally).
+      markResourceTiming: function markResourceTiming() {},
     };
   }
 

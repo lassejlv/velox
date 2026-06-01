@@ -160,6 +160,11 @@ module.exports = {
   // velox runs each worker in a separate context; SharedArrayBuffer isn't shared
   // across them, but the symbols exist for feature detection.
   markAsUntransferable: function () {},
+  isMarkedAsUntransferable: function () { return false; },
+  // Node 22.6+: mark an object so structuredClone/postMessage refuses to clone
+  // it. velox doesn't enforce the constraint, but the symbol must exist —
+  // undici (Node's fetch, pulled in by cheerio/etc.) calls it at load time.
+  markAsUncloneable: function () {},
   moveMessagePortToContext: function (port) { return port; },
   receiveMessageOnPort: function () { return undefined; },
   setEnvironmentData: function () {},

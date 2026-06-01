@@ -1023,5 +1023,8 @@ module.exports = {
   get: get,
   Agent: Agent,
   globalAgent: globalAgent,
+  // Node's default HTTP header byte limit; undici validates this is a number.
+  maxHeaderSize: 16384,
+  setMaxIdleHTTPParsers: function () {},
 };
 module.exports.default = module.exports;
