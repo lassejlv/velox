@@ -1045,12 +1045,25 @@ fn rewrite_reexport_named(decl: &oxc::ast::ast::ExportNamedDeclaration, id: &str
     for spec in &decl.specifiers {
         let local = name_str(&spec.local);
         let exported = name_str(&spec.exported);
-        out.push_str(&format!(
-            " exports[{}] = {}[{}];",
-            js_string(exported),
-            tmp,
-            js_string(local)
-        ));
+        if local == "default" {
+            // `export {default as X} from 'cjs'` must follow the same CJS interop
+            // as a default *import*: a plain CommonJS module's default is the
+            // whole `module.exports`; only a transpiled-ESM module (`__esModule`)
+            // routes the default through `.default` (e.g. vfile's
+            // `export {default as minproc} from 'node:process'`).
+            out.push_str(&format!(
+                " exports[{}] = ({1} && {1}.__esModule && 'default' in {1}) ? {1}.default : {1};",
+                js_string(exported),
+                tmp,
+            ));
+        } else {
+            out.push_str(&format!(
+                " exports[{}] = {}[{}];",
+                js_string(exported),
+                tmp,
+                js_string(local)
+            ));
+        }
     }
     out
 }
