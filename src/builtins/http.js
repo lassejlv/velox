@@ -409,8 +409,14 @@ ServerResponse.prototype.writeHead = function (statusCode, statusMessage, header
 };
 ServerResponse.prototype.writeHeader = ServerResponse.prototype.writeHead;
 
-// Serialize the status line + headers and send them once.
-ServerResponse.prototype._sendHeaders = function (knownLength) {
+// Reusable framing buffers (avoid re-allocating per response).
+var CRLF_BUF = Buffer.from('\r\n', 'latin1');
+var CHUNK_TERM = Buffer.from('0\r\n\r\n', 'latin1');
+
+// Serialize the status line + headers. With `defer`, the header bytes are
+// stashed in `this._headerBuf` (so `end()` can coalesce them with the body into
+// a single socket write) instead of being sent immediately.
+ServerResponse.prototype._sendHeaders = function (knownLength, defer) {
   if (this._headerSent) return;
 
   var msg = this.statusMessage;
@@ -466,7 +472,9 @@ ServerResponse.prototype._sendHeaders = function (knownLength) {
   }
 
   lines.push('', ''); // blank line terminating the header block
-  if (this.socket) this.socket.write(lines.join('\r\n'), 'latin1');
+  var headerBuf = Buffer.from(lines.join('\r\n'), 'latin1');
+  if (defer) { this._headerBuf = headerBuf; return; }
+  if (this.socket) this.socket.write(headerBuf);
 };
 
 ServerResponse.prototype.write = function (chunk, encoding, cb) {
@@ -479,13 +487,13 @@ ServerResponse.prototype.write = function (chunk, encoding, cb) {
     : Buffer.from(chunk, encoding || 'utf8');
 
   if (this._chunked) {
-    if (buf.length > 0) {
-      this.socket.write(buf.length.toString(16) + '\r\n', 'latin1');
-      this.socket.write(buf.toString('latin1'), 'latin1');
-      this.socket.write('\r\n', 'latin1');
+    if (buf.length > 0 && this.socket) {
+      // One write per chunk: <hex-size>\r\n<data>\r\n
+      var size = Buffer.from(buf.length.toString(16) + '\r\n', 'latin1');
+      this.socket.write(Buffer.concat([size, buf, CRLF_BUF]));
     }
   } else if (buf.length > 0 && this.socket) {
-    this.socket.write(buf.toString('latin1'), 'latin1');
+    this.socket.write(buf); // raw bytes — no latin1 round-trip
   }
   if (typeof cb === 'function') nextTick(cb);
   return true;
@@ -501,13 +509,18 @@ ServerResponse.prototype.end = function (chunk, encoding, cb) {
     : Buffer.from(chunk, encoding || 'utf8');
 
   if (!this._headerSent) {
-    // Whole body known in this single end() call -> emit a Content-Length.
-    this._sendHeaders(buf ? buf.length : 0);
-    if (buf && buf.length > 0 && this.socket) this.socket.write(buf.toString('latin1'), 'latin1');
+    // Whole body known in this single end() call -> emit a Content-Length, and
+    // send headers + body in ONE socket write (the hot res.json/res.send path).
+    this._sendHeaders(buf ? buf.length : 0, true);
+    if (this.socket) {
+      this.socket.write(
+        buf && buf.length > 0 ? Buffer.concat([this._headerBuf, buf]) : this._headerBuf
+      );
+    }
   } else {
     // Headers already sent via write(); flush the final piece.
     if (buf && buf.length > 0) this.write(buf);
-    if (this._chunked && this.socket) this.socket.write('0\r\n\r\n', 'latin1'); // terminating chunk
+    if (this._chunked && this.socket) this.socket.write(CHUNK_TERM); // terminating chunk
   }
 
   this.finished = true;

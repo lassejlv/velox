@@ -17,23 +17,35 @@ Apple Silicon (10 cores), express 4.22, `wrk -t8 -c200 -d15s`, `GET /json`
 
 | Runtime | Cold start | Req/sec | Latency avg | Latency p99 | Idle RSS | Peak RSS | CPU |
 |---------|-----------:|--------:|------------:|------------:|---------:|---------:|----:|
-| Node 24 | 144 ms | **72,800** | 3.14 ms | **3.13 ms** | 62 MB | 146 MB | 1.0 |
-| Deno 2.8 | 145 ms | 61,900 | 3.21 ms | 5.19 ms | 68 MB | 200 MB | 1.1 |
-| **velox 0.1** | **139 ms** | 70,000 | **2.86 ms** | 4.61 ms | **39 MB** | **123 MB** | 1.0 |
+| Node 24 | 150 ms | 71,400 | 3.18 ms | 4.53 ms | 61 MB | 148 MB | 1.0 |
+| Deno 2.8 | 150 ms | 56,000 | 3.61 ms | 9.71 ms | 67 MB | 199 MB | 1.1 |
+| **velox 0.1** | **147 ms** | **90,700** | **2.17 ms** | **3.21 ms** | **39 MB** | **108 MB** | 1.0 |
 
 ### Takeaways
 
-- **Throughput:** velox (~70k rps) is within ~4% of Node and clearly ahead of
-  Deno (~62k) on this Express workload — impressive for a young runtime on
-  JavaScriptCore vs. V8.
-- **Memory:** velox is the clear winner — **~40% less idle memory** than Node or
-  Deno (39 MB vs 62/68), and the **lowest peak** (123 MB vs 146/200). JSC's
-  footprint is leaner than V8's.
-- **Startup:** velox has the fastest cold start (~139 ms to first response).
-- **Latency:** velox has the best *average* latency; Node has the best *p99*
-  tail. Deno trails on both.
-- **CPU:** all ~1 core — Express is single-threaded, so the runtimes saturate one
-  core and the difference is per-request efficiency.
+velox **wins every metric** on this workload:
+
+- **Throughput:** ~90,700 rps — **~27% faster than Node** and ~60% faster than
+  Deno. (Before the binary socket bridge below, velox was ~70k; the optimization
+  added ~27%.)
+- **Latency:** best average (2.17 ms) *and* best p99 tail (3.21 ms).
+- **Memory:** **~40% less idle** than Node/Deno (39 MB vs 61/67), and the lowest
+  peak (108 MB vs 148/199). JSC's footprint is leaner than V8's.
+- **Startup:** fastest cold start (~147 ms to first response).
+- **CPU:** all ~1 core — Express is single-threaded, so this measures per-request
+  efficiency.
+
+### What made velox fast
+
+The original ~70k → ~90k jump came from profiling under load (`sample`) and
+removing the top hotspots — the **latin1 string bridge** (every socket byte was
+converted byte↔char crossing JS↔Rust) and rope-string/GC churn:
+
+- **Binary socket I/O:** inbound bytes now reach JS as a `Uint8Array` and
+  outbound `Buffer`s are written straight from their backing store
+  (`JSObjectGetTypedArrayBytesPtr`) — no `String.fromCharCode` per byte.
+- **Coalesced response writes:** headers + body go out in a single socket write
+  (`res.json`/`res.send`), instead of multiple latin1 string writes.
 
 Numbers vary with hardware/OS/express version — re-run `./bench.sh` locally.
 velox must be a **signed release build** (`make release`) for JIT; an unsigned

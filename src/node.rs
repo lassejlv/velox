@@ -15,9 +15,11 @@ use std::io::Write;
 use std::ptr;
 
 use objc2_javascript_core::{
-    JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty, JSObjectRef,
-    JSStringCreateWithCharacters, JSStringCreateWithUTF8CString, JSStringGetCharactersPtr,
-    JSStringGetLength, JSStringRelease, JSValue, JSValueRef,
+    JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
+    JSObjectGetTypedArrayBytesPtr, JSObjectGetTypedArrayLength, JSObjectMakeTypedArray,
+    JSObjectRef, JSStringCreateWithCharacters, JSStringCreateWithUTF8CString,
+    JSStringGetCharactersPtr, JSStringGetLength, JSStringRelease, JSTypedArrayType, JSValue,
+    JSValueRef,
 };
 
 use crate::event_loop::{arg_slice, register};
@@ -937,6 +939,54 @@ pub(crate) unsafe fn js_string_latin1(ctx: JSContextRef, bytes: &[u8]) -> JSValu
         let value = JSValue::new_string(ctx, js);
         JSStringRelease(js);
         value
+    }
+}
+
+/// Copy the bytes of a JS typed array (`Uint8Array`/`Buffer`) into a `Vec`.
+/// Returns an empty vec if `value` is not a typed array. Avoids the latin1
+/// string round-trip for binary socket I/O.
+pub(crate) unsafe fn js_value_to_bytes(ctx: JSContextRef, value: JSValueRef) -> Vec<u8> {
+    unsafe {
+        let ty = JSValue::typed_array_type(ctx, value, ptr::null_mut());
+        if ty == JSTypedArrayType::None || ty == JSTypedArrayType::ArrayBuffer {
+            return Vec::new();
+        }
+        let obj = JSValue::to_object(ctx, value, ptr::null_mut());
+        if obj.is_null() {
+            return Vec::new();
+        }
+        let len = JSObjectGetTypedArrayLength(ctx, obj, ptr::null_mut());
+        if len == 0 {
+            return Vec::new();
+        }
+        let data = JSObjectGetTypedArrayBytesPtr(ctx, obj, ptr::null_mut());
+        if data.is_null() {
+            return Vec::new();
+        }
+        std::slice::from_raw_parts(data as *const u8, len).to_vec()
+    }
+}
+
+/// Build a JS `Uint8Array` (a `Buffer` once wrapped in JS) holding `bytes`.
+/// One copy, no per-byte char conversion (unlike `js_string_latin1`).
+pub(crate) unsafe fn js_uint8array(ctx: JSContextRef, bytes: &[u8]) -> JSValueRef {
+    unsafe {
+        let obj = JSObjectMakeTypedArray(
+            ctx,
+            JSTypedArrayType::Uint8Array,
+            bytes.len(),
+            ptr::null_mut(),
+        );
+        if obj.is_null() {
+            return JSValue::new_undefined(ctx);
+        }
+        if !bytes.is_empty() {
+            let data = JSObjectGetTypedArrayBytesPtr(ctx, obj, ptr::null_mut());
+            if !data.is_null() {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), data as *mut u8, bytes.len());
+            }
+        }
+        obj as JSValueRef
     }
 }
 

@@ -25,7 +25,9 @@ use rustls::{
 use rustls_pki_types::{PrivateKeyDer, ServerName};
 
 use crate::event_loop::{arg_slice, begin_io, end_io, next_token, register, registry};
-use crate::node::{call_named, js_string, js_string_latin1, js_value_to_latin1};
+use crate::node::{
+    call_named, js_string, js_uint8array, js_value_to_bytes, js_value_to_latin1,
+};
 use crate::runtime::js_value_to_string;
 
 const READ_CHUNK: usize = 16 * 1024;
@@ -257,6 +259,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_connect", connect);
         register(ctx, c"__velox_connect_tls", connect_tls);
         register(ctx, c"__velox_socket_write", socket_write);
+        register(ctx, c"__velox_socket_write_bytes", socket_write_bytes);
         register(ctx, c"__velox_socket_end", socket_end);
         register(ctx, c"__velox_socket_close", socket_close);
         register(ctx, c"__velox_close_server", close_server);
@@ -418,7 +421,9 @@ fn read_conn(ctx: JSContextRef, token: Token) {
     }
     if !data.is_empty() {
         unsafe {
-            let chunk = js_string_latin1(ctx, &data);
+            // Hand JS the bytes as a Uint8Array (becomes a Buffer) — no latin1
+            // string round-trip.
+            let chunk = js_uint8array(ctx, &data);
             let args = [num(ctx, token), chunk];
             call_named(ctx, c"__velox_on_data", &args);
         }
@@ -802,8 +807,32 @@ unsafe extern "C-unwind" fn socket_write(
         .get(1)
         .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
         .unwrap_or_default();
+    queue_socket_write(ctx, token, data);
+    unsafe { JSValue::new_undefined(ctx) }
+}
 
-    // Connected socket: buffer + flush (unless still connecting — just buffer).
+/// `__velox_socket_write_bytes(socketId, uint8array)` — like `socket_write` but
+/// takes the bytes directly from a typed array (no latin1 round-trip).
+unsafe extern "C-unwind" fn socket_write_bytes(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let token = socket_token(ctx, args.first());
+    let data = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_bytes(ctx, *v) })
+        .unwrap_or_default();
+    queue_socket_write(ctx, token, data);
+    unsafe { JSValue::new_undefined(ctx) }
+}
+
+/// Buffer `data` for the socket and flush (unless still connecting/resolving).
+fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) {
     let state = CONNS.with(|c| {
         c.borrow_mut().get_mut(&token).map(|conn| {
             conn.write_buf.extend_from_slice(&data);
@@ -822,7 +851,6 @@ unsafe extern "C-unwind" fn socket_write(
             });
         }
     }
-    unsafe { JSValue::new_undefined(ctx) }
 }
 
 /// `__velox_socket_end(socketId)` — close once the write buffer drains.

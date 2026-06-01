@@ -71,15 +71,13 @@ function inherits(ctor, superCtor) {
   });
 }
 
-// Coerce any write payload to a latin1 string suitable for the native bridge.
-function toLatin1(data, encoding) {
-  if (data == null) return '';
-  if (typeof data === 'string') {
-    return Buffer.from(data, encoding || 'utf8').toString('latin1');
-  }
-  if (Buffer.isBuffer(data)) return data.toString('latin1');
-  // ArrayBuffer / TypedArray / array-like
-  return Buffer.from(data).toString('latin1');
+// Coerce any write payload to a Buffer for the binary native bridge (no latin1
+// string round-trip).
+function toBytes(data, encoding) {
+  if (data == null) return Buffer.alloc(0);
+  if (typeof data === 'string') return Buffer.from(data, encoding || 'utf8');
+  if (Buffer.isBuffer(data)) return data;
+  return Buffer.from(data); // ArrayBuffer / TypedArray / array-like
 }
 
 Socket.prototype.write = function (data, encoding, cb) {
@@ -88,12 +86,12 @@ Socket.prototype.write = function (data, encoding, cb) {
     if (typeof cb === 'function') nextTick(cb);
     return false;
   }
-  var latin1 = toLatin1(data, encoding);
-  this.bytesWritten += latin1.length;
+  var buf = toBytes(data, encoding);
+  this.bytesWritten += buf.length;
   if (this._corked > 0) {
-    this._corkBuf.push(latin1);
+    this._corkBuf.push(buf);
   } else {
-    __velox_socket_write(this._socketId, latin1);
+    __velox_socket_write_bytes(this._socketId, buf);
   }
   if (typeof cb === 'function') nextTick(cb);
   return true;
@@ -140,7 +138,7 @@ Socket.prototype.uncork = function () {
 };
 Socket.prototype._flushCork = function () {
   if (this._corkBuf.length && this._socketId != null && !this.destroyed) {
-    __velox_socket_write(this._socketId, this._corkBuf.join(''));
+    __velox_socket_write_bytes(this._socketId, Buffer.concat(this._corkBuf));
   }
   this._corkBuf = [];
 };
@@ -212,10 +210,14 @@ Socket.prototype.connect = function (port, host, connectListener) {
   return this;
 };
 
-// Deliver an inbound chunk to listeners, honoring setEncoding().
-Socket.prototype._pushData = function (latin1) {
-  this.bytesRead += latin1.length;
-  var buf = Buffer.from(latin1, 'latin1');
+// Deliver an inbound chunk to listeners, honoring setEncoding(). `data` is a
+// Uint8Array from the native bridge; wrap it as a Buffer (zero-copy view over
+// the same bytes) — no latin1 string round-trip.
+Socket.prototype._pushData = function (data) {
+  var buf = Buffer.isBuffer(data)
+    ? data
+    : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  this.bytesRead += buf.length;
   if (this._encoding) this.emit('data', buf.toString(this._encoding));
   else this.emit('data', buf);
 };
