@@ -73,7 +73,97 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_ecdh_generate", ecdh_generate_fn);
         register(ctx, c"__velox_ecdh_pub", ecdh_pub_fn);
         register(ctx, c"__velox_ecdh_compute", ecdh_compute_fn);
+        register(ctx, c"__velox_gen_x25519", gen_x25519_fn);
+        register(ctx, c"__velox_x25519_dh", x25519_dh_fn);
     }
+}
+
+/// RFC 8410 PKCS#8 prefix for an X25519 private key (OID 1.3.101.110), followed
+/// by the 32-byte scalar.
+const X25519_PKCS8_PREFIX: &[u8] = &[
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+];
+/// RFC 8410 SubjectPublicKeyInfo prefix for an X25519 public key, followed by
+/// the 32-byte point.
+const X25519_SPKI_PREFIX: &[u8] = &[
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+];
+
+/// `__velox_gen_x25519()` → JSON `{publicKey, privateKey}` (PEM).
+unsafe extern "C-unwind" fn gen_x25519_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    match gen_x25519() {
+        Ok((public_pem, private_pem)) => {
+            let json = serde_json::json!({ "publicKey": public_pem, "privateKey": private_pem });
+            unsafe { js_string(ctx, &json.to_string()) }
+        }
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+fn gen_x25519() -> Result<(String, String), String> {
+    use x25519_dalek::{PublicKey, StaticSecret};
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|_| "random failure".to_string())?;
+    let secret = StaticSecret::from(seed);
+    let public = PublicKey::from(&secret);
+    let mut pkcs8 = X25519_PKCS8_PREFIX.to_vec();
+    pkcs8.extend_from_slice(&secret.to_bytes());
+    let mut spki = X25519_SPKI_PREFIX.to_vec();
+    spki.extend_from_slice(public.as_bytes());
+    Ok((
+        pem_encode("PUBLIC KEY", &spki),
+        pem_encode("PRIVATE KEY", &pkcs8),
+    ))
+}
+
+/// `__velox_x25519_dh(privateKeyPem, publicKeyPem)` → the 32-byte shared secret
+/// (latin1). The raw 32-byte scalar/point are the trailing bytes of each DER.
+unsafe extern "C-unwind" fn x25519_dh_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let priv_pem = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let pub_pem = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    match x25519_dh(&priv_pem, &pub_pem) {
+        Ok(secret) => unsafe { js_string_latin1(ctx, &secret) },
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+fn x25519_dh(priv_pem: &str, pub_pem: &str) -> Result<Vec<u8>, String> {
+    use x25519_dalek::{PublicKey, StaticSecret};
+    let priv_der = pem_decode(priv_pem)?;
+    let pub_der = pem_decode(pub_pem)?;
+    if priv_der.len() < 32 || pub_der.len() < 32 {
+        return Err("invalid X25519 key".to_string());
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&priv_der[priv_der.len() - 32..]);
+    let mut point = [0u8; 32];
+    point.copy_from_slice(&pub_der[pub_der.len() - 32..]);
+    let secret = StaticSecret::from(seed);
+    Ok(secret
+        .diffie_hellman(&PublicKey::from(point))
+        .to_bytes()
+        .to_vec())
 }
 
 // --- ECDH key agreement (P-256, via the p256 crate) ------------------------

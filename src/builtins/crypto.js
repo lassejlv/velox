@@ -202,11 +202,12 @@ function generateKeyPairSync(type, options) {
   options = options || {};
   var kp;
   if (t === "ed25519" || t === "ed448") kp = JSON.parse(__velox_gen_ed25519());
+  else if (t === "x25519") kp = JSON.parse(__velox_gen_x25519());
   else if (t === "ec") kp = JSON.parse(__velox_gen_ec());
   else if (t === "rsa" || t === "rsa-pss") {
     var bits = options.modulusLength || 2048;
     kp = JSON.parse(__velox_gen_rsa(bits));
-  } else throw new Error("unsupported key type '" + type + "' (ed25519, ec, rsa)");
+  } else throw new Error("unsupported key type '" + type + "' (ed25519, x25519, ec, rsa)");
   return {
     publicKey: encodeKey(kp.publicKey, options.publicKeyEncoding, "public"),
     privateKey: encodeKey(kp.privateKey, options.privateKeyEncoding, "private"),
@@ -286,8 +287,32 @@ function pemOf(input) {
 function detectKeyType(pem) {
   if (/BEGIN [A-Z ]*RSA/.test(pem)) return "rsa";
   if (/BEGIN [A-Z ]*EC/.test(pem)) return "ec";
-  // ed25519/x25519 use generic PKCS#8/SPKI; we can't always tell — leave generic.
+  // ed25519/x25519 use generic PKCS#8/SPKI — decode the DER and match the curve
+  // OID (RFC 8410): ed25519 = 2b6570, x25519 = 2b656e, x448 = 2b656f.
+  try {
+    var b64 = String(pem).replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+    var hex = Buffer.from(b64, "base64").toString("hex");
+    if (hex.indexOf("2b656e") >= 0) return "x25519";
+    if (hex.indexOf("2b6570") >= 0) return "ed25519";
+    if (hex.indexOf("2b656f") >= 0) return "x448";
+    if (hex.indexOf("2a8648ce3d") >= 0) return "ec"; // EC OID prefix
+  } catch (e) {}
   return undefined;
+}
+
+// crypto.diffieHellman({ privateKey, publicKey }) — X25519 key agreement.
+function diffieHellman(options) {
+  if (!options || !options.privateKey || !options.publicKey) {
+    throw new TypeError('The "options.privateKey" and "options.publicKey" properties are required');
+  }
+  var priv = options.privateKey, pub = options.publicKey;
+  var privPem = typeof priv.export === "function" ? String(priv.export({ type: "pkcs8", format: "pem" })) : String(priv);
+  var pubPem = typeof pub.export === "function" ? String(pub.export({ type: "spki", format: "pem" })) : String(pub);
+  var kt = priv.asymmetricKeyType || detectKeyType(privPem);
+  if (kt !== "x25519") {
+    throw new Error("crypto.diffieHellman currently supports X25519 keys only");
+  }
+  return Buffer.from(__velox_x25519_dh(privPem, pubPem), "latin1");
 }
 function KeyObject(type, pem) {
   this.type = type; // 'public' | 'private' | 'secret'
@@ -413,6 +438,7 @@ module.exports = {
   createCipheriv: createCipheriv,
   createDecipheriv: createDecipheriv,
   createECDH: createECDH,
+  diffieHellman: diffieHellman,
   ECDH: ECDH,
   hkdf: hkdf,
   hkdfSync: hkdfSync,

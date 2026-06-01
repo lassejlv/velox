@@ -38,6 +38,7 @@ objc2-foundation = "0.3.2"
 objc2-javascript-core = "0.3.2"
 owo-colors = "4.3.0"
 p256 = { version = "0.13", features = ["ecdh"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 oxc_resolver = "11"
 oxc = { version = "0.133.0", features = ["semantic", "transformer", "codegen", "ast_visit"] }
 pbkdf2 = "0.13.0"

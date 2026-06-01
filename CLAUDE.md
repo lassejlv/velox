@@ -142,10 +142,13 @@ Run them after touching any builtin shim or native — they catch regressions th
 
 `crypto` covers hash/HMAC/random/pbkdf2/scrypt/hkdf/AES ciphers + **Ed25519**
 + ECDSA P-256 + RSA sign/verify (via ring) + **ECDH** P-256 (via the `p256`
-crate) + `createPublicKey`/`createPrivateKey` KeyObjects. Key generation:
-`generateKeyPairSync('ed25519'|'ec'|'rsa')` — RSA keygen via the `rsa` crate
-(`__velox_gen_rsa`), though ring won't *sign* with RSA <2048 bits. Covers JWT
-RS256/ES256/EdDSA.
+crate) + **X25519** key agreement (`generateKeyPairSync('x25519')` +
+`crypto.diffieHellman({privateKey, publicKey})`, via `x25519-dalek`; verified
+against the RFC 7748 vector) + `createPublicKey`/`createPrivateKey` KeyObjects
+(`detectKeyType` reads the RFC 8410 curve OID). Key generation:
+`generateKeyPairSync('ed25519'|'x25519'|'ec'|'rsa')` — RSA keygen via the `rsa`
+crate (`__velox_gen_rsa`), though ring won't *sign* with RSA <2048 bits. Covers
+JWT RS256/ES256/EdDSA. `crypto.hash` is the Node-21 one-shot digest.
 async `fs` ops run off-thread (`__velox_fs_op_async` in `sys.rs`): reads/writes,
 stat/lstat/readdir/realpath, **and** mutations (mkdir/rmdir/rm/unlink/rename/
 copyFile). File descriptors (`openSync`/`readSync`/`writeSync`) are synthetic JS
