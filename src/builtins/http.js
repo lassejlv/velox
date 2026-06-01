@@ -546,6 +546,15 @@ function Server(options, requestListener) {
   EventEmitter.call(this);
   this._options = options || {};
 
+  // Node tuning knobs frameworks read/write (stored; velox doesn't time out
+  // idle connections, but the properties round-trip so code that sets them works).
+  this.keepAliveTimeout = 5000;
+  this.headersTimeout = 60000;
+  this.requestTimeout = 300000;
+  this.timeout = 0;
+  this.maxHeadersCount = 2000;
+  this.maxRequestsPerSocket = 0;
+
   var self = this;
   this._net = net.createServer(function (socket) {
     self._onConnection(socket);

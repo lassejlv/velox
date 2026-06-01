@@ -626,6 +626,19 @@
       return o instanceof Buffer;
     }
 
+    // Node 19: copy bytes out of a TypedArray view into a new Buffer.
+    static copyBytesFrom(view, offset, length) {
+      if (!ArrayBuffer.isView(view)) {
+        throw new TypeError('The "view" argument must be an instance of TypedArray.');
+      }
+      var elemSize = view.BYTES_PER_ELEMENT || 1;
+      var off = offset === undefined ? 0 : offset;
+      var len = length === undefined ? view.length - off : length;
+      var sub = view.subarray(off, off + len);
+      // slice() copies the bytes, so the result is independent of `view`.
+      return Buffer.from(sub.buffer.slice(sub.byteOffset, sub.byteOffset + sub.length * elemSize));
+    }
+
     static isEncoding(enc) {
       if (typeof enc !== 'string') return false;
       return normalizeEncoding(enc) !== undefined;
