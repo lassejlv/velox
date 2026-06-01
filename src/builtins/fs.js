@@ -481,6 +481,45 @@ var constants = {
   COPYFILE_EXCL: 1,
 };
 
+// node:fs cp (Node 16): recursively copy a file or directory tree.
+function cpSync(src, dest, options) {
+  options = options || {};
+  var path = require('node:path');
+  if (options.filter && options.filter(src, dest) === false) return;
+  var st = options.dereference ? statSync(src) : lstatSync(src);
+  if (st.isDirectory()) {
+    if (!options.recursive) {
+      var e = new Error("EISDIR: illegal operation on a directory, cp '" + src + "' -> '" + dest + "'");
+      e.code = 'EISDIR';
+      throw e;
+    }
+    mkdirSync(dest, { recursive: true });
+    var entries = readdirSync(src);
+    for (var i = 0; i < entries.length; i++) {
+      cpSync(path.join(src, entries[i]), path.join(dest, entries[i]), options);
+    }
+  } else {
+    if (options.errorOnExist && existsSync(dest)) {
+      var ee = new Error("EEXIST: file already exists, cp '" + src + "' -> '" + dest + "'");
+      ee.code = 'EEXIST';
+      throw ee;
+    }
+    if (options.force === false && existsSync(dest)) return;
+    var pdir = path.dirname(dest);
+    if (pdir && pdir !== '.' && !existsSync(pdir)) mkdirSync(pdir, { recursive: true });
+    copyFileSync(src, dest);
+  }
+}
+function cp(src, dest, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  try {
+    cpSync(src, dest, options);
+    Promise.resolve().then(function () { if (callback) callback(null); });
+  } catch (e) {
+    Promise.resolve().then(function () { if (callback) callback(e); });
+  }
+}
+
 // node:fs glob (Node 22): walk from `cwd` and match each relative path with
 // path.matchesGlob. `pattern` may be a string or an array; `options` accepts
 // `cwd`, `exclude` (fn or glob array), and `withFileTypes`.
@@ -574,6 +613,7 @@ var promises = {
   access: promisify(accessSync),
   mkdtemp: promisify(mkdtempSync),
   glob: function (pattern, options) { return globAsyncIterator(pattern, options); },
+  cp: function (src, dest, options) { return new Promise(function (res, rej) { cp(src, dest, options || {}, function (e) { e ? rej(e) : res(); }); }); },
 };
 
 module.exports = {
@@ -586,6 +626,8 @@ module.exports = {
   readdirSync: readdirSync,
   globSync: globSync,
   glob: glob,
+  cpSync: cpSync,
+  cp: cp,
   mkdirSync: mkdirSync,
   rmSync: rmSync,
   rmdirSync: rmdirSync,

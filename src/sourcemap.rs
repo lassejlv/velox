@@ -228,12 +228,32 @@ pub fn rewrite_stack(stack: &str) -> String {
                     }
                     // Mapped table + unmapped frame ⇒ bundler glue ⇒ drop.
                 }
-                // Not a bundle frame (native, or the leading message): keep it.
-                None => out.push(raw.to_string()),
+                // Builtin frames (eval'd via `new Function`, so no bundle URL)
+                // show as `name@` / `name@[native code]` — render them cleanly.
+                None => match builtin_frame_name(raw) {
+                    Some(name) => out.push(frame_line(&name, "")),
+                    // Anything else (the leading message line) is kept verbatim.
+                    None => out.push(raw.to_string()),
+                },
             }
         }
         out.join("\n")
     })
+}
+
+/// Extract the function name from a positionless JSC frame (`name@` or
+/// `name@[native code]`). Returns `None` for non-frame lines (e.g. the error
+/// message), guarding against an `@` that merely appears in a message.
+fn builtin_frame_name(line: &str) -> Option<String> {
+    let (name, loc) = line.trim().rsplit_once('@')?;
+    if !(loc.is_empty() || loc == "[native code]") {
+        return None;
+    }
+    // Real function names carry no path/position separators.
+    if name.contains('/') || name.contains(':') {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// Render one cleaned frame: `    at name (loc)` / `    at name` / `    at loc`.
