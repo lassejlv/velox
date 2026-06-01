@@ -81,6 +81,64 @@ function randomInt(min, max, cb) {
   if (typeof cb === "function") { queueMicrotask(function () { cb(null, value); }); return; }
   return value;
 }
+// --- primality (checkPrime, Miller-Rabin) -----------------------------------
+
+function toCandidateBigInt(candidate) {
+  if (typeof candidate === "bigint") return candidate;
+  if (Buffer.isBuffer(candidate) || ArrayBuffer.isView(candidate)) {
+    var hex = Buffer.from(candidate.buffer || candidate, candidate.byteOffset, candidate.byteLength).toString("hex");
+    return hex ? BigInt("0x" + hex) : 0n;
+  }
+  if (typeof candidate === "number") return BigInt(candidate);
+  throw new TypeError('The "candidate" argument must be a BigInt, Buffer, or TypedArray.');
+}
+function powmod(a, e, m) {
+  var r = 1n;
+  a %= m;
+  while (e > 0n) {
+    if (e & 1n) r = (r * a) % m;
+    e >>= 1n;
+    a = (a * a) % m;
+  }
+  return r;
+}
+// Strong-witness Miller-Rabin: deterministic for n < 3.3e24 with bases 2..37.
+function isProbablePrime(n) {
+  if (n < 2n) return false;
+  var small = [2n, 3n, 5n, 7n, 11n, 13n, 17n, 19n, 23n, 29n, 31n, 37n];
+  for (var i = 0; i < small.length; i++) {
+    if (n === small[i]) return true;
+    if (n % small[i] === 0n) return false;
+  }
+  var d = n - 1n, r = 0n;
+  while (d % 2n === 0n) { d /= 2n; r++; }
+  for (var w = 0; w < small.length; w++) {
+    var a = small[w];
+    if (a >= n) continue;
+    var x = powmod(a, d, n);
+    if (x === 1n || x === n - 1n) continue;
+    var composite = true;
+    for (var j = 1n; j < r; j++) {
+      x = (x * x) % n;
+      if (x === n - 1n) { composite = false; break; }
+    }
+    if (composite) return false;
+  }
+  return true;
+}
+function checkPrimeSync(candidate) {
+  return isProbablePrime(toCandidateBigInt(candidate));
+}
+function checkPrime(candidate, options, cb) {
+  if (typeof options === "function") { cb = options; options = {}; }
+  try {
+    var r = checkPrimeSync(candidate);
+    queueMicrotask(function () { cb(null, r); });
+  } catch (e) {
+    queueMicrotask(function () { cb(e); });
+  }
+}
+
 function randomUUID() {
   var b = randomBytes(16);
   b[6] = (b[6] & 0x0f) | 0x40;
@@ -427,6 +485,8 @@ module.exports = {
   randomFillSync: randomFillSync,
   randomFill: randomFill,
   randomInt: randomInt,
+  checkPrime: checkPrime,
+  checkPrimeSync: checkPrimeSync,
   randomUUID: randomUUID,
   getRandomValues: getRandomValues,
   timingSafeEqual: timingSafeEqual,
