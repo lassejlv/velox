@@ -354,7 +354,12 @@ fn read_bundle_cache(entry: &Path) -> Option<String> {
             return None;
         }
     }
-    std::fs::read_to_string(dir.join(format!("{key}.js"))).ok()
+    let js = std::fs::read_to_string(dir.join(format!("{key}.js"))).ok()?;
+    // Restore the source-map table so stack frames still map on a cache hit.
+    if let Ok(map) = std::fs::read_to_string(dir.join(format!("{key}.map"))) {
+        crate::sourcemap::load_serialized(&map);
+    }
+    Some(js)
 }
 
 /// Persist the bundle and a manifest of its source files' stamps (best-effort).
@@ -380,6 +385,11 @@ fn write_bundle_cache(entry: &Path, js: &str, deps: &[PathBuf]) {
     let key = bundle_cache_key(entry);
     let _ = std::fs::write(dir.join(format!("{key}.js")), js);
     let _ = std::fs::write(dir.join(format!("{key}.meta")), meta.to_string());
+    // Persist the source-map table built during emit, for mapping on cache hits.
+    let _ = std::fs::write(
+        dir.join(format!("{key}.map")),
+        crate::sourcemap::serialize_table(),
+    );
 }
 
 /// The resolved module graph: a stable ordering of modules plus the rewritten

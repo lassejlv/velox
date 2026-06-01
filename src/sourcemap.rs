@@ -39,6 +39,90 @@ pub fn set_table(spans: Vec<ModuleSpan>) {
     TABLE.with(|t| *t.borrow_mut() = spans);
 }
 
+/// Serialize the current table to JSON for the bundle cache (so a cache hit can
+/// still map frames without rebundling). Compact, hand-rolled to avoid a serde
+/// derive on `ModuleSpan`.
+pub fn serialize_table() -> String {
+    TABLE.with(|t| {
+        let spans = t.borrow();
+        let mut s = String::from("[");
+        for (i, m) in spans.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!(
+                "{{\"s\":{},\"e\":{},\"sh\":{},\"f\":{},\"t\":[",
+                m.start_line,
+                m.end_line,
+                m.esm_shift,
+                json_string(&m.file)
+            ));
+            for (j, tok) in m.tokens.iter().enumerate() {
+                if j > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!("[{},{},{}]", tok.0, tok.1, tok.2));
+            }
+            s.push_str("]}");
+        }
+        s.push(']');
+        s
+    })
+}
+
+/// Load a table previously written by [`serialize_table`] (on a cache hit).
+pub fn load_serialized(json: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    let Some(arr) = value.as_array() else {
+        return;
+    };
+    let mut spans = Vec::with_capacity(arr.len());
+    for m in arr {
+        let tokens = m["t"]
+            .as_array()
+            .map(|ts| {
+                ts.iter()
+                    .filter_map(|t| {
+                        let a = t.as_array()?;
+                        Some((
+                            a.first()?.as_u64()? as u32,
+                            a.get(1)?.as_u64()? as u32,
+                            a.get(2)?.as_u64()? as u32,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        spans.push(ModuleSpan {
+            start_line: m["s"].as_u64().unwrap_or(0) as u32,
+            end_line: m["e"].as_u64().unwrap_or(0) as u32,
+            esm_shift: m["sh"].as_u64().unwrap_or(0) as u32,
+            file: m["f"].as_str().unwrap_or("").to_string(),
+            tokens,
+        });
+    }
+    set_table(spans);
+}
+
+/// Minimal JSON string escaping for file paths.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// A source file's path relative to the cwd when possible, else as given.
 pub fn display_path(path: Option<&PathBuf>) -> String {
     let Some(path) = path else {
