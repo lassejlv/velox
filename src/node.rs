@@ -296,6 +296,16 @@ pub const GLOBALS_PRELUDE: &str = r#"
     },
     getuid: function () { return 0; },
     getgid: function () { return 0; },
+    geteuid: function () { return 0; },
+    getegid: function () { return 0; },
+    // umask() reports/sets the file-mode creation mask. velox doesn't apply one,
+    // but fstream/npm-style packages call it at load; track the value so the
+    // get/set contract holds (returns the previous mask on set).
+    umask: function (mask) {
+      var prev = process._umask === undefined ? 0o22 : process._umask;
+      if (mask !== undefined) process._umask = typeof mask === "string" ? parseInt(mask, 8) : (mask | 0);
+      return prev;
+    },
     features: {},
   };
   process.hrtime.bigint = function () { return BigInt(Math.round(__velox_hrtime_ns())); };
