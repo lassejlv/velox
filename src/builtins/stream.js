@@ -138,6 +138,19 @@ function Readable(options) {
 }
 inherits(Readable, Stream);
 
+// Standard Node Readable state getters libraries inspect (got, undici, etc.).
+Object.defineProperties(Readable.prototype, {
+  readableEnded: { configurable: true, get: function () { return this._readableState ? this._readableState.endEmitted : false; } },
+  readableLength: { configurable: true, get: function () { return this._readableState ? this._readableState.length : 0; } },
+  readableFlowing: {
+    configurable: true,
+    get: function () { return this._readableState ? this._readableState.flowing : null; },
+    set: function (v) { if (this._readableState) this._readableState.flowing = v; },
+  },
+  readableHighWaterMark: { configurable: true, get: function () { return this._readableState ? this._readableState.highWaterMark : 16384; } },
+  readableObjectMode: { configurable: true, get: function () { return !!(this._readableState && this._readableState.objectMode); } },
+});
+
 Readable.prototype._read = function () {
   // Default no-op; push-based sources override or just call push() externally.
 };
