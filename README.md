@@ -73,6 +73,22 @@ velox build app.ts        # → ./app — a single self-contained, JIT-enabled b
 ./app                     # no velox / Node / node_modules needed
 ```
 
+## Performance
+
+The same **Express 4** app served by each runtime, `wrk -t8 -c200 -d15s`,
+`GET /json`, on Apple Silicon (10 cores):
+
+| Runtime | Req/sec | Latency avg | Latency p99 | Idle RSS | Peak RSS |
+|---------|--------:|------------:|------------:|---------:|---------:|
+| **velox 0.1** | **90,700** | **2.17 ms** | **3.21 ms** | **39 MB** | **108 MB** |
+| Node 24 | 71,400 | 3.18 ms | 4.53 ms | 61 MB | 148 MB |
+| Deno 2.8 | 56,000 | 3.61 ms | 9.71 ms | 67 MB | 199 MB |
+
+velox leads every metric here — **~27% more throughput than Node**, the best
+latency, and **~40% less memory**. Reproduce or try other workloads with
+[`benchmarks/express`](benchmarks/express). (Numbers vary by hardware/OS;
+requires a signed release build for JIT.)
+
 ## Documentation
 
 | | |
