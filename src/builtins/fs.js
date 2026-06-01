@@ -65,6 +65,51 @@ function direntFor(dir, name) {
   return new Dirent(name, t, String(dir));
 }
 
+// fs.Dir — a directory handle yielding Dirents. velox reads the whole listing
+// eagerly on open (no native dir-fd), then doles out entries; the async forms
+// resolve on a microtask so callers that `await dir.read()` / `for await` work.
+// Used by fs-extra's copy, readdirp, globby, etc.
+function Dir(path) {
+  this.path = String(path);
+  this._entries = readdirSync(path, { withFileTypes: true });
+  this._pos = 0;
+  this._closed = false;
+}
+Dir.prototype.readSync = function () {
+  if (this._pos >= this._entries.length) return null;
+  return this._entries[this._pos++];
+};
+Dir.prototype.read = function (cb) {
+  var self = this;
+  var p = new Promise(function (res) { queueMicrotask(function () { res(self.readSync()); }); });
+  if (typeof cb === 'function') { p.then(function (d) { cb(null, d); }, function (e) { cb(e); }); return; }
+  return p;
+};
+Dir.prototype.closeSync = function () { this._closed = true; };
+Dir.prototype.close = function (cb) {
+  this._closed = true;
+  var p = Promise.resolve();
+  if (typeof cb === 'function') { p.then(function () { cb(null); }); return; }
+  return p;
+};
+Dir.prototype[Symbol.asyncIterator] = function () {
+  var self = this;
+  return {
+    next: function () {
+      return self.read().then(function (d) {
+        return d === null ? { value: undefined, done: true } : { value: d, done: false };
+      });
+    },
+  };
+};
+function opendirSync(p) { return new Dir(p); }
+function opendirAsync(p, options, cb) {
+  if (typeof options === 'function') { cb = options; }
+  var result;
+  try { result = new Dir(p); } catch (e) { if (cb) return cb(e); throw e; }
+  if (cb) queueMicrotask(function () { cb(null, result); });
+}
+
 // --- synchronous API -------------------------------------------------------
 
 function readFileSync(p, options) {
@@ -610,6 +655,7 @@ var promises = {
   rename: function (a, b) { return new Promise(function (res, rej) { renameAsync(a, b, function (e) { e ? rej(e) : res(); }); }); },
   copyFile: function (s, d, m) { return new Promise(function (res, rej) { copyFileAsync(s, d, m, function (e) { e ? rej(e) : res(); }); }); },
   realpath: promisify(realpathSync),
+  opendir: function (p, o) { return new Promise(function (res, rej) { opendirAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   access: promisify(accessSync),
   mkdtemp: promisify(mkdtempSync),
   glob: function (pattern, options) { return globAsyncIterator(pattern, options); },
@@ -624,6 +670,9 @@ module.exports = {
   statSync: statSync,
   lstatSync: lstatSync,
   readdirSync: readdirSync,
+  opendirSync: opendirSync,
+  opendir: opendirAsync,
+  Dir: Dir,
   globSync: globSync,
   glob: glob,
   cpSync: cpSync,
@@ -700,4 +749,9 @@ module.exports = {
   constants: constants,
   promises: promises,
 };
+// graceful-fs probes `fs.realpath.native` and warns ("Is fs being
+// monkey-patched?") if it's missing; expose it on both the callback and the
+// promise-based realpath (it has the same behaviour as plain realpath here).
+module.exports.realpath.native = module.exports.realpath;
+promises.realpath.native = promises.realpath;
 module.exports.default = module.exports;

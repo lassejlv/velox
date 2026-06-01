@@ -53,6 +53,23 @@ check("fs.readdirSync withFileTypes", () => {
   const ents = fs.readdirSync("/tmp", { withFileTypes: true });
   if (!Array.isArray(ents) || typeof ents[0]?.isFile !== "function") throw new Error("dirent");
 });
+// fs.opendirSync + Dir.readSync (fs-extra/readdirp/globby iterate directories this way).
+check("fs.opendirSync + Dir.readSync", () => {
+  const dir = fs.opendirSync("/tmp");
+  let count = 0, ent;
+  while ((ent = dir.readSync()) !== null) { if (typeof ent.name !== "string") throw new Error("name"); count++; }
+  dir.closeSync();
+  if (count === 0) throw new Error("empty");
+});
+// fs.promises.opendir + async iteration.
+check("fs.promises.opendir for-await", async () => {
+  const dir = await fs.promises.opendir("/tmp");
+  let count = 0;
+  for await (const ent of dir) { if (typeof ent.name !== "string") throw new Error("name"); count++; }
+  if (count === 0) throw new Error("empty");
+});
+// graceful-fs probes fs.realpath.native — must exist or it warns and degrades.
+check("fs.realpath.native exists", () => { if (typeof fs.realpath.native !== "function") throw new Error("no native"); if (typeof fs.promises.realpath.native !== "function") throw new Error("no promise native"); });
 
 // Buffer numerics
 check("buf.readFloatLE/writeFloatLE", () => { const b = Buffer.alloc(4); b.writeFloatLE(1.5, 0); if (Math.abs(b.readFloatLE(0) - 1.5) > 1e-6) throw new Error("float"); });
