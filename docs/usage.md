@@ -165,6 +165,40 @@ velox test --coverage-threshold=80              # fail CI under 80%
 velox test --coverage-lcov                      # → coverage/lcov.info
 ```
 
+## Benchmark
+
+```sh
+velox bench                # run every benchmark file under the cwd
+velox bench sort           # only files whose path contains "sort"
+```
+
+`velox bench` discovers `*.bench.*` / `*.benchmark.*` files and files under
+`bench/`/`benchmarks/`, and runs them with a `bench`/`describe` API available as
+**globals** (or import from `velox-bench`). Each benchmark is warmed up, then run
+in adaptively-sized batches for a time budget; the runner reports ops/sec and
+mean/min/p99 timings, plus a per-group "fastest" summary:
+
+```ts
+describe("string building", () => {
+  bench("concatenation", () => { let s = ""; for (let i = 0; i < 100; i++) s += i; return s; });
+  bench("array join", () => { const p: string[] = []; for (let i = 0; i < 100; i++) p.push("" + i); return p.join(""); });
+});
+bench("async resolve", async () => { await Promise.resolve(42); });
+```
+
+```
+Benchmarks:
+    string building
+      concatenation       3,950,342 ops/s  mean 253.14 ns  min 226.30 ns  p99 315.54 ns
+      array join          2,236,138 ops/s  mean 447.20 ns  min 397.77 ns  p99 584.11 ns
+      summary: concatenation is 1.77× faster than array join
+```
+
+`bench.skip`/`bench.only`, `describe`/`group` nesting, async benchmarks, and the
+`before*`/`after*` hooks are supported; pass `{ time, warmup }` (ms) as a third
+argument to tune the windows. A benchmark that throws exits non-zero. Types live
+in `velox-bench.d.ts` (shipped by `velox init`).
+
 ## Run scripts
 
 ```sh
@@ -249,6 +283,7 @@ comments, `export KEY=…` prefixes, and single/double-quoted strings. `.env.loc
 | `x <pkg> [args…]` | Run a package's executable (npx-style) |
 | `build <entry> [--out N]` | Compile to a standalone executable |
 | `test [PATTERN…] [--coverage] [-w]` | Run test files (`--coverage`/`--coverage-threshold=N`/`--coverage-lcov`; `-w` watches) |
+| `bench [PATTERN…]` | Run benchmark files (`*.bench.*` / under `bench/`) |
 | `run [script]` | Run a package.json script |
 | `FILE [args…]` | Run a script (args go to `process.argv`) |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |

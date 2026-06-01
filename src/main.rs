@@ -187,6 +187,15 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 watch,
             ))
         }
+        "bench" | "benchmark" => {
+            if has_help {
+                println!(
+                    "Usage: velox bench [PATTERN...]\n\n  Run benchmark files (*.bench.* / *.benchmark.* / files under bench/).\n  Globals bench/describe + before*/after* hooks are provided.\n  PATTERNs filter by path substring."
+                );
+                return Some(ExitCode::SUCCESS);
+            }
+            Some(cmd_bench(&positionals()))
+        }
         "build" | "compile" => {
             if has_help {
                 println!(
@@ -604,10 +613,14 @@ fn watch_tests(files: &[PathBuf], cov: &CoverageOpts) -> ExitCode {
     }
 }
 
-/// Recursively collect test files under `root` (skipping node_modules / hidden
-/// / build dirs). A file is a test if it's named `*.test.*` / `*.spec.*` or
-/// lives under a `test`/`tests`/`__tests__` directory, with a JS/TS extension.
-fn discover_tests(root: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
+/// Recursively collect files under `root` matching `is_match` (skipping
+/// node_modules / hidden / build dirs), filtered by path-substring `patterns`.
+fn discover_files(
+    root: &Path,
+    patterns: &[String],
+    is_match: &dyn Fn(&Path) -> bool,
+    out: &mut Vec<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -623,8 +636,8 @@ fn discover_tests(root: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
             {
                 continue;
             }
-            discover_tests(&path, patterns, out);
-        } else if is_test_file(&path)
+            discover_files(&path, patterns, is_match, out);
+        } else if is_match(&path)
             && (patterns.is_empty()
                 || patterns
                     .iter()
@@ -635,12 +648,21 @@ fn discover_tests(root: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
     }
 }
 
-fn is_test_file(path: &Path) -> bool {
-    let ext_ok = matches!(
+/// A file is a test if it's named `*.test.*` / `*.spec.*` or lives under a
+/// `test`/`tests`/`__tests__` directory, with a JS/TS extension.
+fn discover_tests(root: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
+    discover_files(root, patterns, &is_test_file, out);
+}
+
+fn has_js_ext(path: &Path) -> bool {
+    matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
-    );
-    if !ext_ok {
+    )
+}
+
+fn is_test_file(path: &Path) -> bool {
+    if !has_js_ext(path) {
         return false;
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -649,6 +671,84 @@ fn is_test_file(path: &Path) -> bool {
     }
     path.components()
         .any(|c| matches!(c.as_os_str().to_str(), Some("test" | "tests" | "__tests__")))
+}
+
+/// A file is a benchmark if it's named `*.bench.*` / `*.benchmark.*` or lives
+/// under a `bench`/`benches`/`benchmarks` directory, with a JS/TS extension.
+fn is_bench_file(path: &Path) -> bool {
+    if !has_js_ext(path) {
+        return false;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.contains(".bench.") || name.contains(".benchmark.") {
+        return true;
+    }
+    path.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some("bench" | "benches" | "benchmarks")
+        )
+    })
+}
+
+/// `velox bench [patterns]` — discover benchmark files and run them through a
+/// generated driver that loads the `velox-bench` framework.
+fn cmd_bench(patterns: &[String]) -> ExitCode {
+    use owo_colors::OwoColorize;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut files = Vec::new();
+    discover_files(&cwd, patterns, &is_bench_file, &mut files);
+    files.sort();
+
+    if files.is_empty() {
+        eprintln!(
+            "  {} no benchmark files found{}",
+            "✖".red().bold(),
+            if patterns.is_empty() {
+                " (looked for *.bench.* / *.benchmark.* and files under bench/, benchmarks/)"
+                    .to_string()
+            } else {
+                format!(" matching {}", patterns.join(", "))
+            }
+        );
+        return ExitCode::FAILURE;
+    }
+
+    println!(
+        "  {} {} {}\n",
+        "velox".cyan().bold(),
+        "bench".dimmed(),
+        format!(
+            "· {} file{}",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        )
+        .dimmed()
+    );
+
+    let mut driver = String::from("const __b = require('velox-bench');\n__b.register();\n");
+    for f in &files {
+        driver.push_str(&format!(
+            "require({});\n",
+            js_string_literal(&f.to_string_lossy())
+        ));
+    }
+    driver.push_str("await __b.run();\n");
+
+    let driver_path = std::env::temp_dir().join(format!(".velox-bench-{}.ts", std::process::id()));
+    if std::fs::write(&driver_path, &driver).is_err() {
+        return fail_msg("bench: could not stage driver");
+    }
+    let result = match module::bundle(&driver_path) {
+        Ok(js) => run_bundle(&js),
+        Err(error) => {
+            ui::report_module_error(&error.to_string());
+            ExitCode::FAILURE
+        }
+    };
+    let _ = std::fs::remove_file(&driver_path);
+    result
 }
 
 /// Encode a string as a JS string literal (double-quoted, escaped).
