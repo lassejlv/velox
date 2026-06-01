@@ -494,6 +494,28 @@ var C = (function () {
 
 var stats = { pass: 0, fail: 0, skip: 0, todo: 0, files: 0, failures: [] };
 
+// `velox test -t <pattern>` name filter (case-insensitive substring on the
+// full "suite › test" name). null = run everything. Set at run() start, since
+// the driver assigns the global after this module is required.
+var nameFilter = null;
+function matchesFilter(fullName) {
+  return !nameFilter || fullName.toLowerCase().indexOf(nameFilter) >= 0;
+}
+// Whether any test in `suite` (or its descendants) matches the name filter.
+function suiteMatches(suite) {
+  if (!nameFilter) return true;
+  function anyIn(s, prefix) {
+    for (var i = 0; i < s.tests.length; i++) {
+      if (matchesFilter(prefix.concat(s.tests[i].name).join(' › '))) return true;
+    }
+    for (var j = 0; j < s.children.length; j++) {
+      if (anyIn(s.children[j], prefix.concat(s.children[j].name))) return true;
+    }
+    return false;
+  }
+  return anyIn(suite, ancestry(suite).map(function (s) { return s.name; }));
+}
+
 async function runFn(fn, timeout) {
   if (!fn) return;
   var p = fn.length >= 1
@@ -511,6 +533,8 @@ async function runFn(fn, timeout) {
 function ancestry(suite) { var out = []; for (var s = suite; s && s !== rootSuite; s = s.parent) out.unshift(s); return out; }
 
 async function runSuite(suite, depth) {
+  // Skip whole suites with no test matching the -t filter (no header, no hooks).
+  if (!suiteMatches(suite)) return;
   var indent = '  '.repeat(depth);
   if (suite !== rootSuite && suite.name) console.log(indent + C.bold(suite.name));
 
@@ -519,12 +543,14 @@ async function runSuite(suite, depth) {
 
   for (var t = 0; t < suite.tests.length; t++) {
     var test = suite.tests[t];
+    var fullName = ancestry(suite).map(function (s) { return s.name; }).concat(test.name).join(' › ');
+    if (!matchesFilter(fullName)) continue; // filtered out by -t
     if (test.mode === 'todo') { stats.todo++; console.log(bodyIndent + C.cyan('○') + ' ' + test.name + C.dim(' [todo]')); continue; }
     if (test.mode === 'skip' || (anyOnly && !isOnlyPath(test))) { stats.skip++; console.log(bodyIndent + C.yellow('○') + ' ' + C.dim(test.name)); continue; }
     var start = Date.now();
     // Snapshot context: full test path + a fresh per-test counter so multiple
     // toMatchSnapshot() calls in one test get distinct keys.
-    currentTestPath = ancestry(suite).map(function (s) { return s.name; }).concat(test.name).join(' › ');
+    currentTestPath = fullName;
     snapCounter = 0;
     try {
       for (var be = 0; be < suite.beforeEach.length; be++) await runFn(suite.beforeEach[be]);
@@ -713,6 +739,7 @@ function printCoverage() {
 // run(): execute the collected suite and report; sets process.exitCode.
 async function run() {
   var start = Date.now();
+  nameFilter = (globalThis.__VELOX_TEST_FILTER || '').toLowerCase() || null;
   loadSnapshots();
   try {
     await runSuite(rootSuite, 0);

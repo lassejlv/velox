@@ -160,10 +160,13 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         "test" | "t" => {
             if has_help {
                 println!(
-                    "Usage: velox test [PATTERN...] [--coverage] [--watch] [-u]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  -u, --update              Update toMatchSnapshot snapshots.\n  -w, --watch               Re-run on change."
+                    "Usage: velox test [PATTERN...] [-t NAME] [--coverage] [--watch] [-u]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by file-path substring.\n\nOptions:\n  -t, --test-name-pattern N Only run tests whose name contains N.\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  -u, --update              Update toMatchSnapshot snapshots.\n  -w, --watch               Re-run on change."
                 );
                 return Some(ExitCode::SUCCESS);
             }
+            // -t / --test-name-pattern NAME (space or =form). Its value must be
+            // excluded from the file-path patterns below.
+            let (name_filter, test_patterns) = parse_test_name_filter(rest);
             // Any coverage sub-flag implies --coverage. Threshold/lcov take the
             // attached `=VALUE` form so a bare value isn't read as a pattern.
             let threshold =
@@ -179,7 +182,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
             let watch = rest.iter().any(|a| a == "--watch" || a == "-w");
             let update = rest.iter().any(|a| a == "--update" || a == "-u");
             Some(cmd_test(
-                &positionals(),
+                &test_patterns,
                 CoverageOpts {
                     on: coverage,
                     threshold,
@@ -187,6 +190,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 },
                 watch,
                 update,
+                name_filter,
             ))
         }
         "bench" | "benchmark" => {
@@ -462,7 +466,13 @@ struct CoverageOpts {
 /// `velox test [patterns]` — discover test files, run them through a generated
 /// driver that loads the `velox-test` framework, and report. `--coverage`
 /// instruments the source under test; `--watch` re-runs on change.
-fn cmd_test(patterns: &[String], cov: CoverageOpts, watch: bool, update: bool) -> ExitCode {
+fn cmd_test(
+    patterns: &[String],
+    cov: CoverageOpts,
+    watch: bool,
+    update: bool,
+    name_filter: Option<String>,
+) -> ExitCode {
     use owo_colors::OwoColorize;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -484,14 +494,19 @@ fn cmd_test(patterns: &[String], cov: CoverageOpts, watch: bool, update: bool) -
     }
 
     if watch {
-        return watch_tests(&files, &cov, update);
+        return watch_tests(&files, &cov, update, name_filter.as_deref());
     }
-    run_tests_once(&files, &cov, update).0
+    run_tests_once(&files, &cov, update, name_filter.as_deref()).0
 }
 
 /// Bundle + run the discovered test files once. Returns the exit code and the
 /// set of source files that went into the run (for `--watch`).
-fn run_tests_once(files: &[PathBuf], cov: &CoverageOpts, update: bool) -> (ExitCode, Vec<PathBuf>) {
+fn run_tests_once(
+    files: &[PathBuf],
+    cov: &CoverageOpts,
+    update: bool,
+    name_filter: Option<&str>,
+) -> (ExitCode, Vec<PathBuf>) {
     use owo_colors::OwoColorize;
 
     println!(
@@ -516,6 +531,12 @@ fn run_tests_once(files: &[PathBuf], cov: &CoverageOpts, update: bool) -> (ExitC
     let mut driver = String::from("const __t = require('velox-test');\n__t.register();\n");
     if update {
         driver.push_str("globalThis.__VELOX_SNAPSHOT = { update: true };\n");
+    }
+    if let Some(filter) = name_filter {
+        driver.push_str(&format!(
+            "globalThis.__VELOX_TEST_FILTER = {};\n",
+            js_string_literal(filter)
+        ));
     }
     for f in files {
         driver.push_str(&format!(
@@ -576,7 +597,12 @@ fn coverage_opts_js(cov: &CoverageOpts) -> String {
 
 /// `velox test --watch`: run, then re-run whenever any source file that went
 /// into the run changes (polling its mtimes, like the top-level `--watch`).
-fn watch_tests(files: &[PathBuf], cov: &CoverageOpts, update: bool) -> ExitCode {
+fn watch_tests(
+    files: &[PathBuf],
+    cov: &CoverageOpts,
+    update: bool,
+    name_filter: Option<&str>,
+) -> ExitCode {
     use std::collections::HashMap;
     use std::time::{Duration, SystemTime};
 
@@ -594,7 +620,7 @@ fn watch_tests(files: &[PathBuf], cov: &CoverageOpts, update: bool) -> ExitCode 
 
     loop {
         print!("\x1b[2J\x1b[H"); // clear screen
-        let (_, deps) = run_tests_once(files, cov, update);
+        let (_, deps) = run_tests_once(files, cov, update, name_filter);
         // Watch the test files plus everything they pulled in; fall back to just
         // the test files if bundling failed.
         let watched: Vec<PathBuf> = if deps.is_empty() {
@@ -771,6 +797,34 @@ fn js_string_literal(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Split out the `-t`/`--test-name-pattern` value (space or `=` form) and the
+/// remaining file-path patterns. Done together so the filter's space-form value
+/// isn't mistaken for a path pattern.
+fn parse_test_name_filter(args: &[String]) -> (Option<String>, Vec<String>) {
+    let mut filter = None;
+    let mut patterns = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "-t" || a == "--test-name-pattern" {
+            filter = args.get(i + 1).cloned();
+            i += 2;
+        } else if let Some(v) = a
+            .strip_prefix("-t=")
+            .or_else(|| a.strip_prefix("--test-name-pattern="))
+        {
+            filter = Some(v.to_string());
+            i += 1;
+        } else {
+            if !a.starts_with('-') {
+                patterns.push(a.clone());
+            }
+            i += 1;
+        }
+    }
+    (filter, patterns)
 }
 
 /// Whether `name` appears in `args` as a bare flag or in `name=...` form.

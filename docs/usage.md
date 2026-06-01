@@ -94,13 +94,16 @@ macOS arm64 only.
 ```sh
 velox test                 # run every test file under the cwd
 velox test math            # only files whose path contains "math"
+velox test -t "adds"       # only tests whose name contains "adds"
 velox test --watch         # re-run on change (alias: -w)
 velox test -u              # update toMatchSnapshot snapshots
 velox test --coverage      # report line/function coverage of the source under test
 ```
 
 `velox test` discovers `*.test.*` / `*.spec.*` files and files under
-`test/`/`tests/`/`__tests__/`, and runs them with a Vitest/Bun-style API.
+`test/`/`tests/`/`__tests__/`, and runs them with a Vitest/Bun-style API. A
+positional argument filters by **file path**; `-t`/`--test-name-pattern` filters
+by **test name** (a case-insensitive substring of the full `suite › test` name).
 `describe`, `it`/`test`, `expect`, and the `beforeAll`/`afterAll`/`beforeEach`/
 `afterEach` hooks are available as **globals** (no import needed) — or import
 them from `velox-test`:
