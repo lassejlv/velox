@@ -449,8 +449,10 @@ fn collect_direct_deps() -> Vec<(String, String)> {
 /// — i.e. the lockfile isn't stale relative to a hand-edited package.json.
 fn lockfile_is_fresh(pkg: &Value, locked: &[Resolved]) -> bool {
     use std::collections::BTreeMap;
-    let by_name: BTreeMap<&str, &Version> =
-        locked.iter().map(|r| (r.name.as_str(), &r.version)).collect();
+    let by_name: BTreeMap<&str, &Version> = locked
+        .iter()
+        .map(|r| (r.name.as_str(), &r.version))
+        .collect();
     for (name, range) in gather_roots(pkg, true) {
         // Local/workspace/git specifiers aren't registry-resolved or locked.
         if !resolve::is_registry_range(&range) {
@@ -659,7 +661,12 @@ fn install_resolved(resolved: Vec<Resolved>) -> ExitCode {
 /// the resolved version. Uses the global tarball cache, falling back to the
 /// registry on a miss (and populating the cache on download).
 fn install_one(r: &Resolved, nm: &Path) -> Result<bool, String> {
-    let dest = nm.join(&r.name);
+    // A nested package installs under its dependent's own node_modules so the
+    // module resolver (which walks up from the importer) finds the right version.
+    let dest = match &r.nest_under {
+        Some(parent) => nm.join(parent).join("node_modules").join(&r.name),
+        None => nm.join(&r.name),
+    };
     if is_already_installed(&dest, &r.version) {
         return Ok(false);
     }
@@ -681,7 +688,12 @@ fn install_one(r: &Resolved, nm: &Path) -> Result<bool, String> {
     }
     std::fs::create_dir_all(&dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
     tarball::extract(&bytes, &dest)?;
-    link_bins(nm, &r.name);
+    // Link bins into the node_modules the package actually lives in.
+    let link_nm = match &r.nest_under {
+        Some(parent) => nm.join(parent).join("node_modules"),
+        None => nm.to_path_buf(),
+    };
+    link_bins(&link_nm, &r.name);
     Ok(true)
 }
 

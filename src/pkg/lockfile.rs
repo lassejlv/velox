@@ -21,14 +21,20 @@ pub const LOCKFILE: &str = "velox.lock";
 /// Write `resolved` to `velox.lock` (sorted by name). Removes a stale
 /// `velox-lock.json` from the previous JSON format if present.
 pub fn write(resolved: &[Resolved]) -> Result<(), String> {
+    // A nested package is keyed by its install path so two versions of the same
+    // name (one hoisted, one nested) don't collide as duplicate YAML keys.
+    let key_of = |r: &Resolved| match &r.nest_under {
+        Some(parent) => format!("{parent}/node_modules/{}", r.name),
+        None => r.name.clone(),
+    };
     let mut sorted: Vec<&Resolved> = resolved.iter().collect();
-    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    sorted.sort_by_key(|r| key_of(r));
 
     let mut out = String::from("# velox lockfile — generated, do not edit by hand\n");
     out.push_str("lockfileVersion: 1\n");
     out.push_str("packages:\n");
     for r in sorted {
-        out.push_str(&format!("  {}:\n", quote(&r.name)));
+        out.push_str(&format!("  {}:\n", quote(&key_of(r))));
         out.push_str(&format!("    version: {}\n", r.version));
         out.push_str(&format!("    resolved: {}\n", r.tarball));
         if let Some(integrity) = &r.integrity {
@@ -59,12 +65,18 @@ pub fn read() -> Option<Vec<Resolved>> {
         if let (Some(n), Some(v), Some(r)) = (name, version, resolved)
             && let Some(ver) = Version::parse(v)
         {
+            // A `<parent>/node_modules/<name>` key denotes a nested install.
+            let (nest_under, real_name) = match n.rsplit_once("/node_modules/") {
+                Some((parent, leaf)) => (Some(parent.to_string()), leaf.to_string()),
+                None => (None, n.clone()),
+            };
             entries.push(Resolved {
-                name: n.clone(),
+                name: real_name,
                 version: ver,
                 tarball: r.clone(),
                 integrity: integrity.clone(),
                 shasum: None,
+                nest_under,
             });
         }
     };

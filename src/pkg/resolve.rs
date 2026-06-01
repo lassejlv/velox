@@ -1,11 +1,13 @@
 //! Dependency resolution: walk the `dependencies` graph from a set of roots and
-//! choose one version per package (a flat `node_modules`, like npm's hoisting
-//! for the common, conflict-free case). Conflicts resolve to the higher version
-//! with a warning — velox does not nest duplicate versions.
+//! hoist one version per package into the root `node_modules` (npm-style), and
+//! when a package needs a version range the hoisted one doesn't satisfy, install
+//! the conflicting version (and any of its deps the root can't satisfy) *nested*
+//! under that package's own `node_modules` — so the module resolver, which walks
+//! up from the importer, finds the right one (e.g. lazystream needs
+//! `readable-stream@^2` while another dep pins `readable-stream@^4`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use owo_colors::OwoColorize;
 use serde_json::Value;
 
 use super::parallel::par_map;
@@ -24,20 +26,90 @@ pub struct Resolved {
     pub integrity: Option<String>,
     /// `dist.shasum` (sha1, hex) fallback.
     pub shasum: Option<String>,
+    /// When `Some(parent)`, install nested at `<parent>/node_modules/<name>`
+    /// instead of the root `node_modules` (its required range conflicts with the
+    /// hoisted version).
+    pub nest_under: Option<String>,
 }
 
-/// Resolve the full transitive closure of `roots` (name, range pairs).
-/// Returns one [`Resolved`] per package name. Each BFS wave fetches the
-/// frontier's registry metadata concurrently.
+/// Resolve the full transitive closure of `roots` (name, range pairs), hoisting
+/// one version per name and nesting conflicting versions under their dependents.
 pub fn resolve(roots: &[(String, String)]) -> Result<Vec<Resolved>, String> {
+    let (mut chosen, edges) = resolve_flat(roots)?;
+
+    // Find dependency edges the hoisted version can't satisfy, and nest the
+    // conflicting subtree under the dependent. `nested` is keyed by
+    // (parent, name) so each dependent nests at most one version per dep.
+    let mut nested: BTreeMap<(String, String), Resolved> = BTreeMap::new();
+    let mut conflicts: Vec<Edge> = Vec::new();
+    for (parent, dep, range) in &edges {
+        if parent.is_empty() {
+            continue; // a root edge: the hoisted version *is* the install
+        }
+        let satisfied = chosen
+            .get(dep)
+            .is_some_and(|h| range_matches(range, &h.version));
+        if !satisfied {
+            conflicts.push((parent.clone(), dep.clone(), range.clone()));
+        }
+    }
+
+    for (parent, dep, range) in conflicts {
+        if nested.contains_key(&(parent.clone(), dep.clone())) {
+            continue;
+        }
+        // Resolve the conflicting dependency's own closure. Packages the root
+        // already has at the same version are reused (the resolver walks up);
+        // packages the root lacks are hoisted; the rest nest under `parent`.
+        let (subtree, _) = resolve_flat(&[(dep.clone(), range.clone())])?;
+        for (name, sub) in subtree {
+            match chosen.get(&name) {
+                Some(root) if root.version == sub.version => {} // root copy works
+                Some(_) => {
+                    // Root has a different version → nest this one under `parent`.
+                    nested.insert(
+                        (parent.clone(), name.clone()),
+                        Resolved {
+                            nest_under: Some(parent.clone()),
+                            ..sub
+                        },
+                    );
+                }
+                None => {
+                    // Root doesn't have it at all → hoist (no conflict).
+                    chosen.insert(name.clone(), sub);
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<Resolved> = chosen.into_values().collect();
+    out.extend(nested.into_values());
+    Ok(out)
+}
+
+/// A dependency edge: `(parent, dependency, range)`; `parent` is empty for the
+/// root requirements.
+type Edge = (String, String, String);
+
+/// The core BFS: hoist one version per name into a flat map, also returning every
+/// `(parent, dependency, range)` edge so conflicts can be detected afterward.
+fn resolve_flat(
+    roots: &[(String, String)],
+) -> Result<(BTreeMap<String, Resolved>, Vec<Edge>), String> {
     let mut chosen: BTreeMap<String, Resolved> = BTreeMap::new();
-    let mut frontier: Vec<(String, String)> = roots.to_vec();
+    let mut edges: Vec<(String, String, String)> = Vec::new();
+    let mut frontier: Vec<(String, String, String)> = roots
+        .iter()
+        .map(|(n, r)| (String::new(), n.clone(), r.clone()))
+        .collect();
 
     while !frontier.is_empty() {
         // Dedup this wave by name; drop names already satisfied by `chosen`.
         let mut wave: Vec<(String, String)> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        for (name, range) in std::mem::take(&mut frontier) {
+        for (parent, name, range) in std::mem::take(&mut frontier) {
+            edges.push((parent, name.clone(), range.clone()));
             if seen.contains(&name) {
                 continue;
             }
@@ -59,7 +131,7 @@ pub fn resolve(roots: &[(String, String)]) -> Result<Vec<Resolved>, String> {
             (name, range, meta)
         });
 
-        let mut next: Vec<(String, String)> = Vec::new();
+        let mut next: Vec<(String, String, String)> = Vec::new();
         for (name, range, meta_res) in fetched {
             let meta = meta_res?;
             let version = pick_version(&meta, &range)
@@ -71,18 +143,12 @@ pub fn resolve(roots: &[(String, String)]) -> Result<Vec<Resolved>, String> {
                 .ok_or_else(|| format!("{name}@{version} has no tarball"))?
                 .to_string();
 
-            // Conflict handling: keep the higher version, warn once.
-            if let Some(existing) = chosen.get(&name) {
-                if existing.version >= version {
-                    continue;
-                }
-                eprintln!(
-                    "  {} {name}: {} and {} both required — using {}",
-                    "!".yellow(),
-                    existing.version,
-                    version,
-                    version
-                );
+            // Conflict handling: keep the higher version hoisted (the lower one,
+            // if incompatible, is nested by the caller).
+            if let Some(existing) = chosen.get(&name)
+                && existing.version >= version
+            {
+                continue;
             }
 
             chosen.insert(
@@ -93,6 +159,7 @@ pub fn resolve(roots: &[(String, String)]) -> Result<Vec<Resolved>, String> {
                     tarball,
                     integrity: dist["integrity"].as_str().map(String::from),
                     shasum: dist["shasum"].as_str().map(String::from),
+                    nest_under: None,
                 },
             );
 
@@ -101,7 +168,7 @@ pub fn resolve(roots: &[(String, String)]) -> Result<Vec<Resolved>, String> {
                 for (dep, dep_range) in deps {
                     let r = dep_range.as_str().unwrap_or("*").to_string();
                     if is_registry_range(&r) {
-                        next.push((dep.clone(), r));
+                        next.push((name.clone(), dep.clone(), r));
                     }
                 }
             }
@@ -109,7 +176,7 @@ pub fn resolve(roots: &[(String, String)]) -> Result<Vec<Resolved>, String> {
         frontier = next;
     }
 
-    Ok(chosen.into_values().collect())
+    Ok((chosen, edges))
 }
 
 /// Choose the best version of a package for `range`, honoring dist-tags.
