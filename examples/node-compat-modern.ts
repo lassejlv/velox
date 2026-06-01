@@ -27,6 +27,8 @@ check("buf.subarray shares", () => { const b = Buffer.from([1, 2, 3]); const s =
 
 // TextDecoder/Encoder
 check("TextDecoder utf8", () => { if (new TextDecoder().decode(new Uint8Array([104, 105])) !== "hi") throw new Error("td"); });
+// utf-16le and utf-16be labels (html-encoding-sniffer/jsdom decode in both endiannesses).
+check("TextDecoder utf-16le/be", () => { if (new TextDecoder("utf-16le").decode(new Uint8Array([0x48, 0, 0x69, 0])) !== "Hi") throw new Error("le"); if (new TextDecoder("utf-16be").decode(new Uint8Array([0, 0x48, 0, 0x69])) !== "Hi") throw new Error("be"); if (new TextDecoder("utf-16be").decode(new Uint8Array([0xfe, 0xff, 0, 0x41])) !== "A") throw new Error("be-bom"); });
 check("TextEncoder.encodeInto", () => { const te = new TextEncoder(); const u = new Uint8Array(2); const r = te.encodeInto("hi", u); if (r.written !== 2 || u[0] !== 104) throw new Error("ei"); });
 check("TextDecoder latin1", () => { const d = new TextDecoder("latin1"); if (d.decode(new Uint8Array([0xe9])) !== "é") throw new Error("l1"); });
 

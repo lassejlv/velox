@@ -1322,6 +1322,9 @@
         return { name: 'windows-1252', codec: 'latin1' };
       case 'utf-16le': case 'utf16le': case 'ucs-2': case 'ucs2': case 'unicode':
         return { name: 'utf-16le', codec: 'utf16le' };
+      case 'utf-16be': case 'utf16be': case 'unicodefffe':
+        // No native big-endian codec; decode by byte-swapping to utf-16le.
+        return { name: 'utf-16be', codec: 'utf16be' };
       default:
         return null;
     }
@@ -1370,6 +1373,16 @@
         merged.set(bytes, this._pending.length);
         bytes = merged;
         this._pending = null;
+      }
+      // UTF-16BE: byte-swap each 16-bit unit to little-endian, then decode.
+      if (this._codec === 'utf16be') {
+        var n = bytes.length & ~1;
+        var swapped = new Uint8Array(n);
+        for (var k = 0; k < n; k += 2) { swapped[k] = bytes[k + 1]; swapped[k + 1] = bytes[k]; }
+        var s = Buffer.from(swapped).toString('utf16le');
+        // Strip a leading BOM (U+FEFF) unless ignoreBOM was requested.
+        if (!this._ignoreBOM && s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+        return s;
       }
       // Non-UTF-8 encodings: route through the Buffer codecs (no streaming).
       if (this._codec) {
