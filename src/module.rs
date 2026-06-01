@@ -935,6 +935,14 @@ fn rewrite_import(decl: &oxc::ast::ast::ImportDeclaration, id: &str) -> String {
 
 /// Rewrite `export <decl>` — keep the original declaration text verbatim, then
 /// append `exports.<name> = <name>` for every binding it introduces.
+/// A live (getter-backed) named export, so reads see later reassignments of the
+/// local binding — ESM live-binding semantics, which `exports.x = x` would lose.
+fn live_export_binding(name: &str) -> String {
+    format!(
+        "\nObject.defineProperty(exports, '{name}', {{ enumerable: true, configurable: true, get: function () {{ return {name}; }} }});"
+    )
+}
+
 fn rewrite_export_decl(
     path: &Path,
     declaration: &Declaration,
@@ -943,13 +951,17 @@ fn rewrite_export_decl(
     match declaration {
         Declaration::VariableDeclaration(var) => {
             // Keep the whole `const x = …, y = …` verbatim, then export names.
+            // Use a live getter (not `exports.x = x`) so a binding assigned after
+            // the `export` statement still reads through — e.g. the TS-enum
+            // pattern `export var E; (function (E) { … })(E || (E = {}))`, where a
+            // value-capture would freeze the export at its initial `undefined`.
             let text = slice(source, var.span.start, var.span.end);
             let mut out = text.to_string();
             for d in &var.declarations {
                 match &d.id {
                     oxc::ast::ast::BindingPattern::BindingIdentifier(ident) => {
                         let name = ident.name.as_str();
-                        out.push_str(&format!("\nexports.{} = {};", name, name));
+                        out.push_str(&live_export_binding(name));
                     }
                     _ => {
                         return Err(ModuleError::Unsupported {
