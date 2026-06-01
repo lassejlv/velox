@@ -41,6 +41,8 @@ interface VeloxMatchers<T = unknown> {
   toThrowError(expected?: string | RegExp | Error | (new (...args: any[]) => any)): void;
   toBeInstanceOf(constructor: new (...args: any[]) => any): void;
   toMatchInlineSnapshot(snapshot?: string): void;
+  /** Compare against a stored snapshot (`__snapshots__/velox.snap`); `velox test -u` updates it. */
+  toMatchSnapshot(hint?: string): void;
 
   // spy / mock matchers
   toHaveBeenCalled(): void;

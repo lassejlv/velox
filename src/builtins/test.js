@@ -136,7 +136,7 @@ var MATCHERS = [
   'toThrow', 'toThrowError', 'toBeInstanceOf', 'toHaveBeenCalled',
   'toHaveBeenCalledTimes', 'toHaveBeenCalledWith', 'toHaveBeenLastCalledWith',
   'toHaveBeenNthCalledWith', 'toHaveReturned', 'toHaveReturnedWith',
-  'toMatchInlineSnapshot',
+  'toMatchInlineSnapshot', 'toMatchSnapshot',
 ];
 
 Expectation.prototype.toBe = function (expected) {
@@ -310,6 +310,81 @@ Expectation.prototype.toHaveReturnedWith = function (value) {
   assert(this, m.results.some(function (r) { return r.type === 'return' && deepEqual(r.value, value, false); }), 'expected mock to have returned ' + formatValue(value), 'expected mock not to have returned ' + formatValue(value));
 };
 
+// --- file snapshots (toMatchSnapshot) ---------------------------------------
+//
+// Snapshots are stored in one file (__snapshots__/velox.snap under the cwd),
+// keyed by the full test path plus a per-test counter. A missing snapshot is
+// written and passes (first run); a mismatch fails unless `velox test -u`
+// (update mode) is set, which rewrites it. Update mode also prunes snapshots
+// that weren't exercised this run.
+
+var snapStore = null;       // { key: serialized }
+var snapUsed = null;        // Set of keys touched this run
+var snapDirty = false;
+var snapWritten = 0, snapUpdated = 0;
+var snapCounter = 0;        // per-test, reset before each test
+var currentTestPath = '';   // full "a › b › c" path of the running test
+
+function snapConfig() { return globalThis.__VELOX_SNAPSHOT || {}; }
+
+function snapFilePath() {
+  var path = require('node:path');
+  var dir = snapConfig().dir || (require('node:process').cwd() + '/__snapshots__');
+  return path.join(dir, 'velox.snap');
+}
+
+function loadSnapshots() {
+  snapStore = {}; snapUsed = new Set();
+  try {
+    var fs = require('node:fs');
+    var text = fs.readFileSync(snapFilePath(), 'utf8');
+    snapStore = JSON.parse(text) || {};
+  } catch (e) { /* no snapshot file yet */ }
+}
+
+function saveSnapshots() {
+  if (snapStore == null) return;
+  // In update mode, drop snapshots that weren't used this run.
+  if (snapConfig().update) {
+    Object.keys(snapStore).forEach(function (k) {
+      if (!snapUsed.has(k)) { delete snapStore[k]; snapDirty = true; }
+    });
+  }
+  if (!snapDirty) return;
+  try {
+    var fs = require('node:fs'), path = require('node:path');
+    var file = snapFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(snapStore, Object.keys(snapStore).sort(), 2) + '\n');
+  } catch (e) {
+    console.log(C.red('could not write snapshots: ' + (e && e.message || e)));
+  }
+}
+
+Expectation.prototype.toMatchSnapshot = function (hint) {
+  if (snapStore == null) loadSnapshots();
+  var actual = serializeSnapshot(this.received, '');
+  var base = currentTestPath || 'snapshot';
+  var key = base + (hint ? ': ' + hint : '') + ' ' + (++snapCounter);
+  snapUsed.add(key);
+
+  if (!(key in snapStore)) {
+    snapStore[key] = actual; snapDirty = true; snapWritten++;
+    return; // new snapshot written → pass
+  }
+  if (snapConfig().update && normalizeSnap(snapStore[key]) !== normalizeSnap(actual)) {
+    snapStore[key] = actual; snapDirty = true; snapUpdated++;
+    return; // updated → pass
+  }
+  assert(
+    this,
+    normalizeSnap(snapStore[key]) === normalizeSnap(actual),
+    'snapshot mismatch for "' + key + '"\n--- stored\n' + snapStore[key] +
+      '\n--- received\n' + actual + '\n(run `velox test -u` to update)',
+    'expected not to match the stored snapshot'
+  );
+};
+
 // --- inline snapshots -------------------------------------------------------
 
 Expectation.prototype.toMatchInlineSnapshot = function (expected) {
@@ -447,6 +522,10 @@ async function runSuite(suite, depth) {
     if (test.mode === 'todo') { stats.todo++; console.log(bodyIndent + C.cyan('○') + ' ' + test.name + C.dim(' [todo]')); continue; }
     if (test.mode === 'skip' || (anyOnly && !isOnlyPath(test))) { stats.skip++; console.log(bodyIndent + C.yellow('○') + ' ' + C.dim(test.name)); continue; }
     var start = Date.now();
+    // Snapshot context: full test path + a fresh per-test counter so multiple
+    // toMatchSnapshot() calls in one test get distinct keys.
+    currentTestPath = ancestry(suite).map(function (s) { return s.name; }).concat(test.name).join(' › ');
+    snapCounter = 0;
     try {
       for (var be = 0; be < suite.beforeEach.length; be++) await runFn(suite.beforeEach[be]);
       await runFn(test.fn, test.timeout);
@@ -634,6 +713,7 @@ function printCoverage() {
 // run(): execute the collected suite and report; sets process.exitCode.
 async function run() {
   var start = Date.now();
+  loadSnapshots();
   try {
     await runSuite(rootSuite, 0);
   } catch (e) {
@@ -662,6 +742,13 @@ async function run() {
   if (stats.todo) parts.push(C.cyan(stats.todo + ' todo'));
   var total = stats.pass + stats.fail + stats.skip + stats.todo;
   console.log('\n' + C.bold('Tests:') + ' ' + (parts.join(C.dim(', ')) || '0') + C.dim(' (' + total + ' total)'));
+  saveSnapshots();
+  if (snapWritten || snapUpdated) {
+    var sp = [];
+    if (snapWritten) sp.push(C.green(snapWritten + ' written'));
+    if (snapUpdated) sp.push(C.yellow(snapUpdated + ' updated'));
+    console.log(C.bold('Snapshots:') + ' ' + sp.join(C.dim(', ')));
+  }
   console.log(C.bold('Time: ') + ' ' + ms + 'ms');
 
   var covOk = printCoverage();

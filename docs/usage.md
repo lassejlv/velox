@@ -95,6 +95,7 @@ macOS arm64 only.
 velox test                 # run every test file under the cwd
 velox test math            # only files whose path contains "math"
 velox test --watch         # re-run on change (alias: -w)
+velox test -u              # update toMatchSnapshot snapshots
 velox test --coverage      # report line/function coverage of the source under test
 ```
 
@@ -135,6 +136,11 @@ expect({ ok: true }).toMatchInlineSnapshot(`{ ok: true }`);
 (+ `…Once`), the `toHaveBeenCalled*`/`toHaveReturned*` matchers, and
 `toMatchInlineSnapshot`. The runner's types live in `velox-test.d.ts` (shipped by
 `velox init`) so test files type-check.
+
+`toMatchSnapshot()` compares against a stored snapshot in `__snapshots__/velox.snap`
+(keyed by the test's full name); the first run writes it, a later mismatch fails
+the test, and `velox test -u` (`--update`) rewrites snapshots and prunes any that
+are no longer used.
 
 **Watch + coverage.** `velox test --watch` (`-w`) re-runs the suite whenever any
 file that went into the run changes. `velox test --coverage` instruments the

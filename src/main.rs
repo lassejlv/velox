@@ -160,7 +160,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         "test" | "t" => {
             if has_help {
                 println!(
-                    "Usage: velox test [PATTERN...] [--coverage] [--watch]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  -w, --watch               Re-run on change."
+                    "Usage: velox test [PATTERN...] [--coverage] [--watch] [-u]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  -u, --update              Update toMatchSnapshot snapshots.\n  -w, --watch               Re-run on change."
                 );
                 return Some(ExitCode::SUCCESS);
             }
@@ -177,6 +177,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 || threshold.is_some()
                 || lcov.is_some();
             let watch = rest.iter().any(|a| a == "--watch" || a == "-w");
+            let update = rest.iter().any(|a| a == "--update" || a == "-u");
             Some(cmd_test(
                 &positionals(),
                 CoverageOpts {
@@ -185,6 +186,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                     lcov,
                 },
                 watch,
+                update,
             ))
         }
         "bench" | "benchmark" => {
@@ -460,7 +462,7 @@ struct CoverageOpts {
 /// `velox test [patterns]` — discover test files, run them through a generated
 /// driver that loads the `velox-test` framework, and report. `--coverage`
 /// instruments the source under test; `--watch` re-runs on change.
-fn cmd_test(patterns: &[String], cov: CoverageOpts, watch: bool) -> ExitCode {
+fn cmd_test(patterns: &[String], cov: CoverageOpts, watch: bool, update: bool) -> ExitCode {
     use owo_colors::OwoColorize;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -482,14 +484,14 @@ fn cmd_test(patterns: &[String], cov: CoverageOpts, watch: bool) -> ExitCode {
     }
 
     if watch {
-        return watch_tests(&files, &cov);
+        return watch_tests(&files, &cov, update);
     }
-    run_tests_once(&files, &cov).0
+    run_tests_once(&files, &cov, update).0
 }
 
 /// Bundle + run the discovered test files once. Returns the exit code and the
 /// set of source files that went into the run (for `--watch`).
-fn run_tests_once(files: &[PathBuf], cov: &CoverageOpts) -> (ExitCode, Vec<PathBuf>) {
+fn run_tests_once(files: &[PathBuf], cov: &CoverageOpts, update: bool) -> (ExitCode, Vec<PathBuf>) {
     use owo_colors::OwoColorize;
 
     println!(
@@ -512,6 +514,9 @@ fn run_tests_once(files: &[PathBuf], cov: &CoverageOpts) -> (ExitCode, Vec<PathB
     // Generate a driver that installs the test globals, loads each test file,
     // then runs the collected suite.
     let mut driver = String::from("const __t = require('velox-test');\n__t.register();\n");
+    if update {
+        driver.push_str("globalThis.__VELOX_SNAPSHOT = { update: true };\n");
+    }
     for f in files {
         driver.push_str(&format!(
             "require({});\n",
@@ -571,7 +576,7 @@ fn coverage_opts_js(cov: &CoverageOpts) -> String {
 
 /// `velox test --watch`: run, then re-run whenever any source file that went
 /// into the run changes (polling its mtimes, like the top-level `--watch`).
-fn watch_tests(files: &[PathBuf], cov: &CoverageOpts) -> ExitCode {
+fn watch_tests(files: &[PathBuf], cov: &CoverageOpts, update: bool) -> ExitCode {
     use std::collections::HashMap;
     use std::time::{Duration, SystemTime};
 
@@ -589,7 +594,7 @@ fn watch_tests(files: &[PathBuf], cov: &CoverageOpts) -> ExitCode {
 
     loop {
         print!("\x1b[2J\x1b[H"); // clear screen
-        let (_, deps) = run_tests_once(files, cov);
+        let (_, deps) = run_tests_once(files, cov, update);
         // Watch the test files plus everything they pulled in; fall back to just
         // the test files if bundling failed.
         let watched: Vec<PathBuf> = if deps.is_empty() {
