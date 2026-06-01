@@ -82,6 +82,33 @@ auto-served. (Strict `codesign -v` notes the appended bundle as trailing data,
 but the binary runs with full JIT — the same as Bun/Deno compiled output.)
 macOS arm64 only.
 
+## Test
+
+```sh
+velox test                 # run every test file under the cwd
+velox test math            # only files whose path contains "math"
+```
+
+`velox test` discovers `*.test.*` / `*.spec.*` files and files under
+`test/`/`tests/`/`__tests__/`, and runs them with a Vitest/Bun-style API.
+`describe`, `it`/`test`, `expect`, and the `beforeAll`/`afterAll`/`beforeEach`/
+`afterEach` hooks are available as **globals** (no import needed) — or import
+them from `velox-test`:
+
+```ts
+describe("math", () => {
+  beforeEach(() => {/* … */});
+  it("adds", () => { expect(2 + 2).toBe(4); });
+  it("works async", async () => { await expect(Promise.resolve(1)).resolves.toBe(1); });
+  it.skip("later", () => {});
+});
+```
+
+Supports nested `describe`, `it.skip`/`it.only`/`it.todo`/`it.each`, async tests
+with timeouts, and a full `expect` (`toBe`, `toEqual`, `toThrow`, `toContain`,
+`toHaveProperty`, `toMatchObject`, `toBeCloseTo`, `.not`, `.resolves`/`.rejects`,
+`expect.any`, …). Exits non-zero if any test fails.
+
 ## Run scripts
 
 ```sh

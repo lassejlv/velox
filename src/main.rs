@@ -32,7 +32,7 @@ use crate::runtime::Runtime;
     name = "velox",
     version,
     about = "A tiny TypeScript/JavaScript runtime on JavaScriptCore",
-    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  update [--latest]      Upgrade dependencies\n  outdated               List dependencies with newer versions\n  run [script]           Run a package.json script\n  x <pkg> [args]         Run a package's executable (npx-style)\n  build <entry>          Compile to a standalone executable\n\nRun `velox <command> --help` for details."
+    after_help = "Commands:\n  init [DIR]              Scaffold a new velox project\n  install                Install dependencies from package.json\n  add [--dev] <pkg>...   Add packages and install them\n  remove <pkg>...        Remove packages\n  update [--latest]      Upgrade dependencies\n  outdated               List dependencies with newer versions\n  run [script]           Run a package.json script\n  test [pattern]         Run tests (describe/it/expect)\n  x <pkg> [args]         Run a package's executable (npx-style)\n  build <entry>          Compile to a standalone executable\n\nRun `velox <command> --help` for details."
 )]
 struct Cli {
     /// Script to run (.ts/.tsx/.js/.jsx). Omit to start the REPL.
@@ -155,6 +155,13 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 return Some(ExitCode::SUCCESS);
             }
             Some(pkg::remove(&positionals()))
+        }
+        "test" | "t" => {
+            if has_help {
+                println!("Usage: velox test [PATTERN...]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.");
+                return Some(ExitCode::SUCCESS);
+            }
+            Some(cmd_test(&positionals()))
         }
         "build" | "compile" => {
             if has_help {
@@ -402,6 +409,140 @@ fn run_bundle(js: &str) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// --- `velox test` — built-in test runner ------------------------------------
+
+/// `velox test [patterns]` — discover test files, run them through a generated
+/// driver that loads the `velox-test` framework, and report.
+fn cmd_test(patterns: &[String]) -> ExitCode {
+    use owo_colors::OwoColorize;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut files = Vec::new();
+    discover_tests(&cwd, patterns, &mut files);
+    files.sort();
+
+    if files.is_empty() {
+        eprintln!(
+            "  {} no test files found{}",
+            "✖".red().bold(),
+            if patterns.is_empty() {
+                " (looked for *.test.* / *.spec.* and files under test/, __tests__/)".to_string()
+            } else {
+                format!(" matching {}", patterns.join(", "))
+            }
+        );
+        return ExitCode::FAILURE;
+    }
+
+    println!(
+        "  {} {} {}\n",
+        "velox".cyan().bold(),
+        "test".dimmed(),
+        format!(
+            "· {} file{}",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        )
+        .dimmed()
+    );
+
+    // Generate a driver that installs the test globals, loads each test file,
+    // then runs the collected suite.
+    let mut driver = String::from("const __t = require('velox-test');\n__t.register();\n");
+    for f in &files {
+        driver.push_str(&format!("require({});\n", js_string_literal(&f.to_string_lossy())));
+    }
+    driver.push_str("await __t.run();\n");
+
+    // Stage as a hidden temp file (uncached so it doesn't pollute the bundle
+    // cache), bundle + run it, then clean up.
+    let driver_path =
+        std::env::temp_dir().join(format!(".velox-test-{}.ts", std::process::id()));
+    if std::fs::write(&driver_path, &driver).is_err() {
+        return fail_msg("test: could not stage driver");
+    }
+    let result = match module::bundle(&driver_path) {
+        Ok(js) => run_bundle(&js),
+        Err(error) => {
+            ui::report_module_error(&error.to_string());
+            ExitCode::FAILURE
+        }
+    };
+    let _ = std::fs::remove_file(&driver_path);
+    result
+}
+
+/// Recursively collect test files under `root` (skipping node_modules / hidden
+/// / build dirs). A file is a test if it's named `*.test.*` / `*.spec.*` or
+/// lives under a `test`/`tests`/`__tests__` directory, with a JS/TS extension.
+fn discover_tests(root: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if name.starts_with('.')
+                || matches!(name.as_str(), "node_modules" | "dist" | "build" | "target" | "coverage")
+            {
+                continue;
+            }
+            discover_tests(&path, patterns, out);
+        } else if is_test_file(&path)
+            && (patterns.is_empty()
+                || patterns
+                    .iter()
+                    .any(|p| path.to_string_lossy().contains(p.as_str())))
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn is_test_file(path: &Path) -> bool {
+    let ext_ok = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+    );
+    if !ext_ok {
+        return false;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.contains(".test.") || name.contains(".spec.") {
+        return true;
+    }
+    path.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some("test" | "tests" | "__tests__")
+        )
+    })
+}
+
+/// Encode a string as a JS string literal (double-quoted, escaped).
+fn js_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn fail_msg(msg: &str) -> ExitCode {
+    use owo_colors::OwoColorize;
+    eprintln!("  {} {msg}", "✖".red().bold());
+    ExitCode::FAILURE
 }
 
 // --- `velox build` — standalone executables ---------------------------------

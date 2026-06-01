@@ -81,6 +81,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("v8", include_str!("builtins/v8.js")),
     ("_http_common", include_str!("builtins/_http_common.js")),
     ("constants", include_str!("builtins/constants.js")),
+    ("velox-test", include_str!("builtins/test.js")),
 ];
 
 /// Installs the global `Buffer` (and `TextEncoder`/`TextDecoder`). Evaluated at
