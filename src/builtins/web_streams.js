@@ -254,4 +254,46 @@
   }
   if (typeof g.TextEncoderStream === 'undefined') g.TextEncoderStream = TextEncoderStream;
   if (typeof g.TextDecoderStream === 'undefined') g.TextDecoderStream = TextDecoderStream;
+
+  // CompressionStream / DecompressionStream — WHATWG TransformStreams backed by
+  // node:zlib's streaming codecs. `format` is "gzip" | "deflate" | "deflate-raw".
+  function zlibCodec(format, compress) {
+    var zlib = require('node:zlib');
+    if (format === 'gzip') return compress ? zlib.createGzip() : zlib.createGunzip();
+    if (format === 'deflate') return compress ? zlib.createDeflate() : zlib.createInflate();
+    if (format === 'deflate-raw') return compress ? zlib.createDeflateRaw() : zlib.createInflateRaw();
+    throw new TypeError("Unsupported compression format: '" + format + "'");
+  }
+  function bridgeCodec(z, self) {
+    var controller = null;
+    z.on('data', function (d) {
+      if (controller) controller.enqueue(new Uint8Array(d)); // copy out of the Buffer pool
+    });
+    var ts = new TransformStream({
+      start: function (c) { controller = c; },
+      transform: function (chunk, c) {
+        controller = c;
+        return new Promise(function (resolve, reject) {
+          var buf = ArrayBuffer.isView(chunk)
+            ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+            : Buffer.from(chunk);
+          z.write(buf, function (err) { err ? reject(err) : resolve(); });
+        });
+      },
+      flush: function (c) {
+        controller = c;
+        return new Promise(function (resolve, reject) {
+          z.on('end', function () { resolve(); });
+          z.on('error', reject);
+          z.end();
+        });
+      },
+    });
+    Object.defineProperty(self, 'readable', { value: ts.readable, enumerable: true });
+    Object.defineProperty(self, 'writable', { value: ts.writable, enumerable: true });
+  }
+  function CompressionStream(format) { bridgeCodec(zlibCodec(format, true), this); }
+  function DecompressionStream(format) { bridgeCodec(zlibCodec(format, false), this); }
+  if (typeof g.CompressionStream === 'undefined') g.CompressionStream = CompressionStream;
+  if (typeof g.DecompressionStream === 'undefined') g.DecompressionStream = DecompressionStream;
 })();
