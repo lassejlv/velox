@@ -638,7 +638,11 @@ impl Graph {
         if !self.needed_builtins.insert(name) {
             return;
         }
-        if let Some((_, shim)) = crate::node::BUILTINS.iter().find(|(n, _)| *n == name) {
+        if let Some((_, shim)) = crate::node::BUILTINS
+            .iter()
+            .chain(crate::oxc_helpers::OXC_HELPERS.iter())
+            .find(|(n, _)| *n == name)
+        {
             for dep in builtin_requires(shim) {
                 self.mark_builtin(dep);
             }
@@ -711,7 +715,11 @@ impl Graph {
         // Inject the transitively-needed Node builtin shims. They are CommonJS
         // bodies and may `require('node:<other>')` each other.
         for name in &self.needed_builtins {
-            if let Some((_, shim)) = crate::node::BUILTINS.iter().find(|(n, _)| n == name) {
+            if let Some((_, shim)) = crate::node::BUILTINS
+                .iter()
+                .chain(crate::oxc_helpers::OXC_HELPERS.iter())
+                .find(|(n, _)| n == name)
+            {
                 // Builtin shims never use top-level await — sync wrappers so their
                 // init errors propagate too.
                 out.push_str(&format!(
@@ -1188,7 +1196,12 @@ fn velox_resolve_options(allow_import: bool) -> ResolveOptions {
 /// `timers/promises` win), then the base (`node:util/types` → `util`).
 fn supported_builtin(specifier: &str) -> Option<&'static str> {
     let without_prefix = specifier.strip_prefix("node:").unwrap_or(specifier);
-    let names = || crate::node::BUILTINS.iter().map(|(name, _)| *name);
+    let names = || {
+        crate::node::BUILTINS
+            .iter()
+            .chain(crate::oxc_helpers::OXC_HELPERS.iter())
+            .map(|(name, _)| *name)
+    };
     if let Some(name) = names().find(|name| *name == without_prefix) {
         return Some(name);
     }

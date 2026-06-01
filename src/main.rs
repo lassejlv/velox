@@ -9,6 +9,7 @@ mod init;
 mod inspect;
 mod module;
 mod node;
+mod oxc_helpers;
 mod pkg;
 mod repl;
 mod runtime;

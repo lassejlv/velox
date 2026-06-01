@@ -615,6 +615,7 @@ unsafe extern "C-unwind" fn velox_load_builtin(
     let name = spec.strip_prefix("node:").unwrap_or(&spec);
     let source = BUILTINS
         .iter()
+        .chain(crate::oxc_helpers::OXC_HELPERS.iter())
         .find(|(n, _)| *n == name)
         .or_else(|| {
             let base = name.split('/').next().unwrap_or(name);

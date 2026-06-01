@@ -81,7 +81,15 @@ pub fn transpile_with_map(
         .semantic
         .into_scoping();
 
-    let options = TransformOptions::default();
+    // Enable TypeScript's legacy ("experimental") decorators plus
+    // `emitDecoratorMetadata` — the form virtually all decorator-using npm
+    // packages target (NestJS, TypeORM, class-validator/-transformer, tsyringe,
+    // type-graphql, Angular). Without `legacy`, oxc leaves the `@deco` syntax in
+    // the output and JSC throws "Invalid character: '@'"; without metadata,
+    // reflect-metadata's `design:type`/`design:paramtypes` are absent so DI fails.
+    let mut options = TransformOptions::default();
+    options.decorator.legacy = true;
+    options.decorator.emit_decorator_metadata = true;
     let transformer_ret =
         Transformer::new(&allocator, path, &options).build_with_scoping(scoping, &mut program);
     if !transformer_ret.errors.is_empty() {

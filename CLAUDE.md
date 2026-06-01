@@ -37,7 +37,16 @@ original source for uncaught errors + `console.log(error)`).
 
 1. **`transpile.rs`** — oxc parse → `SemanticBuilder` (with `with_enum_eval(true)`)
    → `Transformer` (strips TS, lowers JSX) → `Codegen`. Source language inferred
-   from extension; unknown/REPL default to TS.
+   from extension; unknown/REPL default to TS. **Legacy ("experimental")
+   decorators + `emitDecoratorMetadata` are on by default** (the form the npm
+   ecosystem targets: NestJS/TypeORM/class-validator/tsyringe/type-graphql). oxc
+   lowers them to `import`s of `@oxc-project/runtime/helpers/<name>`; velox
+   doesn't ship that package, so those ~116 helper modules are vendored in
+   `builtins/oxc_helpers/` and registered (via `src/oxc_helpers.rs`'s
+   `OXC_HELPERS`) as builtins keyed by their full specifier — the bundler's
+   exact-name match routes the import there, and only emitted helpers are
+   injected (lean bundles). `Reflect.metadata` comes from a user `import
+   "reflect-metadata"`.
 
 2. **`module.rs`** — the bundler. Resolves the entry's `import` **and**
    `require('<literal>')` graph transitively (relative, `node_modules`, and

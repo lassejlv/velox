@@ -4,6 +4,24 @@ function check(name: string, fn: () => any) {
   catch (e: any) { results.push([name, false, String(e?.message || e)]); }
 }
 
+// TypeScript legacy decorators + emitDecoratorMetadata (NestJS/TypeORM/tsyringe ecosystem).
+check("decorators: class/method/property/parameter", () => {
+  const log: string[] = [];
+  function classDeco(t: any) { log.push("class:" + t.name); return t; }
+  function methodDeco(_t: any, k: string, d: any) { log.push("method:" + k); return d; }
+  function propDeco(_t: any, k: string) { log.push("prop:" + k); }
+  function paramDeco(_t: any, k: any, i: number) { log.push("param:" + (k ?? "ctor") + ":" + i); }
+  @classDeco
+  class Svc {
+    @propDeco field = 1;
+    constructor(@paramDeco _dep: number) {}
+    @methodDeco run(_x: number) { return 42; }
+  }
+  const s = new Svc(7);
+  if (s.run(1) !== 42 || s.field !== 1) throw new Error("behavior");
+  if (!log.includes("class:Svc") || !log.includes("method:run") || !log.includes("prop:field") || !log.includes("param:ctor:0")) throw new Error("decorators ran: " + log.join(","));
+});
+
 // modern JS builtins
 check("Promise.allSettled", async () => { const r = await Promise.allSettled([Promise.resolve(1), Promise.reject(2)]); if (r[0].status !== "fulfilled" || r[1].status !== "rejected") throw new Error("as"); });
 check("Promise.any", async () => { if (await Promise.any([Promise.reject(1), Promise.resolve(2)]) !== 2) throw new Error("any"); });
