@@ -144,15 +144,16 @@ results:
 
 ```
 Coverage:
- File       │ % Lines │ % Funcs │ Uncovered
- ───────────┼─────────┼─────────┼────────────
- math.ts    │   50.0  │   50.0  │ 6, 13, 18
- ───────────┼─────────┼─────────┼────────────
- All files  │   50.0  │   50.0  │
+ File       │ % Lines │ % Funcs │ % Branch │ Uncovered
+ ───────────┼─────────┼─────────┼─────────┼────────────
+ math.ts    │   50.0  │   50.0  │   50.0  │ 6, 13, 18
+ ───────────┼─────────┼─────────┼─────────┼────────────
+ All files  │   50.0  │   50.0  │   50.0  │
 ```
 
-Instrumentation is statement + function level: the `Uncovered` column lists the
-source lines (compressed into ranges) that never executed.
+Instrumentation is statement + function + branch level: the `% Branch` column
+covers `if`/`else`, ternary (`?:`), and `switch` arms, and the `Uncovered` column
+lists the source lines (compressed into ranges) that never executed.
 
 For CI, gate the build with `--coverage-threshold=N` (exits non-zero if line or
 function coverage is below `N`%) and emit a standard lcov report with

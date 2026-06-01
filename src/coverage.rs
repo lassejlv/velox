@@ -16,11 +16,17 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use oxc::allocator::{Allocator, Vec as OxcVec};
-use oxc::ast::ast::{Argument, ArrowFunctionExpression, Expression, Function, Statement};
+use oxc::allocator::{Allocator, TakeIn, Vec as OxcVec};
+use oxc::ast::ast::{
+    Argument, ArrowFunctionExpression, ConditionalExpression, Expression, Function, IfStatement,
+    Statement, SwitchStatement,
+};
 use oxc::ast::{AstBuilder, NONE};
 use oxc::ast_visit::VisitMut;
-use oxc::ast_visit::walk_mut::{walk_arrow_function_expression, walk_function, walk_statements};
+use oxc::ast_visit::walk_mut::{
+    walk_arrow_function_expression, walk_conditional_expression, walk_function, walk_if_statement,
+    walk_statements, walk_switch_statement,
+};
 use oxc::codegen::Codegen;
 use oxc::diagnostics::OxcDiagnostic;
 use oxc::parser::Parser;
@@ -30,12 +36,19 @@ use oxc::syntax::number::NumberBase;
 use oxc::syntax::scope::ScopeFlags;
 use oxc::transformer::{TransformOptions, Transformer};
 
+/// What an instrumented point measures (mirrored in the JS point table).
+const KIND_STMT: u8 = 0;
+const KIND_FN: u8 = 1;
+const KIND_BRANCH: u8 = 2;
+
 /// One instrumented point. Its index in [`Coverage::points`] is the `n` passed
-/// to the injected `__VCOV(n)` call.
+/// to the injected `__VCOV(n)` call. `group` ties the arms of one branch point
+/// (if/ternary/switch) together; it's 0 for statements and functions.
 struct Point {
     file: u32,
     line: u32,
-    is_fn: bool,
+    kind: u8,
+    group: u32,
 }
 
 /// Accumulates the point table across every instrumented module in one bundle.
@@ -44,6 +57,8 @@ pub struct Coverage {
     /// Display paths (relative to cwd when possible), indexed by file id.
     files: Vec<String>,
     points: Vec<Point>,
+    /// Monotonic id handed to each branch point so its arms group together.
+    next_group: u32,
 }
 
 thread_local! {
@@ -136,6 +151,7 @@ impl Coverage {
         let mut instr = Instrumenter {
             builder: AstBuilder::new(&allocator),
             points: &mut self.points,
+            next_group: &mut self.next_group,
             file_id,
             line_starts: &line_starts,
         };
@@ -163,12 +179,8 @@ impl Coverage {
             if i > 0 {
                 s.push(',');
             }
-            s.push_str(&format!(
-                "[{},{},{}]",
-                p.file,
-                p.line,
-                if p.is_fn { 1 } else { 0 }
-            ));
+            // [file, line, kind, group]
+            s.push_str(&format!("[{},{},{},{}]", p.file, p.line, p.kind, p.group));
         }
         s.push_str("]};\n");
         s
@@ -180,25 +192,34 @@ impl Coverage {
     }
 }
 
-/// Injects `__VCOV(n)` counters before each statement and at the top of each
-/// function body.
+/// Injects `__VCOV(n)` counters before each statement, at the top of each
+/// function body, and into each branch arm (if/ternary/switch).
 struct Instrumenter<'a, 'c> {
     builder: AstBuilder<'a>,
     points: &'c mut Vec<Point>,
+    next_group: &'c mut u32,
     file_id: u32,
     line_starts: &'c [u32],
 }
 
 impl<'a> Instrumenter<'a, '_> {
-    /// Record a new point and return its index (the `n` for `__VCOV(n)`).
-    fn new_point(&mut self, line: u32, is_fn: bool) -> u32 {
+    /// Record a point of `kind` (in `group` for branches) and return its index.
+    fn new_point(&mut self, line: u32, kind: u8, group: u32) -> u32 {
         let id = self.points.len() as u32;
         self.points.push(Point {
             file: self.file_id,
             line,
-            is_fn,
+            kind,
+            group,
         });
         id
+    }
+
+    /// Allocate a fresh branch-group id (shared by one branch point's arms).
+    fn new_group(&mut self) -> u32 {
+        let g = *self.next_group;
+        *self.next_group += 1;
+        g
     }
 
     /// 1-based line for a byte offset.
@@ -206,8 +227,8 @@ impl<'a> Instrumenter<'a, '_> {
         (self.line_starts.partition_point(|&s| s <= offset)) as u32
     }
 
-    /// Build the statement `__VCOV(id);`.
-    fn counter(&self, id: u32) -> Statement<'a> {
+    /// Build the expression `__VCOV(id)` (used inline in branch arms).
+    fn counter_expr(&self, id: u32) -> Expression<'a> {
         let b = self.builder;
         let callee = b.expression_identifier(SPAN, "__VCOV");
         let arg = Argument::from(b.expression_numeric_literal(
@@ -217,8 +238,35 @@ impl<'a> Instrumenter<'a, '_> {
             NumberBase::Decimal,
         ));
         let args = OxcVec::from_iter_in([arg], b.allocator);
-        let call = b.expression_call(SPAN, callee, NONE, args, false);
-        b.statement_expression(SPAN, call)
+        b.expression_call(SPAN, callee, NONE, args, false)
+    }
+
+    /// Build the statement `__VCOV(id);`.
+    fn counter(&self, id: u32) -> Statement<'a> {
+        let call = self.counter_expr(id);
+        self.builder.statement_expression(SPAN, call)
+    }
+
+    /// Prepend a branch counter to a statement arm, wrapping a bare (non-block)
+    /// statement in a block so the counter has somewhere to live.
+    fn instrument_arm(&mut self, stmt: &mut Statement<'a>, id: u32) {
+        let counter = self.counter(id);
+        if let Statement::BlockStatement(block) = stmt {
+            block.body.insert(0, counter);
+        } else {
+            let original = stmt.take_in(self.builder.allocator);
+            let body = OxcVec::from_iter_in([counter, original], self.builder.allocator);
+            *stmt = self.builder.statement_block(SPAN, body);
+        }
+    }
+
+    /// Wrap an expression arm as `(__VCOV(id), expr)` so the counter fires
+    /// without changing the value the arm yields.
+    fn instrument_expr_arm(&mut self, expr: &mut Expression<'a>, id: u32) {
+        let counter = self.counter_expr(id);
+        let original = expr.take_in(self.builder.allocator);
+        let seq = OxcVec::from_iter_in([counter, original], self.builder.allocator);
+        *expr = self.builder.expression_sequence(SPAN, seq);
     }
 }
 
@@ -255,7 +303,7 @@ impl<'a> VisitMut<'a> for Instrumenter<'a, '_> {
             if !skip_line_point(&stmt) {
                 let line = self.line_of(stmt.span().start);
                 if line > 0 {
-                    let id = self.new_point(line, false);
+                    let id = self.new_point(line, KIND_STMT, 0);
                     rebuilt.push(self.counter(id));
                 }
             }
@@ -270,7 +318,7 @@ impl<'a> VisitMut<'a> for Instrumenter<'a, '_> {
         if let Some(body) = &mut func.body {
             let line = self.line_of(func.span.start);
             if line > 0 {
-                let id = self.new_point(line, true);
+                let id = self.new_point(line, KIND_FN, 0);
                 let counter = self.counter(id);
                 body.statements.insert(0, counter);
             }
@@ -285,12 +333,58 @@ impl<'a> VisitMut<'a> for Instrumenter<'a, '_> {
         if !arrow.expression {
             let line = self.line_of(arrow.span.start);
             if line > 0 {
-                let id = self.new_point(line, true);
+                let id = self.new_point(line, KIND_FN, 0);
                 let counter = self.counter(id);
                 arrow.body.statements.insert(0, counter);
             }
         }
         walk_arrow_function_expression(self, arrow);
+    }
+
+    fn visit_if_statement(&mut self, if_stmt: &mut IfStatement<'a>) {
+        let group = self.new_group();
+        // Consequent arm.
+        let cline = self.line_of(if_stmt.consequent.span().start);
+        let cid = self.new_point(cline, KIND_BRANCH, group);
+        self.instrument_arm(&mut if_stmt.consequent, cid);
+        // Alternate arm — synthesize an `else { … }` when there's no source one
+        // so the "condition was false" path is still counted.
+        let aline = match &if_stmt.alternate {
+            Some(alt) => self.line_of(alt.span().start),
+            None => self.line_of(if_stmt.span.start),
+        };
+        let aid = self.new_point(aline, KIND_BRANCH, group);
+        match &mut if_stmt.alternate {
+            Some(alt) => self.instrument_arm(alt, aid),
+            None => {
+                let counter = self.counter(aid);
+                let body = OxcVec::from_iter_in([counter], self.builder.allocator);
+                if_stmt.alternate = Some(self.builder.statement_block(SPAN, body));
+            }
+        }
+        walk_if_statement(self, if_stmt);
+    }
+
+    fn visit_conditional_expression(&mut self, cond: &mut ConditionalExpression<'a>) {
+        let group = self.new_group();
+        let cline = self.line_of(cond.consequent.span().start);
+        let cid = self.new_point(cline, KIND_BRANCH, group);
+        self.instrument_expr_arm(&mut cond.consequent, cid);
+        let aline = self.line_of(cond.alternate.span().start);
+        let aid = self.new_point(aline, KIND_BRANCH, group);
+        self.instrument_expr_arm(&mut cond.alternate, aid);
+        walk_conditional_expression(self, cond);
+    }
+
+    fn visit_switch_statement(&mut self, switch: &mut SwitchStatement<'a>) {
+        let group = self.new_group();
+        for case in switch.cases.iter_mut() {
+            let line = self.line_of(case.span.start);
+            let id = self.new_point(line, KIND_BRANCH, group);
+            let counter = self.counter(id);
+            case.consequent.insert(0, counter);
+        }
+        walk_switch_statement(self, switch);
     }
 }
 

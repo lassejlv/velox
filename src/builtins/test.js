@@ -506,6 +506,14 @@ function buildLcov(agg) {
     a.fns.forEach(function (f) { out += 'FNDA:' + f.hits + ',' + f.name + '\n'; });
     out += 'FNF:' + a.fns.length + '\n';
     out += 'FNH:' + a.fns.filter(function (f) { return f.hits > 0; }).length + '\n';
+    // Branch records: number arms 0..N-1 within each group (block).
+    var armIdx = {};
+    a.branches.forEach(function (b) {
+      var idx = armIdx[b.group] = (armIdx[b.group] == null ? 0 : armIdx[b.group] + 1);
+      out += 'BRDA:' + b.line + ',' + b.group + ',' + idx + ',' + b.hits + '\n';
+    });
+    out += 'BRF:' + a.branches.length + '\n';
+    out += 'BRH:' + a.branches.filter(function (b) { return b.hits > 0; }).length + '\n';
     var lines = [];
     a.lineCov.forEach(function (count, line) { lines.push(line); });
     lines.sort(function (x, y) { return x - y; });
@@ -530,13 +538,15 @@ function printCoverage() {
   var hits = globalThis.__VCOV_H || [];
   var opt = globalThis.__VCOV_OPT || {};
 
-  // lineCov: Map<line, hitCount>; fns: [{line, hits, name}].
+  // lineCov: Map<line, hitCount>; fns/branches: [{line, hits, ...}].
+  // point = [file, line, kind, group]; kind 0 stmt, 1 fn, 2 branch.
   var agg = map.files.map(function (p) {
-    return { path: p, lineCov: new Map(), fns: [] };
+    return { path: p, lineCov: new Map(), fns: [], branches: [] };
   });
   for (var i = 0; i < map.points.length; i++) {
-    var pt = map.points[i], a = agg[pt[0]], line = pt[1], n = hits[i] | 0;
-    if (pt[2]) { a.fns.push({ line: line, hits: n, name: 'fn_' + line }); }
+    var pt = map.points[i], a = agg[pt[0]], line = pt[1], kind = pt[2], n = hits[i] | 0;
+    if (kind === 1) { a.fns.push({ line: line, hits: n, name: 'fn_' + line }); }
+    else if (kind === 2) { a.branches.push({ group: pt[3], line: line, hits: n }); }
     else { a.lineCov.set(line, (a.lineCov.get(line) || 0) + n); }
   }
 
@@ -544,18 +554,22 @@ function printCoverage() {
   function color(p) { return p >= 80 ? C.green : p >= 50 ? C.yellow : C.red; }
   function fmt(p) { return p.toFixed(1); }
 
-  var rows = [], totLineT = 0, totLineC = 0, totFnT = 0, totFnC = 0;
+  var rows = [], totLineT = 0, totLineC = 0, totFnT = 0, totFnC = 0, totBrT = 0, totBrC = 0;
   agg.forEach(function (a) {
     var lineT = a.lineCov.size, lineC = 0, uncovered = [];
     a.lineCov.forEach(function (count, line) {
       if (count > 0) lineC++; else uncovered.push(line);
     });
     var fnC = a.fns.filter(function (f) { return f.hits > 0; }).length;
-    totLineT += lineT; totLineC += lineC; totFnT += a.fns.length; totFnC += fnC;
+    var brC = a.branches.filter(function (b) { return b.hits > 0; }).length;
+    totLineT += lineT; totLineC += lineC;
+    totFnT += a.fns.length; totFnC += fnC;
+    totBrT += a.branches.length; totBrC += brC;
     rows.push({
       path: a.path,
       lines: pct(lineC, lineT),
       funcs: pct(fnC, a.fns.length),
+      branches: pct(brC, a.branches.length),
       uncovered: compressRanges(uncovered),
     });
   });
@@ -565,25 +579,29 @@ function printCoverage() {
   rows.forEach(function (r) { if (r.path.length > fileW) fileW = r.path.length; });
   function padEnd(s, w) { while (s.length < w) s += ' '; return s; }
   function padStart(s, w) { while (s.length < w) s = ' ' + s; return s; }
-  var sep = '─'.repeat(fileW + 2) + '┼' + '─'.repeat(9) + '┼' + '─'.repeat(9) + '┼' + '─'.repeat(12);
+  var sep = '─'.repeat(fileW + 2) + '┼' + '─'.repeat(9) + '┼' + '─'.repeat(9) +
+    '┼' + '─'.repeat(9) + '┼' + '─'.repeat(12);
 
   console.log('\n' + C.bold('Coverage:'));
-  console.log(' ' + C.dim(padEnd('File', fileW) + '  │ % Lines │ % Funcs │ Uncovered'));
+  console.log(' ' + C.dim(padEnd('File', fileW) + '  │ % Lines │ % Funcs │ % Branch │ Uncovered'));
   console.log(' ' + C.dim(sep));
   rows.forEach(function (r) {
     console.log(
       ' ' + padEnd(r.path, fileW) + '  │ ' +
       color(r.lines)(padStart(fmt(r.lines), 6)) + '  │ ' +
       color(r.funcs)(padStart(fmt(r.funcs), 6)) + '  │ ' +
+      color(r.branches)(padStart(fmt(r.branches), 6)) + '  │ ' +
       (r.uncovered ? C.red(r.uncovered) : C.dim('-'))
     );
   });
   console.log(' ' + C.dim(sep));
-  var allLines = pct(totLineC, totLineT), allFuncs = pct(totFnC, totFnT);
+  var allLines = pct(totLineC, totLineT), allFuncs = pct(totFnC, totFnT),
+    allBr = pct(totBrC, totBrT);
   console.log(
     ' ' + C.bold(padEnd('All files', fileW)) + '  │ ' +
     color(allLines)(padStart(fmt(allLines), 6)) + '  │ ' +
-    color(allFuncs)(padStart(fmt(allFuncs), 6)) + '  │'
+    color(allFuncs)(padStart(fmt(allFuncs), 6)) + '  │ ' +
+    color(allBr)(padStart(fmt(allBr), 6)) + '  │'
   );
 
   // Optional lcov report (for Codecov / Coveralls / editor coverage gutters).
@@ -599,14 +617,14 @@ function printCoverage() {
     }
   }
 
-  // Threshold gate: fail if either metric is below the requested percentage.
+  // Threshold gate: fail if any metric is below the requested percentage.
   if (opt.threshold != null) {
-    var ok = allLines >= opt.threshold && allFuncs >= opt.threshold;
+    var ok = allLines >= opt.threshold && allFuncs >= opt.threshold && allBr >= opt.threshold;
     if (ok) {
       console.log(C.green(' ✓ coverage ≥ ' + opt.threshold + '%'));
     } else {
       console.log(C.red(' ✖ coverage below threshold (' + opt.threshold + '%): ' +
-        'lines ' + fmt(allLines) + '%, functions ' + fmt(allFuncs) + '%'));
+        'lines ' + fmt(allLines) + '%, functions ' + fmt(allFuncs) + '%, branches ' + fmt(allBr) + '%'));
     }
     return ok;
   }
