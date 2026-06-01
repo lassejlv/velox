@@ -139,6 +139,7 @@ check("fs.readdir withFileTypes async", async () => { const fs = require("node:f
 
 // os.constants.signals populated
 check("os.constants.signals", () => { const os = require("node:os"); if (os.constants.signals.SIGTERM !== 15 || os.constants.signals.SIGKILL !== 9) throw new Error("signals"); });
+check("navigator global", () => { const n = (globalThis as any).navigator; if (!n) throw new Error("no navigator"); if (typeof n.hardwareConcurrency !== "number" || n.hardwareConcurrency < 1) throw new Error("hwc"); if (typeof n.userAgent !== "string" || !n.userAgent) throw new Error("ua"); if (typeof n.onLine !== "boolean") throw new Error("onLine"); if (!Array.isArray(n.languages)) throw new Error("languages"); });
 
 await new Promise((r) => setTimeout(r, 300));
 let pass = 0, fail = 0;

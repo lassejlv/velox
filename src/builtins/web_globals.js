@@ -736,4 +736,39 @@
       return clone(value);
     };
   }
+
+  // navigator — minimal Web/Node-compatible global (Node 21+, Deno, and Bun all
+  // ship one). hardwareConcurrency is a lazy getter so it can reach `require`
+  // (installed after this prelude).
+  if (typeof g.navigator === "undefined") {
+    var nav = {};
+    Object.defineProperty(nav, "hardwareConcurrency", {
+      enumerable: true,
+      get: function () {
+        try {
+          var os = require("node:os");
+          return os.availableParallelism ? os.availableParallelism() : os.cpus().length;
+        } catch (e) {
+          return 1;
+        }
+      },
+    });
+    var ver = (g.process && g.process.versions && g.process.versions.velox) || "0.1.0";
+    var locale = "en-US";
+    try {
+      locale = new Intl.DateTimeFormat().resolvedOptions().locale || "en-US";
+    } catch (e) {}
+    Object.defineProperty(nav, "userAgent", { enumerable: true, value: "velox/" + ver });
+    Object.defineProperty(nav, "platform", {
+      enumerable: true,
+      value: (g.process && g.process.platform) || "",
+    });
+    Object.defineProperty(nav, "language", { enumerable: true, value: locale });
+    Object.defineProperty(nav, "languages", {
+      enumerable: true,
+      value: Object.freeze([locale]),
+    });
+    Object.defineProperty(nav, "onLine", { enumerable: true, value: true });
+    g.navigator = nav;
+  }
 })();
