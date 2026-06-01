@@ -60,6 +60,15 @@ if (performance && typeof performance.timeOrigin !== 'number') {
   try { Object.defineProperty(performance, 'timeOrigin', { value: Date.now() - performance.now(), configurable: true }); } catch (e) {}
 }
 
+// performance.eventLoopUtilization() — Node reports idle/active loop time; velox
+// doesn't track it, so return a zeroed reading (its diff form subtracts two).
+// (@hapi/heavy and other load monitors call this at startup.)
+if (performance && typeof performance.eventLoopUtilization !== 'function') {
+  performance.eventLoopUtilization = function () {
+    return { idle: 0, active: 0, utilization: 0 };
+  };
+}
+
 // monitorEventLoopDelay — stub histogram (the loop is single-threaded; delay ~0).
 function monitorEventLoopDelay() {
   return {
