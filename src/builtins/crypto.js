@@ -139,6 +139,43 @@ function checkPrime(candidate, options, cb) {
   }
 }
 
+// crypto.generatePrimeSync(size[, options]) — a random probable prime of `size`
+// bits. Returns an ArrayBuffer (big-endian) by default, or a BigInt with
+// { bigint: true }; { safe: true } requires (n-1)/2 also prime. (Pure-BigInt
+// Miller-Rabin, so large sizes are slow — fine for the common small cases.)
+function generatePrimeSync(size, options) {
+  options = options || {};
+  if (typeof size !== "number" || size < 2) {
+    throw new RangeError('The "size" argument must be a number >= 2.');
+  }
+  var bytes = Math.ceil(size / 8);
+  var topBits = size % 8 || 8;
+  for (;;) {
+    var buf = randomBytes(bytes);
+    buf[0] &= 0xff >> (8 - topBits); // clear bits above `size`
+    buf[0] |= 1 << (topBits - 1); // set the high bit → exactly `size` bits
+    buf[bytes - 1] |= 1; // odd
+    var n = BigInt("0x" + buf.toString("hex"));
+    if (!isProbablePrime(n)) continue;
+    if (options.safe && !isProbablePrime((n - 1n) / 2n)) continue;
+    if (options.bigint) return n;
+    var hex = n.toString(16);
+    if (hex.length % 2) hex = "0" + hex;
+    var out = Buffer.from(hex, "hex");
+    if (out.length < bytes) out = Buffer.concat([Buffer.alloc(bytes - out.length), out]);
+    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+  }
+}
+function generatePrime(size, options, cb) {
+  if (typeof options === "function") { cb = options; options = {}; }
+  try {
+    var r = generatePrimeSync(size, options);
+    queueMicrotask(function () { cb(null, r); });
+  } catch (e) {
+    queueMicrotask(function () { cb(e); });
+  }
+}
+
 function randomUUID() {
   var b = randomBytes(16);
   b[6] = (b[6] & 0x0f) | 0x40;
@@ -487,6 +524,8 @@ module.exports = {
   randomInt: randomInt,
   checkPrime: checkPrime,
   checkPrimeSync: checkPrimeSync,
+  generatePrime: generatePrime,
+  generatePrimeSync: generatePrimeSync,
   randomUUID: randomUUID,
   getRandomValues: getRandomValues,
   timingSafeEqual: timingSafeEqual,
