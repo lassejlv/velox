@@ -140,6 +140,9 @@ check("fs.readdir withFileTypes async", async () => { const fs = require("node:f
 // os.constants.signals populated
 check("os.constants.signals", () => { const os = require("node:os"); if (os.constants.signals.SIGTERM !== 15 || os.constants.signals.SIGKILL !== 9) throw new Error("signals"); });
 check("navigator global", () => { const n = (globalThis as any).navigator; if (!n) throw new Error("no navigator"); if (typeof n.hardwareConcurrency !== "number" || n.hardwareConcurrency < 1) throw new Error("hwc"); if (typeof n.userAgent !== "string" || !n.userAgent) throw new Error("ua"); if (typeof n.onLine !== "boolean") throw new Error("onLine"); if (!Array.isArray(n.languages)) throw new Error("languages"); });
+check("TextDecoder stream:true", () => { const d = new TextDecoder(); const a = d.decode(new Uint8Array([0xe2]), { stream: true }); const b = d.decode(new Uint8Array([0x9c, 0x93]), { stream: true }); const c = d.decode(); if (a !== "" || (a + b + c) !== "✓") throw new Error("stream decode"); });
+check("TextEncoderStream/TextDecoderStream", async () => { const enc = new (globalThis as any).TextEncoderStream(); const w = enc.writable.getWriter(); w.write("a世"); w.write("界b"); w.close(); let out = ""; for await (const s of enc.readable.pipeThrough(new (globalThis as any).TextDecoderStream())) out += s; if (out !== "a世界b") throw new Error("ts roundtrip: " + out); });
+check("process.getBuiltinModule", () => { const fs = (process as any).getBuiltinModule("node:fs"); if (!fs || typeof fs.readFileSync !== "function") throw new Error("gbm"); if ((process as any).getBuiltinModule("nope") !== undefined) throw new Error("gbm-bad"); });
 
 await new Promise((r) => setTimeout(r, 300));
 let pass = 0, fail = 0;

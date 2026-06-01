@@ -1324,6 +1324,8 @@
       this._codec = resolved.codec;
       this._fatal = !!(options && options.fatal);
       this._ignoreBOM = !!(options && options.ignoreBOM);
+      this._pending = null; // trailing incomplete bytes held between stream calls
+      this._bomSeen = false;
     }
     get encoding() {
       return this._encoding;
@@ -1334,10 +1336,12 @@
     get ignoreBOM() {
       return this._ignoreBOM;
     }
-    decode(input) {
-      if (input === undefined) return '';
+    decode(input, options) {
+      var streaming = !!(options && options.stream);
       var bytes;
-      if (input instanceof Uint8Array) {
+      if (input === undefined) {
+        bytes = new Uint8Array(0);
+      } else if (input instanceof Uint8Array) {
         bytes = input;
       } else if (ArrayBuffer.isView(input)) {
         bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
@@ -1346,21 +1350,54 @@
       } else {
         throw new TypeError('The provided value is not of type ArrayBuffer or ArrayBufferView.');
       }
-      // Non-UTF-8 encodings: route through the Buffer codecs.
+      // Prepend any bytes held back from a previous streaming call.
+      if (this._pending && this._pending.length) {
+        var merged = new Uint8Array(this._pending.length + bytes.length);
+        merged.set(this._pending, 0);
+        merged.set(bytes, this._pending.length);
+        bytes = merged;
+        this._pending = null;
+      }
+      // Non-UTF-8 encodings: route through the Buffer codecs (no streaming).
       if (this._codec) {
         return Buffer.from(bytes).toString(this._codec);
       }
+      // When streaming, hold back a trailing incomplete UTF-8 sequence so a
+      // multibyte character split across chunks isn't mangled into U+FFFD.
+      var end = bytes.length;
+      if (streaming) {
+        var hold = incompleteTrail(bytes);
+        if (hold > 0) {
+          this._pending = bytes.slice(end - hold, end);
+          end -= hold;
+        }
+      }
       var start = 0;
-      if (!this._ignoreBOM && bytes.length >= 3 &&
+      if (!this._ignoreBOM && !this._bomSeen && end >= 3 &&
           bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
         start = 3;
       }
+      if (start > 0 || end > 0) this._bomSeen = true;
       if (this._fatal) {
-        // Strict decode: throw on invalid sequences.
-        return utf8DecodeStrict(bytes, start, bytes.length);
+        return utf8DecodeStrict(bytes, start, end);
       }
-      return utf8Slice(bytes, start, bytes.length);
+      return utf8Slice(bytes, start, end);
     }
+  }
+
+  // Count trailing bytes that form the start of an as-yet-incomplete UTF-8
+  // sequence (so a streaming decoder can hold them for the next chunk). Returns
+  // 0 when the buffer ends on a complete boundary.
+  function incompleteTrail(bytes) {
+    var n = bytes.length;
+    for (var back = 1; back <= 4 && back <= n; back++) {
+      var b = bytes[n - back];
+      if (b < 0x80) return 0; // ASCII byte: a complete boundary
+      if ((b & 0xc0) === 0x80) continue; // continuation byte: keep scanning back
+      var need = (b & 0xe0) === 0xc0 ? 2 : (b & 0xf0) === 0xe0 ? 3 : (b & 0xf8) === 0xf0 ? 4 : 0;
+      return back < need ? back : 0; // incomplete lead → hold `back` bytes
+    }
+    return 0;
   }
 
   function utf8DecodeStrict(bytes, start, end) {

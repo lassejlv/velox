@@ -220,6 +220,8 @@ pub const GLOBALS_PRELUDE: &str = r#"
     stdin: makeStdin(),
     cwd: function () { return __velox_cwd(); },
     chdir: function () {},
+    // Node 22: return a builtin module by id (or undefined for non-builtins).
+    getBuiltinModule: function (id) { try { return require(id); } catch (e) { return undefined; } },
     exit: function (code) {
       var c = code === undefined ? (this.exitCode | 0) : (code | 0);
       try { this.emit('exit', c); } catch (e) {}

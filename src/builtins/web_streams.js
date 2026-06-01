@@ -219,4 +219,39 @@
   g.TransformStream = TransformStream;
   g.ByteLengthQueuingStrategy = ByteLengthQueuingStrategy;
   g.CountQueuingStrategy = CountQueuingStrategy;
+
+  // TextEncoderStream / TextDecoderStream — TransformStreams over the global
+  // TextEncoder/TextDecoder (the latter buffers split multibyte sequences via
+  // its `{ stream: true }` support).
+  function TextEncoderStream() {
+    var enc = new TextEncoder();
+    var ts = new TransformStream({
+      transform: function (chunk, controller) {
+        controller.enqueue(enc.encode(typeof chunk === 'string' ? chunk : String(chunk)));
+      },
+    });
+    Object.defineProperty(this, 'readable', { value: ts.readable, enumerable: true });
+    Object.defineProperty(this, 'writable', { value: ts.writable, enumerable: true });
+    Object.defineProperty(this, 'encoding', { value: 'utf-8', enumerable: true });
+  }
+  function TextDecoderStream(label, options) {
+    var dec = new TextDecoder(label || 'utf-8', options);
+    var ts = new TransformStream({
+      transform: function (chunk, controller) {
+        var s = dec.decode(chunk, { stream: true });
+        if (s) controller.enqueue(s);
+      },
+      flush: function (controller) {
+        var s = dec.decode();
+        if (s) controller.enqueue(s);
+      },
+    });
+    Object.defineProperty(this, 'readable', { value: ts.readable, enumerable: true });
+    Object.defineProperty(this, 'writable', { value: ts.writable, enumerable: true });
+    Object.defineProperty(this, 'encoding', { value: dec.encoding, enumerable: true });
+    Object.defineProperty(this, 'fatal', { value: dec.fatal, enumerable: true });
+    Object.defineProperty(this, 'ignoreBOM', { value: dec.ignoreBOM, enumerable: true });
+  }
+  if (typeof g.TextEncoderStream === 'undefined') g.TextEncoderStream = TextEncoderStream;
+  if (typeof g.TextDecoderStream === 'undefined') g.TextDecoderStream = TextDecoderStream;
 })();
