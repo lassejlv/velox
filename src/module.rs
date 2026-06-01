@@ -943,6 +943,34 @@ fn live_export_binding(name: &str) -> String {
     )
 }
 
+/// Collect every identifier a binding pattern introduces, recursing through
+/// object/array destructuring and default-value patterns (so
+/// `export const { a, b: c } = …` / `export const [x, ...y] = …` export all
+/// their names).
+fn collect_binding_names(pattern: &oxc::ast::ast::BindingPattern, out: &mut Vec<String>) {
+    use oxc::ast::ast::BindingPattern;
+    match pattern {
+        BindingPattern::BindingIdentifier(ident) => out.push(ident.name.to_string()),
+        BindingPattern::ObjectPattern(obj) => {
+            for prop in &obj.properties {
+                collect_binding_names(&prop.value, out);
+            }
+            if let Some(rest) = &obj.rest {
+                collect_binding_names(&rest.argument, out);
+            }
+        }
+        BindingPattern::ArrayPattern(arr) => {
+            for elem in arr.elements.iter().flatten() {
+                collect_binding_names(elem, out);
+            }
+            if let Some(rest) = &arr.rest {
+                collect_binding_names(&rest.argument, out);
+            }
+        }
+        BindingPattern::AssignmentPattern(assign) => collect_binding_names(&assign.left, out),
+    }
+}
+
 fn rewrite_export_decl(
     path: &Path,
     declaration: &Declaration,
@@ -958,19 +986,10 @@ fn rewrite_export_decl(
             let text = slice(source, var.span.start, var.span.end);
             let mut out = text.to_string();
             for d in &var.declarations {
-                match &d.id {
-                    oxc::ast::ast::BindingPattern::BindingIdentifier(ident) => {
-                        let name = ident.name.as_str();
-                        out.push_str(&live_export_binding(name));
-                    }
-                    _ => {
-                        return Err(ModuleError::Unsupported {
-                            path: path.to_path_buf(),
-                            message: "destructuring patterns in `export` declarations are not \
-                                      supported; assign first, then `export { … }`"
-                                .to_string(),
-                        });
-                    }
+                let mut names = Vec::new();
+                collect_binding_names(&d.id, &mut names);
+                for name in names {
+                    out.push_str(&live_export_binding(&name));
                 }
             }
             Ok(out)
