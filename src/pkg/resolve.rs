@@ -172,6 +172,21 @@ fn resolve_flat(
                     }
                 }
             }
+            // Auto-install non-optional peer dependencies (npm 7+ behavior), so
+            // plugin ecosystems (graphql, eslint, …) get their required peer.
+            let peer_meta = vmeta["peerDependenciesMeta"].as_object();
+            if let Some(peers) = vmeta["peerDependencies"].as_object() {
+                for (dep, dep_range) in peers {
+                    let optional = peer_meta
+                        .and_then(|m| m.get(dep))
+                        .and_then(|o| o["optional"].as_bool())
+                        .unwrap_or(false);
+                    let r = dep_range.as_str().unwrap_or("*").to_string();
+                    if !optional && is_registry_range(&r) {
+                        next.push((name.clone(), dep.clone(), r));
+                    }
+                }
+            }
         }
         frontier = next;
     }
