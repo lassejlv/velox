@@ -83,7 +83,10 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("constants", include_str!("builtins/constants.js")),
     ("velox-test", include_str!("builtins/test.js")),
     ("velox-bench", include_str!("builtins/bench.js")),
-    ("stream/consumers", include_str!("builtins/stream_consumers.js")),
+    (
+        "stream/consumers",
+        include_str!("builtins/stream_consumers.js"),
+    ),
 ];
 
 /// Installs the global `Buffer` (and `TextEncoder`/`TextDecoder`). Evaluated at
@@ -296,6 +299,9 @@ pub const GLOBALS_PRELUDE: &str = r#"
     features: {},
   };
   process.hrtime.bigint = function () { return BigInt(Math.round(__velox_hrtime_ns())); };
+  // Node tags `process` so `Object.prototype.toString.call(process)` is
+  // `[object process]`; libraries (e.g. axios's adapter detection) rely on it.
+  try { Object.defineProperty(process, Symbol.toStringTag, { value: "process", configurable: true }); } catch (e) {}
 
   globalThis.process = process;
   globalThis.global = globalThis;
