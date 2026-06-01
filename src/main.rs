@@ -200,11 +200,11 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         "bench" | "benchmark" => {
             if has_help {
                 println!(
-                    "Usage: velox bench [PATTERN...]\n\n  Run benchmark files (*.bench.* / *.benchmark.* / files under bench/).\n  Globals bench/describe + before*/after* hooks are provided.\n  PATTERNs filter by path substring."
+                    "Usage: velox bench [PATTERN...] [--reporter=json]\n\n  Run benchmark files (*.bench.* / *.benchmark.* / files under bench/).\n  Globals bench/describe + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --reporter=json[=PATH]   Write machine-readable results (default bench-results.json)."
                 );
                 return Some(ExitCode::SUCCESS);
             }
-            Some(cmd_bench(&positionals()))
+            Some(cmd_bench(&positionals(), flag_eq_value(rest, "--reporter")))
         }
         "build" | "compile" => {
             if has_help {
@@ -751,7 +751,7 @@ fn is_bench_file(path: &Path) -> bool {
 
 /// `velox bench [patterns]` — discover benchmark files and run them through a
 /// generated driver that loads the `velox-bench` framework.
-fn cmd_bench(patterns: &[String]) -> ExitCode {
+fn cmd_bench(patterns: &[String], reporter: Option<String>) -> ExitCode {
     use owo_colors::OwoColorize;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -786,6 +786,12 @@ fn cmd_bench(patterns: &[String]) -> ExitCode {
     );
 
     let mut driver = String::from("const __b = require('velox-bench');\n__b.register();\n");
+    if let Some(rep) = &reporter {
+        driver.push_str(&format!(
+            "globalThis.__VELOX_BENCH_REPORTER = {};\n",
+            js_string_literal(rep)
+        ));
+    }
     for f in &files {
         driver.push_str(&format!(
             "require({});\n",

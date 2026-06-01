@@ -209,8 +209,10 @@ Benchmarks:
 
 `bench.skip`/`bench.only`, `describe`/`group` nesting, async benchmarks, and the
 `before*`/`after*` hooks are supported; pass `{ time, warmup }` (ms) as a third
-argument to tune the windows. A benchmark that throws exits non-zero. Types live
-in `velox-bench.d.ts` (shipped by `velox init`).
+argument to tune the windows. A benchmark that throws exits non-zero.
+`--reporter=json[=PATH]` writes the results (name, ops/sec, mean/min/p99,
+samples) to a file (default `bench-results.json`) for tracking regressions over
+time. Types live in `velox-bench.d.ts` (shipped by `velox init`).
 
 ## Run scripts
 

@@ -21,6 +21,7 @@ var rootGroup = makeGroup(null);
 var current = rootGroup;
 var hasOnly = false;
 var failures = [];
+var allResults = []; // flat list across groups, for the JSON reporter
 
 function describe(name, fn) {
   var parent = current;
@@ -111,16 +112,17 @@ function padStart(s, w) { s = '' + s; while (s.length < w) s = ' ' + s; return s
 function padEnd(s, w) { s = '' + s; while (s.length < w) s += ' '; return s; }
 
 // Run every bench in a group, printing a table, then a "fastest" summary.
-async function runGroup(g, depth) {
+async function runGroup(g, depth, prefix) {
   await runHooks(g.beforeAll);
 
   var indent = '  '.repeat(depth + 1);
   if (g.name) console.log('\n' + indent + C.bold(g.name));
+  var groupPath = g.name ? (prefix ? prefix + ' › ' + g.name : g.name) : prefix;
 
   var results = [];
   for (var i = 0; i < g.benches.length; i++) {
     var entry = g.benches[i];
-    if (entry.group) { await runGroup(entry.group, depth + 1); continue; }
+    if (entry.group) { await runGroup(entry.group, depth + 1, groupPath); continue; }
     if (entry.opts.skip || (hasOnly && !entry.opts.only)) {
       console.log(indent + '  ' + C.yellow('- ' + entry.name) + C.dim(' (skipped)'));
       continue;
@@ -131,6 +133,11 @@ async function runGroup(g, depth) {
       var stat = await measure(entry.fn, isAsync, entry.opts);
       await runHooks(g.afterEach);
       results.push({ name: entry.name, stat: stat });
+      allResults.push({
+        name: groupPath ? groupPath + ' › ' + entry.name : entry.name,
+        opsPerSec: stat.ops, meanMs: stat.mean, minMs: stat.min,
+        maxMs: stat.max, p99Ms: stat.p99, samples: stat.samples,
+      });
     } catch (e) {
       failures.push({ name: entry.name, err: e });
       console.log(indent + '  ' + C.red('✖ ' + entry.name) + C.dim(' — ' + (e && e.message || e)));
@@ -173,17 +180,36 @@ function register() {
   g.afterEach = afterEach;
 }
 
+// Write a machine-readable JSON report when `velox bench --reporter=json[=PATH]`
+// is set (default bench-results.json). The pretty terminal output is unaffected.
+function writeJsonReport(durationMs) {
+  var reporter = globalThis.__VELOX_BENCH_REPORTER;
+  if (!reporter || reporter.indexOf('json') !== 0) return;
+  var file = reporter.indexOf('=') >= 0 ? reporter.slice(reporter.indexOf('=') + 1) : 'bench-results.json';
+  var report = { durationMs: durationMs, benchmarks: allResults };
+  try {
+    var fs = require('node:fs'), path = require('node:path');
+    var dir = path.dirname(file);
+    if (dir && dir !== '.') fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(report, null, 2) + '\n');
+    console.log(C.dim(' results written to ' + file));
+  } catch (e) {
+    console.log(C.red('could not write JSON report: ' + (e && e.message || e)));
+  }
+}
+
 async function run() {
   var start = now();
   console.log(C.bold('Benchmarks:'));
   try {
-    await runGroup(rootGroup, 0);
+    await runGroup(rootGroup, 0, '');
   } catch (e) {
     console.log(C.red('fatal error while running benchmarks: ' + (e && e.stack || e)));
     failures.push({ name: '(fatal)', err: e });
   }
   var ms = now() - start;
   console.log('\n' + C.bold('Done') + C.dim(' in ' + ms.toFixed(0) + 'ms'));
+  writeJsonReport(ms);
   if (failures.length && g_process()) g_process().exitCode = 1;
   return failures.length === 0;
 }
