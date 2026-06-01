@@ -17,18 +17,19 @@ where
     if n == 0 {
         return Vec::new();
     }
-    let queue: Mutex<VecDeque<(usize, T)>> =
-        Mutex::new(items.into_iter().enumerate().collect());
+    let queue: Mutex<VecDeque<(usize, T)>> = Mutex::new(items.into_iter().enumerate().collect());
     let results: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::with_capacity(n));
     let threads = workers.clamp(1, n);
 
     std::thread::scope(|scope| {
         for _ in 0..threads {
-            scope.spawn(|| loop {
-                let next = { queue.lock().unwrap().pop_front() };
-                let Some((idx, item)) = next else { break };
-                let out = f(item);
-                results.lock().unwrap().push((idx, out));
+            scope.spawn(|| {
+                loop {
+                    let next = { queue.lock().unwrap().pop_front() };
+                    let Some((idx, item)) = next else { break };
+                    let out = f(item);
+                    results.lock().unwrap().push((idx, out));
+                }
             });
         }
     });

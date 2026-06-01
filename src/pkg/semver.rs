@@ -27,7 +27,12 @@ impl Version {
         let major = it.next()?.parse().ok()?;
         let minor = it.next().unwrap_or("0").parse().ok()?;
         let patch = it.next().unwrap_or("0").parse().ok()?;
-        Some(Version { major, minor, patch, pre })
+        Some(Version {
+            major,
+            minor,
+            patch,
+            pre,
+        })
     }
 
     pub fn is_prerelease(&self) -> bool {
@@ -121,7 +126,10 @@ impl Range {
     pub fn parse(input: &str) -> Range {
         let input = input.trim();
         if input.is_empty() || input == "*" || input == "latest" || input == "x" || input == "X" {
-            return Range { sets: Vec::new(), any: true };
+            return Range {
+                sets: Vec::new(),
+                any: true,
+            };
         }
         let mut sets = Vec::new();
         for part in input.split("||") {
@@ -197,8 +205,9 @@ fn split_hyphen_range(set: &str) -> Option<(&str, &str)> {
 fn upper_from_partial(s: &str) -> Option<Comparator> {
     let nums: Vec<&str> = s.split('.').collect();
     match nums.len() {
-        1 => Version::parse(&format!("{}.0.0", inc(nums[0])?))
-            .map(|v| Comparator { op: Op::Lt, v }),
+        1 => {
+            Version::parse(&format!("{}.0.0", inc(nums[0])?)).map(|v| Comparator { op: Op::Lt, v })
+        }
         2 => Version::parse(&format!("{}.{}.0", nums[0], inc(nums[1])?))
             .map(|v| Comparator { op: Op::Lt, v }),
         _ => Version::parse(s).map(|v| Comparator { op: Op::Lte, v }),
@@ -216,7 +225,13 @@ fn expand_token(token: &str, out: &mut Vec<Comparator>) {
         return; // matches anything → no constraint
     }
     // Explicit comparators.
-    for (prefix, op) in [(">=", Op::Gte), ("<=", Op::Lte), (">", Op::Gt), ("<", Op::Lt), ("=", Op::Eq)] {
+    for (prefix, op) in [
+        (">=", Op::Gte),
+        ("<=", Op::Lte),
+        (">", Op::Gt),
+        ("<", Op::Lt),
+        ("=", Op::Eq),
+    ] {
         if let Some(rest) = token.strip_prefix(prefix) {
             if let Some(v) = parse_partial_as_version(rest.trim()) {
                 out.push(Comparator { op, v });
@@ -243,28 +258,65 @@ fn parse_partial_as_version(s: &str) -> Option<Version> {
 /// `^1.2.3` → `>=1.2.3 <2.0.0`; `^0.2.3` → `>=0.2.3 <0.3.0`; `^0.0.3` → `>=0.0.3 <0.0.4`.
 fn caret(s: &str, out: &mut Vec<Comparator>) {
     let Some(v) = Version::parse(s) else { return };
-    out.push(Comparator { op: Op::Gte, v: v.clone() });
+    out.push(Comparator {
+        op: Op::Gte,
+        v: v.clone(),
+    });
     let upper = if v.major > 0 {
-        Version { major: v.major + 1, minor: 0, patch: 0, pre: vec![] }
+        Version {
+            major: v.major + 1,
+            minor: 0,
+            patch: 0,
+            pre: vec![],
+        }
     } else if v.minor > 0 {
-        Version { major: 0, minor: v.minor + 1, patch: 0, pre: vec![] }
+        Version {
+            major: 0,
+            minor: v.minor + 1,
+            patch: 0,
+            pre: vec![],
+        }
     } else {
-        Version { major: 0, minor: 0, patch: v.patch + 1, pre: vec![] }
+        Version {
+            major: 0,
+            minor: 0,
+            patch: v.patch + 1,
+            pre: vec![],
+        }
     };
-    out.push(Comparator { op: Op::Lt, v: upper });
+    out.push(Comparator {
+        op: Op::Lt,
+        v: upper,
+    });
 }
 
 /// `~1.2.3` → `>=1.2.3 <1.3.0`; `~1.2` → `>=1.2.0 <1.3.0`; `~1` → `>=1.0.0 <2.0.0`.
 fn tilde(s: &str, out: &mut Vec<Comparator>) {
     let nums: Vec<&str> = s.split('.').collect();
     let Some(v) = Version::parse(s) else { return };
-    out.push(Comparator { op: Op::Gte, v: v.clone() });
+    out.push(Comparator {
+        op: Op::Gte,
+        v: v.clone(),
+    });
     let upper = if nums.len() >= 2 {
-        Version { major: v.major, minor: v.minor + 1, patch: 0, pre: vec![] }
+        Version {
+            major: v.major,
+            minor: v.minor + 1,
+            patch: 0,
+            pre: vec![],
+        }
     } else {
-        Version { major: v.major + 1, minor: 0, patch: 0, pre: vec![] }
+        Version {
+            major: v.major + 1,
+            minor: 0,
+            patch: 0,
+            pre: vec![],
+        }
     };
-    out.push(Comparator { op: Op::Lt, v: upper });
+    out.push(Comparator {
+        op: Op::Lt,
+        v: upper,
+    });
 }
 
 /// Bare versions and x-ranges. `1.2.3` → `=1.2.3`; `1.2`/`1.2.x` → `>=1.2.0 <1.3.0`;
@@ -287,14 +339,46 @@ fn bare_or_xrange(token: &str, out: &mut Vec<Comparator>) {
     match (minor, patch) {
         (None, _) | (Some("x"), _) | (Some("X"), _) | (Some("*"), _) => {
             // `1` / `1.x` → >=1.0.0 <2.0.0
-            out.push(Comparator { op: Op::Gte, v: Version { major: major_n, minor: 0, patch: 0, pre: vec![] } });
-            out.push(Comparator { op: Op::Lt, v: Version { major: major_n + 1, minor: 0, patch: 0, pre: vec![] } });
+            out.push(Comparator {
+                op: Op::Gte,
+                v: Version {
+                    major: major_n,
+                    minor: 0,
+                    patch: 0,
+                    pre: vec![],
+                },
+            });
+            out.push(Comparator {
+                op: Op::Lt,
+                v: Version {
+                    major: major_n + 1,
+                    minor: 0,
+                    patch: 0,
+                    pre: vec![],
+                },
+            });
         }
         (Some(m), None) | (Some(m), Some("x")) | (Some(m), Some("X")) | (Some(m), Some("*")) => {
             // `1.2` / `1.2.x` → >=1.2.0 <1.3.0
             if let Ok(minor_n) = m.parse::<u64>() {
-                out.push(Comparator { op: Op::Gte, v: Version { major: major_n, minor: minor_n, patch: 0, pre: vec![] } });
-                out.push(Comparator { op: Op::Lt, v: Version { major: major_n, minor: minor_n + 1, patch: 0, pre: vec![] } });
+                out.push(Comparator {
+                    op: Op::Gte,
+                    v: Version {
+                        major: major_n,
+                        minor: minor_n,
+                        patch: 0,
+                        pre: vec![],
+                    },
+                });
+                out.push(Comparator {
+                    op: Op::Lt,
+                    v: Version {
+                        major: major_n,
+                        minor: minor_n + 1,
+                        patch: 0,
+                        pre: vec![],
+                    },
+                });
             }
         }
         (Some(_), Some(_)) => {
@@ -364,7 +448,10 @@ mod tests {
     #[test]
     fn max_satisfying_picks_highest() {
         let vs = vec![v("1.0.0"), v("1.2.0"), v("1.9.0"), v("2.0.0")];
-        assert_eq!(Range::parse("^1.0.0").max_satisfying(&vs).unwrap(), &v("1.9.0"));
+        assert_eq!(
+            Range::parse("^1.0.0").max_satisfying(&vs).unwrap(),
+            &v("1.9.0")
+        );
     }
 
     #[test]

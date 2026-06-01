@@ -96,7 +96,10 @@ pub fn run(dir: Option<&str>, no_install: bool) -> ExitCode {
     if wrote_any {
         println!("  {} project ready.", "✓".green().bold());
     } else {
-        println!("  {} nothing to do — project already initialized.", "•".dimmed());
+        println!(
+            "  {} nothing to do — project already initialized.",
+            "•".dimmed()
+        );
     }
     println!();
     println!("  {}", "next steps".bold());
@@ -118,7 +121,11 @@ pub fn run(dir: Option<&str>, no_install: bool) -> ExitCode {
 fn write_file(root: &Path, rel: &str, contents: &str) -> bool {
     let path = root.join(rel);
     if path.exists() {
-        println!("  {} {}", "•".dimmed(), format!("{rel} (exists, kept)").dimmed());
+        println!(
+            "  {} {}",
+            "•".dimmed(),
+            format!("{rel} (exists, kept)").dimmed()
+        );
         return false;
     }
     if let Some(parent) = path.parent() {
@@ -163,7 +170,13 @@ fn project_name(root: &Path) -> String {
     let cleaned: String = raw
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_matches('-');
     if trimmed.is_empty() {
@@ -172,4 +185,3 @@ fn project_name(root: &Path) -> String {
         trimmed.to_string()
     }
 }
-

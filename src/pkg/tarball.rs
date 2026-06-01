@@ -57,9 +57,7 @@ pub fn extract(tgz: &[u8], dest: &Path) -> Result<usize, String> {
             }
             b'0' | 0 => {
                 // Regular file.
-                let raw_name = pending_name
-                    .take()
-                    .unwrap_or_else(|| header_name(header));
+                let raw_name = pending_name.take().unwrap_or_else(|| header_name(header));
                 if let Some(rel) = strip_package_prefix(&raw_name) {
                     write_file(dest, &rel, body)?;
                     written += 1;
@@ -109,8 +107,7 @@ fn strip_package_prefix(name: &str) -> Option<String> {
 fn write_file(dest: &Path, rel: &str, body: &[u8]) -> Result<(), String> {
     let path = dest.join(rel);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))
 }

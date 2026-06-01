@@ -108,7 +108,9 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
     match cmd {
         "init" => {
             if has_help {
-                println!("Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node.");
+                println!(
+                    "Usage: velox init [DIR]\n\n  Scaffold a new velox project in DIR (default: current directory).\n\nOptions:\n  --no-install   Skip installing @types/node."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             let no_install = rest.iter().any(|a| a == "--no-install");
@@ -117,7 +119,9 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         }
         "install" | "i" => {
             if has_help {
-                println!("Usage: velox install\n\n  Install all dependencies from package.json into node_modules.");
+                println!(
+                    "Usage: velox install\n\n  Install all dependencies from package.json into node_modules."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             // `velox install <pkg>` is an alias for `add` (npm-compatible).
@@ -125,28 +129,38 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
             if pkgs.is_empty() {
                 Some(pkg::install())
             } else {
-                let dev = rest.iter().any(|a| a == "--dev" || a == "-D" || a == "--save-dev");
+                let dev = rest
+                    .iter()
+                    .any(|a| a == "--dev" || a == "-D" || a == "--save-dev");
                 Some(pkg::add(&pkgs, dev))
             }
         }
         "add" | "a" => {
             if has_help {
-                println!("Usage: velox add [--dev] <pkg>[@version]...\n\n  Add packages to package.json and install them.\n\nOptions:\n  -D, --dev   Save to devDependencies.");
+                println!(
+                    "Usage: velox add [--dev] <pkg>[@version]...\n\n  Add packages to package.json and install them.\n\nOptions:\n  -D, --dev   Save to devDependencies."
+                );
                 return Some(ExitCode::SUCCESS);
             }
-            let dev = rest.iter().any(|a| a == "--dev" || a == "-D" || a == "--save-dev");
+            let dev = rest
+                .iter()
+                .any(|a| a == "--dev" || a == "-D" || a == "--save-dev");
             Some(pkg::add(&positionals(), dev))
         }
         "remove" | "rm" | "uninstall" | "un" => {
             if has_help {
-                println!("Usage: velox remove <pkg>...\n\n  Remove packages from package.json and node_modules.");
+                println!(
+                    "Usage: velox remove <pkg>...\n\n  Remove packages from package.json and node_modules."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             Some(pkg::remove(&positionals()))
         }
         "build" | "compile" => {
             if has_help {
-                println!("Usage: velox build <entry> [--out NAME]\n\n  Bundle <entry> and its deps into a standalone, code-signed executable.");
+                println!(
+                    "Usage: velox build <entry> [--out NAME]\n\n  Bundle <entry> and its deps into a standalone, code-signed executable."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             let positional = positionals();
@@ -170,14 +184,18 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         }
         "outdated" => {
             if has_help {
-                println!("Usage: velox outdated\n\n  Show direct dependencies that have a newer version available.");
+                println!(
+                    "Usage: velox outdated\n\n  Show direct dependencies that have a newer version available."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             Some(pkg::outdated())
         }
         "update" | "up" | "upgrade" => {
             if has_help {
-                println!("Usage: velox update [--latest] [pkg...]\n\n  Upgrade dependencies to the newest version in range (or, with --latest,\n  bump the range to the newest published version first).");
+                println!(
+                    "Usage: velox update [--latest] [pkg...]\n\n  Upgrade dependencies to the newest version in range (or, with --latest,\n  bump the range to the newest published version first)."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             let latest = rest.iter().any(|a| a == "--latest" || a == "-L");
@@ -185,7 +203,9 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         }
         "x" | "exec" | "dlx" => {
             if has_help || rest.is_empty() {
-                println!("Usage: velox x <pkg>[@version] [args...]\n\n  Download a package (and its deps) and run its executable with velox.");
+                println!(
+                    "Usage: velox x <pkg>[@version] [args...]\n\n  Download a package (and its deps) and run its executable with velox."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             // First arg is the package spec; everything after is passed to the tool.
@@ -195,7 +215,9 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         }
         "run" | "run-script" => {
             if has_help {
-                println!("Usage: velox run [SCRIPT] [-- args...]\n\n  Run a package.json script (no SCRIPT lists them). pre/post hooks run too.");
+                println!(
+                    "Usage: velox run [SCRIPT] [-- args...]\n\n  Run a package.json script (no SCRIPT lists them). pre/post hooks run too."
+                );
                 return Some(ExitCode::SUCCESS);
             }
             // First token after `run` is the script name; the remainder (minus a
@@ -518,4 +540,3 @@ fn base_executable_len(bytes: &[u8]) -> usize {
         bytes.len()
     }
 }
-

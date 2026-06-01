@@ -25,9 +25,7 @@ use rustls::{
 use rustls_pki_types::{PrivateKeyDer, ServerName};
 
 use crate::event_loop::{arg_slice, begin_io, end_io, next_token, register, registry};
-use crate::node::{
-    call_named, js_string, js_uint8array, js_value_to_bytes, js_value_to_latin1,
-};
+use crate::node::{call_named, js_string, js_uint8array, js_value_to_bytes, js_value_to_latin1};
 use crate::runtime::js_value_to_string;
 
 const READ_CHUNK: usize = 16 * 1024;

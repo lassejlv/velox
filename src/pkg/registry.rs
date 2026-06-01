@@ -51,7 +51,11 @@ fn parse_url(url: &str) -> Result<Url, String> {
         Some((h, p)) => (h.to_string(), p.parse().unwrap_or(443)),
         None => (authority.to_string(), 443),
     };
-    Ok(Url { host, port, path: path.to_string() })
+    Ok(Url {
+        host,
+        port,
+        path: path.to_string(),
+    })
 }
 
 /// Perform an HTTPS GET, following up to 5 redirects. Returns the raw body bytes.
@@ -82,10 +86,10 @@ pub fn https_get(url: &str, accept: &str) -> Result<Vec<u8>, String> {
 /// One request/response cycle.
 fn get_once(url: &str, accept: &str) -> Result<Response, String> {
     let u = parse_url(url)?;
-    let server_name = ServerName::try_from(u.host.clone())
-        .map_err(|_| format!("invalid host {}", u.host))?;
-    let conn = ClientConnection::new(tls_config(), server_name)
-        .map_err(|e| format!("TLS init: {e}"))?;
+    let server_name =
+        ServerName::try_from(u.host.clone()).map_err(|_| format!("invalid host {}", u.host))?;
+    let conn =
+        ClientConnection::new(tls_config(), server_name).map_err(|e| format!("TLS init: {e}"))?;
     let sock = TcpStream::connect((u.host.as_str(), u.port))
         .map_err(|e| format!("connect {}: {e}", u.host))?;
     let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(60)));

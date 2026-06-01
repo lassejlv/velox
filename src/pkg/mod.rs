@@ -47,7 +47,12 @@ pub fn install() -> ExitCode {
             "  {} {} {}",
             "velox".cyan().bold(),
             "install".dimmed(),
-            format!("· {} locked package(s) from {}", locked.len(), lockfile::LOCKFILE).dimmed()
+            format!(
+                "· {} locked package(s) from {}",
+                locked.len(),
+                lockfile::LOCKFILE
+            )
+            .dimmed()
         );
         return install_resolved(locked);
     }
@@ -134,7 +139,10 @@ fn install_workspace(root: &Path, verb: &str) -> ExitCode {
             Err(e) => eprintln!("  {} {}", "!".yellow(), e),
         }
     }
-    println!("  {} linked {linked} workspace package(s)", "✓".green().bold());
+    println!(
+        "  {} linked {linked} workspace package(s)",
+        "✓".green().bold()
+    );
     code
 }
 
@@ -151,7 +159,12 @@ pub fn add(specs: &[String], dev: bool) -> ExitCode {
     };
 
     println!();
-    println!("  {} {} {}", "velox".cyan().bold(), "add".dimmed(), "· resolving requested packages".dimmed());
+    println!(
+        "  {} {} {}",
+        "velox".cyan().bold(),
+        "add".dimmed(),
+        "· resolving requested packages".dimmed()
+    );
 
     // Resolve each requested spec to a concrete version so we can pin `^x.y.z`.
     let mut to_record: Vec<(String, String)> = Vec::new();
@@ -171,7 +184,11 @@ pub fn add(specs: &[String], dev: bool) -> ExitCode {
     }
 
     // Merge into the chosen dependency map.
-    let field = if dev { "devDependencies" } else { "dependencies" };
+    let field = if dev {
+        "devDependencies"
+    } else {
+        "dependencies"
+    };
     {
         let obj = pkg.as_object_mut().unwrap();
         let deps = obj
@@ -255,7 +272,9 @@ pub fn outdated() -> ExitCode {
             .map(|o| o.keys().filter_map(|k| Version::parse(k)).collect())
             .unwrap_or_default();
         let wanted = Range::parse(&range).max_satisfying(&versions).cloned();
-        let latest = meta["dist-tags"]["latest"].as_str().and_then(Version::parse);
+        let latest = meta["dist-tags"]["latest"]
+            .as_str()
+            .and_then(Version::parse);
         let current = installed_version(&nm.join(&name));
         Some((name, range, current, wanted, latest))
     });
@@ -271,9 +290,18 @@ pub fn outdated() -> ExitCode {
     );
     for row in rows.into_iter().flatten() {
         let (name, _range, current, wanted, latest) = row;
-        let cur_s = current.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "—".into());
-        let want_s = wanted.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "—".into());
-        let latest_s = latest.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+        let cur_s = current
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "—".into());
+        let want_s = wanted
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "—".into());
+        let latest_s = latest
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "—".into());
         // Only list packages that aren't already at the latest.
         let up_to_date = matches!((&current, &latest), (Some(c), Some(l)) if c >= l);
         if up_to_date {
@@ -285,7 +313,11 @@ pub fn outdated() -> ExitCode {
             "  {:<26} {:>12} {:>12} {:>12}",
             name,
             cur_s,
-            if behind_wanted { want_s.yellow().to_string() } else { want_s },
+            if behind_wanted {
+                want_s.yellow().to_string()
+            } else {
+                want_s
+            },
             latest_s.green().to_string(),
         );
     }
@@ -293,7 +325,10 @@ pub fn outdated() -> ExitCode {
     if shown == 0 {
         println!("  {} everything is up to date", "✓".green().bold());
     } else {
-        println!("  {} {shown} package(s) can be updated — run `velox update`", "•".dimmed());
+        println!(
+            "  {} {shown} package(s) can be updated — run `velox update`",
+            "•".dimmed()
+        );
     }
     ExitCode::SUCCESS
 }
@@ -310,7 +345,12 @@ pub fn update(pkgs: &[String], latest: bool) -> ExitCode {
 
     if latest {
         println!();
-        println!("  {} {} {}", "velox".cyan().bold(), "update".dimmed(), "· bumping ranges to latest".dimmed());
+        println!(
+            "  {} {} {}",
+            "velox".cyan().bold(),
+            "update".dimmed(),
+            "· bumping ranges to latest".dimmed()
+        );
         let targets: Vec<String> = if pkgs.is_empty() {
             direct_dep_names(&pkg)
         } else {
@@ -322,7 +362,11 @@ pub fn update(pkgs: &[String], latest: bool) -> ExitCode {
                     if let Some(latest_v) = meta["dist-tags"]["latest"].as_str()
                         && set_dep_range(&mut pkg, name, &format!("^{latest_v}"))
                     {
-                        println!("  {} {name} {}", "✓".green().bold(), format!("^{latest_v}").dimmed());
+                        println!(
+                            "  {} {name} {}",
+                            "✓".green().bold(),
+                            format!("^{latest_v}").dimmed()
+                        );
                     }
                 }
                 Err(e) => eprintln!("  {} {name}: {e}", "!".yellow()),
@@ -375,7 +419,10 @@ fn collect_direct_deps() -> Vec<(String, String)> {
 }
 
 fn direct_dep_names(pkg: &Value) -> Vec<String> {
-    gather_roots(pkg, true).into_iter().map(|(n, _)| n).collect()
+    gather_roots(pkg, true)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// Set the range for `name` in whichever dependency field it appears in.
@@ -412,7 +459,12 @@ fn resolve_workers() -> usize {
 pub fn x(spec: &str, args: &[String]) -> ExitCode {
     let (name, range) = parse_spec(spec);
     println!();
-    println!("  {} {} {}", "velox".cyan().bold(), "x".dimmed(), format!("· {spec}").dimmed());
+    println!(
+        "  {} {} {}",
+        "velox".cyan().bold(),
+        "x".dimmed(),
+        format!("· {spec}").dimmed()
+    );
 
     let resolved = match resolve::resolve(&[(name.clone(), range)]) {
         Ok(r) => r,
@@ -506,7 +558,11 @@ fn run_install(roots: &[(String, String)], verb: &str) -> ExitCode {
 
     // Record the lockfile from the resolution (independent of download success).
     if let Err(e) = lockfile::write(&resolved) {
-        eprintln!("  {} could not write {}: {e}", "!".yellow(), lockfile::LOCKFILE);
+        eprintln!(
+            "  {} could not write {}: {e}",
+            "!".yellow(),
+            lockfile::LOCKFILE
+        );
     }
 
     install_resolved(resolved)
@@ -519,7 +575,12 @@ fn install_resolved(resolved: Vec<Resolved>) -> ExitCode {
     let outcomes = par_map(resolved, DOWNLOAD_WORKERS, |r| {
         let result = install_one(&r, &nm);
         if let Ok(true) = &result {
-            println!("  {} {}@{}", "↓".cyan(), r.name, r.version.to_string().dimmed());
+            println!(
+                "  {} {}@{}",
+                "↓".cyan(),
+                r.name,
+                r.version.to_string().dimmed()
+            );
         }
         (r.name, r.version, result)
     });
@@ -622,8 +683,9 @@ fn node_modules_dir() -> PathBuf {
 }
 
 fn load_package_json(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|_| "no package.json in the current directory (run `velox init` first)".to_string())?;
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        "no package.json in the current directory (run `velox init` first)".to_string()
+    })?;
     serde_json::from_str(&text).map_err(|e| format!("package.json is not valid JSON: {e}"))
 }
 
@@ -659,9 +721,19 @@ fn gather_roots(pkg: &Value, include_dev: bool) -> Vec<(String, String)> {
 /// does anyway.
 fn write_package_json(path: &Path, pkg: &Value) -> Result<(), String> {
     const ORDER: &[&str] = &[
-        "name", "version", "description", "type", "main", "module", "bin",
-        "exports", "scripts", "dependencies", "devDependencies",
-        "optionalDependencies", "peerDependencies",
+        "name",
+        "version",
+        "description",
+        "type",
+        "main",
+        "module",
+        "bin",
+        "exports",
+        "scripts",
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
     ];
     let obj = pkg.as_object().ok_or("package.json must be an object")?;
 
@@ -760,7 +832,10 @@ pub fn run_script(name: Option<&str>, extra: &[String]) -> ExitCode {
     };
 
     let Some(main) = lookup(name) else {
-        eprintln!("  {} no script named \"{name}\" in package.json", "✖".red().bold());
+        eprintln!(
+            "  {} no script named \"{name}\" in package.json",
+            "✖".red().bold()
+        );
         list_scripts(scripts);
         return ExitCode::FAILURE;
     };
@@ -797,7 +872,12 @@ fn exec_script(label: &str, command: &str, extra: &[String]) -> Option<i32> {
     } else {
         format!("{command} {}", extra.join(" "))
     };
-    println!("  {} {} {}", "›".cyan().bold(), label.bold(), command.dimmed());
+    println!(
+        "  {} {} {}",
+        "›".cyan().bold(),
+        label.bold(),
+        command.dimmed()
+    );
 
     let mut path = String::new();
     if let Ok(exe) = std::env::current_exe()
@@ -814,7 +894,12 @@ fn exec_script(label: &str, command: &str, extra: &[String]) -> Option<i32> {
         path.push_str(&existing);
     }
 
-    match Command::new("sh").arg("-c").arg(&full).env("PATH", path).status() {
+    match Command::new("sh")
+        .arg("-c")
+        .arg(&full)
+        .env("PATH", path)
+        .status()
+    {
         Ok(status) => Some(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("  {} could not run script: {e}", "✖".red().bold());
@@ -828,7 +913,11 @@ fn list_scripts(scripts: Option<&Map<String, Value>>) {
         Some(map) if !map.is_empty() => {
             println!("  {}", "available scripts".bold());
             for (name, cmd) in map {
-                println!("    {:<14} {}", name.green(), cmd.as_str().unwrap_or("").dimmed());
+                println!(
+                    "    {:<14} {}",
+                    name.green(),
+                    cmd.as_str().unwrap_or("").dimmed()
+                );
             }
         }
         _ => println!("  {} no scripts defined in package.json", "•".dimmed()),
