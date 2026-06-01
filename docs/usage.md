@@ -319,7 +319,8 @@ velox
 | `.clear` | Clear screen |
 | `.exit` | Quit (or Ctrl-D) |
 
-**Caveats:** no top-level `await` in the REPL; `let`/`const` don't persist between lines — use `var` or `globalThis`. See [Limitations → REPL](limitations.md#repl).
+Top-level `await` works (`await fetch(url)`, `const data = await res.json()`),
+and `let`/`const` persist between lines. See [Limitations → REPL](limitations.md#repl).
 
 ## Development commands
 

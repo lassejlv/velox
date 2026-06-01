@@ -35,8 +35,10 @@ Honest gaps — check here before assuming full Node or browser parity.
 
 ## REPL
 
-- Each line is a separate script — **no top-level `await`**.
-- `let` / `const` don't persist between lines; use `var` or `globalThis`.
+- Top-level `await` works (`await fetch(url)`, `const x = await …`); each await
+  line is wrapped in an async IIFE and drained. A simple `const`/`let`
+  declaration with a top-level await persists across lines; destructuring or
+  multi-binding declarations with a top-level await don't.
 
 ## What's next
 

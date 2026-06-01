@@ -25,6 +25,35 @@ pub fn transpile(path: &Path, source: &str) -> Result<String, Vec<OxcDiagnostic>
     Ok(transpile_with_map(path, source, false)?.0)
 }
 
+/// Whether `src` uses `await` at the top level — a REPL line the REPL should
+/// wrap in an async IIFE and drain. Checks by parsing it inside an async fn.
+pub fn has_top_level_await(src: &str) -> bool {
+    if !src.contains("await") {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let wrapped = format!("async function __r() {{ {src}\n}}");
+    Parser::new(&allocator, &wrapped, SourceType::ts())
+        .parse()
+        .errors
+        .is_empty()
+}
+
+/// Whether `src` is a single `await` *expression* (vs a statement/declaration),
+/// so the REPL can capture and display its resolved value.
+pub fn is_await_expression(src: &str) -> bool {
+    let src = src.trim().trim_end_matches(';').trim();
+    if !src.contains("await") {
+        return false;
+    }
+    let allocator = Allocator::default();
+    let wrapped = format!("async function __r() {{ return ({src}); }}");
+    Parser::new(&allocator, &wrapped, SourceType::ts())
+        .parse()
+        .errors
+        .is_empty()
+}
+
 /// Like [`transpile`], but also returns codegen source-map tokens when
 /// `with_map` is set (used by the bundler to map runtime stack frames back to
 /// original source lines).
