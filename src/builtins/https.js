@@ -2,18 +2,20 @@
 // TLS termination is not supported yet.)
 var http = require("node:http");
 
-function withTls(options) {
-  if (typeof options === "string" || (typeof URL !== "undefined" && options instanceof URL)) {
-    return options; // a URL string/object already carries the https:// scheme
+// Forward the request(url[, options][, callback]) / request(options[, callback])
+// overloads to the http client, injecting `_tls: true` so the connection uses
+// TLS even when the URL/options don't carry an https: scheme.
+function request(url, options, cb) {
+  if (url && typeof url === "object" && !(typeof URL !== "undefined" && url instanceof URL)) {
+    // request(options[, callback])
+    return http.request(Object.assign({}, url, { _tls: true }), options);
   }
-  return Object.assign({}, options, { _tls: true });
+  // request(url[, options][, callback])
+  if (typeof options === "function") { cb = options; options = undefined; }
+  return http.request(url, Object.assign({}, options || {}, { _tls: true }), cb);
 }
-
-function request(options, cb) {
-  return http.request(withTls(options), cb);
-}
-function get(options, cb) {
-  var req = request(options, cb);
+function get(url, options, cb) {
+  var req = request(url, options, cb);
   req.end();
   return req;
 }

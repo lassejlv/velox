@@ -721,6 +721,11 @@ function ClientRequest(options, cb) {
   this.finished = false;
   this.aborted = false;
   this.destroyed = false;
+  // Writable-stream flags some clients (e.g. got's isClientRequest) check to
+  // tell a still-open request apart from a response.
+  this.writable = true;
+  this.writableEnded = false;
+  this.writableFinished = false;
   this._headerSent = false;
   this._headers = {};        // lowercased -> { name, value }
   this._bodyChunks = [];     // queued body before headers are flushed
@@ -928,6 +933,9 @@ ClientRequest.prototype.end = function (chunk, encoding, cb) {
     this._bodyChunks.push(buf);
   }
   this.finished = true;
+  this.writable = false;
+  this.writableEnded = true;
+  this.writableFinished = true;
 
   if (this._headerSent) {
     // Already streaming (chunked): terminate the body now.
@@ -972,11 +980,29 @@ ClientRequest.prototype.flushHeaders = function () {
 function createServer(options, requestListener) {
   return new Server(options, requestListener);
 }
-function request(options, cb) {
-  return new ClientRequest(options, cb);
+// Node overloads: request(url[, options][, callback]) and
+// request(options[, callback]). Merge a URL string/object with an options
+// object (options fields win), and find the callback wherever it landed.
+function normalizeRequestArgs(url, options, cb) {
+  if (typeof url === 'string' || (typeof URL !== 'undefined' && url instanceof URL)) {
+    var base = normalizeClientOptions(String(url));
+    if (typeof options === 'function') { cb = options; options = undefined; }
+    options = options && typeof options === 'object' ? Object.assign(base, options) : base;
+  } else {
+    // First arg is the options object: request(options[, callback]).
+    if (typeof options === 'function') cb = options;
+    options = url || {};
+  }
+  return [options, cb];
 }
-function get(options, cb) {
-  var req = new ClientRequest(options, cb);
+
+function request(url, options, cb) {
+  var a = normalizeRequestArgs(url, options, cb);
+  return new ClientRequest(a[0], a[1]);
+}
+function get(url, options, cb) {
+  var a = normalizeRequestArgs(url, options, cb);
+  var req = new ClientRequest(a[0], a[1]);
   req.method = 'GET';
   req.end();
   return req;
