@@ -33,7 +33,14 @@ tests (resolution/rewriting). Verify changes by running the examples.
 2. **`module.rs`** — the bundler. Resolves the entry's `import` **and**
    `require('<literal>')` graph transitively (relative, `node_modules`, and
    `node:` builtins; a `Visit` pass follows require calls so CommonJS packages
-   bundle too), transpiles each module, and rewrites `import`/`export` into a
+   bundle too). File resolution (relative paths, `node_modules`, `exports`/
+   `imports` conditions, scoped names, `.cjs`/`.mjs`/`.json`/`.ts`/`.tsx` + the
+   `.js`→`.ts` alias) is delegated to **`oxc_resolver`** — velox's own builtin
+   check runs first (so `node:*`/bare builtins route to the `BUILTINS` shims),
+   then a two-pass resolve prefers the `require`/CJS build of dual packages with
+   an `import` fallback for pure-ESM. The entry path is made absolute (vs cwd) so
+   oxc has an absolute base. Then it transpiles each module and rewrites
+   `import`/`export` into a
    CommonJS-style registry (JSC's evaluator rejects ESM syntax). Module wrappers
    are `async`, which enables **top-level `await`**; since a no-`await` body runs
    fully before its wrapper promise settles, synchronous `require()` sees

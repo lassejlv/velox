@@ -100,6 +100,7 @@ use oxc::ast::ast::{
 use oxc::ast_visit::{Visit, walk};
 use oxc::parser::Parser;
 use oxc::span::{SourceType, Span};
+use oxc_resolver::{ResolveOptions, Resolver};
 
 /// Walks an AST collecting `require('<literal>')` calls and dynamic
 /// `import('<literal>')` expressions (so the bundler follows CommonJS `require`
@@ -238,11 +239,6 @@ impl std::error::Error for ModuleError {
     }
 }
 
-/// Extensions tried (in order) when a relative specifier has no usable
-/// extension of its own, both directly and under an `index.` file. Includes
-/// CommonJS (`cjs`) and ESM (`mjs`) so real npm packages resolve, plus `json`.
-const RESOLVE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "cjs", "mjs", "json"];
-
 /// A single edit to the transpiled source: replace `[start, end)` with `text`.
 /// Edits are applied right-to-left so earlier offsets stay valid.
 struct Edit {
@@ -260,7 +256,15 @@ pub fn bundle(entry: &Path) -> Result<String, ModuleError> {
 /// Like [`bundle`], but also returns every source file that went into the bundle
 /// (the entry plus all transitively-resolved local modules) — for `--watch`.
 pub fn bundle_with_deps(entry: &Path) -> Result<(String, Vec<PathBuf>), ModuleError> {
-    let entry = normalize(entry);
+    // Make the entry absolute (against cwd) so every importer directory derived
+    // from it is absolute — oxc_resolver needs an absolute base to walk
+    // `node_modules` (a relative/empty dir resolves nothing).
+    let entry = if entry.is_absolute() {
+        entry.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(entry)
+    };
+    let entry = normalize(&entry);
     let mut graph = Graph::default();
     let entry_id = graph.load(&entry)?;
     let js = graph.emit(entry_id);
@@ -885,35 +889,85 @@ fn rewrite_export_default(
 /// through `node_modules` Node-style (see the module docs). Node built-ins are
 /// rejected with [`ModuleError::Builtin`].
 fn resolve(specifier: &str, dir: &Path, importer: &Path) -> Result<Resolution, ModuleError> {
-    if is_relative_specifier(specifier) {
-        let base = dir.join(specifier);
-        return resolve_file_or_index(&base)
-            .map(Resolution::File)
-            .ok_or_else(|| ModuleError::NotFound {
+    // Node builtins are matched first (before the filesystem): velox ships its
+    // own shims (`BUILTINS`, including non-Node ones like `_http_common`), and
+    // `node:*`/bare builtins must route to them, not node_modules. Relative and
+    // `#imports` specifiers can never be builtins, so skip the check for them.
+    if !is_relative_specifier(specifier) && !specifier.starts_with('#') {
+        if let Some(name) = supported_builtin(specifier) {
+            return Ok(Resolution::Builtin(name));
+        }
+        if is_node_builtin(specifier) {
+            return Err(ModuleError::Builtin {
                 specifier: specifier.to_string(),
                 importer: importer.to_path_buf(),
             });
+        }
     }
 
-    // `#name` — package-internal subpath imports (the package.json `imports`
-    // field of the nearest enclosing package), used by chalk and many others.
-    if specifier.starts_with('#') {
-        return resolve_imports_field(specifier, dir, importer);
-    }
-
-    // Node builtins: provide a shim for the supported ones, otherwise report the
-    // missing standard-library module clearly.
-    if let Some(name) = supported_builtin(specifier) {
-        return Ok(Resolution::Builtin(name));
-    }
-    if is_node_builtin(specifier) {
-        return Err(ModuleError::Builtin {
+    // Everything else — relative paths, bare packages (with `exports`/`imports`
+    // conditions, scoped names, dir-index, `.cjs`/`.mjs`/`.json`, TS `.ts`/`.tsx`
+    // and the `.js`→`.ts` alias), and `#name` internal imports — goes through
+    // oxc_resolver (Node-compatible resolution, shared with oxc/Rspack).
+    //
+    // Two passes: first prefer the `require`/CommonJS build of dual packages
+    // (velox bundles to CJS and its bundler is most robust with CJS builds),
+    // then fall back to a resolver with `import` active for pure-ESM packages.
+    // This mirrors velox's long-standing "prefer the CJS build" behaviour.
+    let result = VELOX_RESOLVER_CJS
+        .with(|r| r.resolve(dir, specifier))
+        .or_else(|_| VELOX_RESOLVER_ESM.with(|r| r.resolve(dir, specifier)));
+    result
+        .map(|r| Resolution::File(normalize(r.path())))
+        .map_err(|_| ModuleError::NotFound {
             specifier: specifier.to_string(),
             importer: importer.to_path_buf(),
-        });
-    }
+        })
+}
 
-    resolve_bare(specifier, dir, importer).map(Resolution::File)
+thread_local! {
+    /// CJS-preferring resolver (no `import` condition) — picks the `require`
+    /// build of dual packages. Per JS thread (worker_threads each get one).
+    static VELOX_RESOLVER_CJS: Resolver = Resolver::new(velox_resolve_options(false));
+    /// Fallback with `import` active, for pure-ESM packages.
+    static VELOX_RESOLVER_ESM: Resolver = Resolver::new(velox_resolve_options(true));
+}
+
+/// Resolution options matching velox's runtime: TS + JS extensions, export
+/// conditions, and the `.js`→`.ts` extension alias. `allow_import` activates the
+/// `import` condition (used only as a fallback so CJS builds win by default).
+fn velox_resolve_options(allow_import: bool) -> ResolveOptions {
+    let s = |x: &str| x.to_string();
+    let mut condition_names = vec![s("node")];
+    if allow_import {
+        condition_names.push(s("import"));
+    }
+    condition_names.push(s("require"));
+    condition_names.push(s("default"));
+    ResolveOptions {
+        extensions: vec![
+            s(".ts"),
+            s(".tsx"),
+            s(".mts"),
+            s(".cts"),
+            s(".js"),
+            s(".jsx"),
+            s(".mjs"),
+            s(".cjs"),
+            s(".json"),
+            s(".node"),
+        ],
+        condition_names,
+        // Prefer the CommonJS `main` (velox bundles to CJS) but fall back to
+        // `module` for ESM-only legacy packages without an `exports` map.
+        main_fields: vec![s("main"), s("module")],
+        extension_alias: vec![
+            (s(".js"), vec![s(".ts"), s(".tsx"), s(".js"), s(".jsx")]),
+            (s(".mjs"), vec![s(".mts"), s(".mjs")]),
+            (s(".cjs"), vec![s(".cts"), s(".cjs")]),
+        ],
+        ..ResolveOptions::default()
+    }
 }
 
 /// If `specifier` names a Node builtin we ship a shim for, return its canonical
@@ -949,387 +1003,6 @@ fn builtin_requires(shim: &str) -> Vec<&'static str> {
         }
     }
     deps
-}
-
-/// Resolve a base path as a file: exact path, then `base.<ext>`.
-fn resolve_file(base: &Path) -> Option<PathBuf> {
-    if base.is_file() {
-        return Some(normalize(base));
-    }
-    for ext in RESOLVE_EXTENSIONS {
-        let candidate = append_ext(base, ext);
-        if candidate.is_file() {
-            return Some(normalize(&candidate));
-        }
-    }
-    None
-}
-
-/// Resolve a base path with the shared file/directory fallback rules: a file
-/// (exact or `base.<ext>`), then — if `base` is a directory — its package.json
-/// `main`/`exports` entry (so `require('../some-dir')` works like Node), then
-/// `base/index.<ext>`.
-fn resolve_file_or_index(base: &Path) -> Option<PathBuf> {
-    if let Some(file) = resolve_file(base) {
-        return Some(file);
-    }
-    if base.is_dir() {
-        // A directory: honor its package.json main/exports before index.
-        for entry in package_entries(base) {
-            let target = base.join(&entry);
-            if target != base
-                && let Some(file) = resolve_file(&target).or_else(|| {
-                    RESOLVE_EXTENSIONS.iter().find_map(|ext| {
-                        let c = target.join(format!("index.{ext}"));
-                        c.is_file().then(|| normalize(&c))
-                    })
-                })
-            {
-                return Some(file);
-            }
-        }
-    }
-    for ext in RESOLVE_EXTENSIONS {
-        let candidate = base.join(format!("index.{}", ext));
-        if candidate.is_file() {
-            return Some(normalize(&candidate));
-        }
-    }
-    None
-}
-
-/// Resolve a `#name` subpath import against the nearest enclosing package.json
-/// `imports` field. Handles exact keys and a single `*` wildcard pattern, with
-/// conditional targets resolved in the same preference order as `exports`.
-fn resolve_imports_field(
-    specifier: &str,
-    dir: &Path,
-    importer: &Path,
-) -> Result<Resolution, ModuleError> {
-    let not_found = || ModuleError::NotFound {
-        specifier: specifier.to_string(),
-        importer: importer.to_path_buf(),
-    };
-    let mut current = Some(dir);
-    while let Some(d) = current {
-        let text = std::fs::read_to_string(d.join("package.json")).ok();
-        if let Some(text) = text
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-            && let Some(imports) = json.get("imports").and_then(|v| v.as_object())
-        {
-            // 1. Exact key match.
-            if let Some(target) = imports.get(specifier) {
-                let mut cands = Vec::new();
-                collect_conditions(target, &mut cands);
-                for c in cands {
-                    if let Some(p) = resolve_file_or_index(&d.join(&c)) {
-                        return Ok(Resolution::File(p));
-                    }
-                }
-            }
-            // 2. Single-`*` wildcard pattern (`#internal/*` -> `./src/*.js`).
-            for (key, target) in imports {
-                if let Some(star) = key.find('*') {
-                    let (prefix, suffix) = (&key[..star], &key[star + 1..]);
-                    if specifier.len() >= prefix.len() + suffix.len()
-                        && specifier.starts_with(prefix)
-                        && specifier.ends_with(suffix)
-                    {
-                        let captured = &specifier[prefix.len()..specifier.len() - suffix.len()];
-                        let mut cands = Vec::new();
-                        collect_conditions(target, &mut cands);
-                        for c in cands {
-                            let resolved = c.replace('*', captured);
-                            if let Some(p) = resolve_file_or_index(&d.join(&resolved)) {
-                                return Ok(Resolution::File(p));
-                            }
-                        }
-                    }
-                }
-            }
-            // The nearest `imports` field is authoritative; stop walking.
-            return Err(not_found());
-        }
-        current = d.parent();
-    }
-    Err(not_found())
-}
-
-/// Candidate target paths for a package subpath via its `exports` map
-/// (`<pkgDir>/package.json` `exports["./<sub>"]`), in condition preference order.
-/// Handles exact keys and single-`*` wildcard patterns (`"./feat/*"`). Empty if
-/// the package has no `exports` field or the subpath isn't mapped.
-fn exports_subpath_candidates(pkg_dir: &Path, sub: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let Ok(text) = std::fs::read_to_string(pkg_dir.join("package.json")) else {
-        return out;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return out;
-    };
-    let Some(exports) = json.get("exports").and_then(|v| v.as_object()) else {
-        return out;
-    };
-    let key = format!("./{sub}");
-    // 1. Exact subpath key.
-    if let Some(target) = exports.get(&key) {
-        collect_conditions(target, &mut out);
-        return out;
-    }
-    // 2. Single-`*` wildcard pattern (`"./feat/*": "./dist/feat/*.js"`).
-    for (k, target) in exports {
-        if let Some(star) = k.find('*') {
-            let (prefix, suffix) = (&k[..star], &k[star + 1..]);
-            if key.len() >= prefix.len() + suffix.len()
-                && key.starts_with(prefix)
-                && key.ends_with(suffix)
-            {
-                let captured = &key[prefix.len()..key.len() - suffix.len()];
-                let mut raw = Vec::new();
-                collect_conditions(target, &mut raw);
-                out.extend(raw.into_iter().map(|c| c.replace('*', captured)));
-                return out;
-            }
-        }
-    }
-    out
-}
-
-/// Resolve a bare specifier through `node_modules`.
-fn resolve_bare(specifier: &str, dir: &Path, importer: &Path) -> Result<PathBuf, ModuleError> {
-    let (name, subpath) = parse_bare_specifier(specifier);
-
-    // Walk UP from the importer's directory to the filesystem root, taking the
-    // first ancestor whose `node_modules/<name>` directory exists.
-    let pkg_dir = find_package_dir(dir, name).ok_or_else(|| ModuleError::NotFound {
-        specifier: specifier.to_string(),
-        importer: importer.to_path_buf(),
-    })?;
-
-    // With a subpath, first consult the package's `exports` subpath map (modern
-    // packages like hono map `"./ws"` -> `"./dist/ws/index.js"`); fall back to a
-    // direct `<pkgDir>/<subpath>` join for packages without `exports`.
-    if let Some(sub) = subpath {
-        for cand in exports_subpath_candidates(&pkg_dir, sub) {
-            if let Some(resolved) = resolve_file_or_index(&pkg_dir.join(&cand)) {
-                return Ok(resolved);
-            }
-        }
-        let base = pkg_dir.join(sub);
-        return resolve_file_or_index(&base).ok_or_else(|| ModuleError::NotFound {
-            specifier: specifier.to_string(),
-            importer: importer.to_path_buf(),
-        });
-    }
-
-    // No subpath: try each package.json entry candidate (exports conditions,
-    // then main) in order — so a package whose preferred-condition target is
-    // missing still resolves via a later candidate — then fall back to `index`.
-    for entry_rel in package_entries(&pkg_dir) {
-        if let Some(resolved) = resolve_file_or_index(&pkg_dir.join(&entry_rel)) {
-            return Ok(resolved);
-        }
-    }
-    // Last-ditch: a bare `index.<ext>` inside the package directory.
-    resolve_file_or_index(&pkg_dir.join("index")).ok_or_else(|| ModuleError::NotFound {
-        specifier: specifier.to_string(),
-        importer: importer.to_path_buf(),
-    })
-}
-
-/// Walk up from `dir` to the filesystem root, returning the first existing
-/// `<ancestor>/node_modules/<name>` directory.
-fn find_package_dir(dir: &Path, name: &str) -> Option<PathBuf> {
-    let mut current = Some(dir);
-    while let Some(d) = current {
-        let candidate = d.join("node_modules").join(name);
-        if candidate.is_dir() {
-            return Some(normalize(&candidate));
-        }
-        current = d.parent();
-    }
-    None
-}
-
-/// Split a bare specifier into `(package_name, optional_subpath)`. A leading
-/// `@scope/` is part of the package name, so the first path segment after the
-/// scope (if any) is the boundary.
-///
-/// - `lodash` -> (`lodash`, `None`)
-/// - `lodash/fp` -> (`lodash`, `Some("fp")`)
-/// - `lodash/fp/curry` -> (`lodash`, `Some("fp/curry")`)
-/// - `@scope/pkg` -> (`@scope/pkg`, `None`)
-/// - `@scope/pkg/sub/x` -> (`@scope/pkg`, `Some("sub/x")`)
-fn parse_bare_specifier(specifier: &str) -> (&str, Option<&str>) {
-    if let Some(rest) = specifier.strip_prefix('@') {
-        // Scoped: the name spans two segments (`@scope/pkg`).
-        match rest.split_once('/') {
-            // No slash after `@scope` — malformed, but treat the whole thing as
-            // the name and let resolution fail with NotFound.
-            None => (specifier, None),
-            Some((_scope, after_scope)) => match after_scope.split_once('/') {
-                // `@scope/pkg`
-                None => (specifier, None),
-                // `@scope/pkg/sub...` — name is everything up to the 2nd slash.
-                Some((_pkg, sub)) => {
-                    let name_len = specifier.len() - sub.len() - 1; // drop the '/'
-                    (&specifier[..name_len], Some(sub))
-                }
-            },
-        }
-    } else {
-        match specifier.split_once('/') {
-            None => (specifier, None),
-            Some((name, sub)) => (name, Some(sub)),
-        }
-    }
-}
-
-/// Read `<pkgDir>/package.json` and return candidate entry paths (relative to
-/// the package directory) in preference order: the `exports` `"."` targets, then
-/// `main`. The caller tries each against the filesystem.
-fn package_entries(pkg_dir: &Path) -> Vec<String> {
-    match std::fs::read_to_string(pkg_dir.join("package.json")) {
-        Ok(text) => extract_package_entries(&text),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// Minimal, hand-rolled extraction of an entry from package.json text.
-///
-/// Resolution order (matching Node's preference for ESM packages):
-///   1. A top-level `"exports"` field:
-///      - a bare string (`"exports": "./i.js"`), or
-///      - an object's `"."` key (`{ ".": "./i.js" }`), which may itself be a
-///        string or a conditional object whose `import`/`default`/`require`
-///        keys are tried in that order.
-///   2. A top-level `"main"` string.
-///
-/// Returns `None` if neither is found; the caller then defaults to `index.js`.
-/// This is intentionally shallow (see module docs): it does not handle arrays,
-/// nested non-`.` subpath patterns, comments, or escaped quotes inside values.
-#[cfg(test)]
-fn extract_package_entry(text: &str) -> Option<String> {
-    extract_package_entries(text).into_iter().next()
-}
-
-/// All candidate entry paths for a package, in preference order: the `exports`
-/// `"."` targets (across recognized conditions) followed by `main`. The caller
-/// tries each against the filesystem, so a package whose preferred-condition
-/// target is missing still resolves via a later candidate.
-fn extract_package_entries(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(text)
-        && let Some(exports) = manifest.get("exports")
-    {
-        collect_exports_targets(exports, &mut out);
-    }
-    if let Some(main) = extract_json_string_field(text, "main") {
-        out.push(main);
-    }
-    out
-}
-
-/// Collect an `exports` value's targets: a bare string, a `"."` subpath map, or
-/// a bare condition object.
-fn collect_exports_targets(exports: &serde_json::Value, out: &mut Vec<String>) {
-    match exports {
-        serde_json::Value::String(s) => out.push(s.clone()),
-        serde_json::Value::Object(map) => {
-            // Keys starting with "." mean a subpath map → use the "." entry;
-            // otherwise the object is itself a set of conditions.
-            if map.keys().any(|k| k.starts_with('.')) {
-                if let Some(dot) = map.get(".") {
-                    collect_conditions(dot, out);
-                }
-            } else {
-                collect_conditions(exports, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Collect a conditional-exports value's targets in preference order. velox
-/// bundles to CommonJS, so it prefers the `require` build (avoids the
-/// ESM-default-interop pitfall on a package's internal `require()` calls), then
-/// falls back to `default`/`import`. Unknown conditions (`types`, `@zod/source`,
-/// `browser`, …) are ignored.
-fn collect_conditions(value: &serde_json::Value, out: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(s) => out.push(s.clone()),
-        serde_json::Value::Object(map) => {
-            for cond in ["node", "require", "default", "import", "module"] {
-                if let Some(target) = map.get(cond) {
-                    collect_conditions(target, out);
-                }
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for item in arr {
-                collect_conditions(item, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Find a top-level `"main"`-style string field anywhere in the text and return
-/// its value. Whitespace-robust; assumes the value is a plain string.
-fn extract_json_string_field(text: &str, key: &str) -> Option<String> {
-    let after = find_field_value_start(text, key)?;
-    let rest = after.trim_start();
-    if rest.starts_with('"') {
-        read_json_string(rest)
-    } else {
-        None
-    }
-}
-
-/// Locate `"<key>"` followed (after optional whitespace) by `:`, returning the
-/// slice immediately AFTER the colon. Searches every occurrence so a key inside
-/// a nested object can be found too.
-fn find_field_value_start<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    let needle = format!("\"{}\"", key);
-    let mut from = 0usize;
-    while let Some(pos) = text[from..].find(&needle) {
-        let abs = from + pos;
-        let after_key = &text[abs + needle.len()..];
-        let trimmed = after_key.trim_start();
-        if let Some(after_colon) = trimmed.strip_prefix(':') {
-            return Some(after_colon);
-        }
-        from = abs + needle.len();
-    }
-    None
-}
-
-/// Read a JSON string literal that `s` is positioned at (must start with `"`),
-/// returning its contents with simple `\"` and `\\` unescaping. Stops at the
-/// closing quote.
-fn read_json_string(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    if bytes.first() != Some(&b'"') {
-        return None;
-    }
-    let mut out = String::new();
-    let mut chars = s[1..].chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next() {
-                Some('"') => out.push('"'),
-                Some('\\') => out.push('\\'),
-                Some('/') => out.push('/'),
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some(other) => out.push(other),
-                None => return None,
-            },
-            other => out.push(other),
-        }
-    }
-    None
 }
 
 /// Is this bare specifier a known Node built-in module? Covers the common
@@ -1392,16 +1065,6 @@ fn is_relative_specifier(specifier: &str) -> bool {
         || specifier == ".."
         || specifier.starts_with("./")
         || specifier.starts_with("../")
-}
-
-/// Append `.ext` to a path's file name, preserving any existing one
-/// (`foo` -> `foo.ts`, `foo.js` -> `foo.js.ts`). This is intentional so the
-/// "exact" check in `resolve` handles already-extensioned paths.
-fn append_ext(path: &Path, ext: &str) -> PathBuf {
-    let mut s = path.as_os_str().to_os_string();
-    s.push(".");
-    s.push(ext);
-    PathBuf::from(s)
 }
 
 /// Normalize a path lexically (resolve `.` and `..`) without touching the FS,
@@ -1497,11 +1160,6 @@ mod tests {
     }
 
     #[test]
-    fn append_ext_adds_extension() {
-        assert_eq!(append_ext(Path::new("a/b"), "ts"), PathBuf::from("a/b.ts"));
-    }
-
-    #[test]
     fn js_string_escapes() {
         assert_eq!(js_string("a"), "\"a\"");
         assert_eq!(js_string("a\"b"), "\"a\\\"b\"");
@@ -1534,29 +1192,6 @@ mod tests {
     // --- bare specifier parsing ---------------------------------------
 
     #[test]
-    fn parse_bare_unscoped() {
-        assert_eq!(parse_bare_specifier("lodash"), ("lodash", None));
-        assert_eq!(parse_bare_specifier("lodash/fp"), ("lodash", Some("fp")));
-        assert_eq!(
-            parse_bare_specifier("lodash/fp/curry"),
-            ("lodash", Some("fp/curry"))
-        );
-    }
-
-    #[test]
-    fn parse_bare_scoped() {
-        assert_eq!(parse_bare_specifier("@scope/pkg"), ("@scope/pkg", None));
-        assert_eq!(
-            parse_bare_specifier("@scope/pkg/sub"),
-            ("@scope/pkg", Some("sub"))
-        );
-        assert_eq!(
-            parse_bare_specifier("@scope/pkg/sub/deep"),
-            ("@scope/pkg", Some("sub/deep"))
-        );
-    }
-
-    #[test]
     fn node_builtins_detected() {
         assert!(is_node_builtin("fs"));
         assert!(is_node_builtin("path"));
@@ -1569,112 +1204,6 @@ mod tests {
 
     // --- node_modules upward walk -------------------------------------
 
-    #[test]
-    fn find_package_dir_walks_up() {
-        let tmp = std::env::temp_dir().join(format!("velox_walk_{}", std::process::id()));
-        let nested = tmp.join("a").join("b").join("c");
-        // Package lives two levels up, under a/node_modules/greet.
-        let pkg = tmp.join("a").join("node_modules").join("greet");
-        std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::create_dir_all(&nested).unwrap();
-
-        let found = find_package_dir(&nested, "greet").expect("should find package");
-        assert_eq!(found, normalize(&pkg));
-
-        // A name that does not exist anywhere returns None.
-        assert!(find_package_dir(&nested, "nope").is_none());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn find_package_dir_scoped() {
-        let tmp = std::env::temp_dir().join(format!("velox_scoped_{}", std::process::id()));
-        let here = tmp.join("proj");
-        let pkg = here.join("node_modules").join("@scope").join("pkg");
-        std::fs::create_dir_all(&pkg).unwrap();
-
-        let found = find_package_dir(&here, "@scope/pkg").expect("scoped package");
-        assert_eq!(found, normalize(&pkg));
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     // --- package.json entry selection ---------------------------------
 
-    #[test]
-    fn entry_prefers_exports_over_main() {
-        let json = r#"{ "main": "./main.js", "exports": "./exp.js" }"#;
-        assert_eq!(extract_package_entry(json).as_deref(), Some("./exp.js"));
-    }
-
-    #[test]
-    fn entry_exports_string() {
-        let json = r#"{ "exports": "./i.js" }"#;
-        assert_eq!(extract_package_entry(json).as_deref(), Some("./i.js"));
-    }
-
-    #[test]
-    fn entry_exports_dot_string() {
-        let json = r#"{ "exports": { ".": "./dot.js" } }"#;
-        assert_eq!(extract_package_entry(json).as_deref(), Some("./dot.js"));
-    }
-
-    #[test]
-    fn entry_exports_dot_conditional_prefers_require() {
-        // velox bundles to CommonJS, so it prefers the `require` build (avoids
-        // the ESM-default-interop pitfall on internal `require()` calls).
-        let json = r#"{
-            "exports": { ".": { "import": "./esm.js", "require": "./cjs.js", "default": "./d.js" } }
-        }"#;
-        assert_eq!(extract_package_entry(json).as_deref(), Some("./cjs.js"));
-    }
-
-    #[test]
-    fn entry_exports_skips_unknown_conditions() {
-        // Non-standard conditions (types, @scope/source) are ignored; falls to import.
-        let json = r#"{
-            "exports": { ".": { "@acme/source": "./src.ts", "types": "./t.d.ts", "import": "./esm.js" } }
-        }"#;
-        assert_eq!(extract_package_entry(json).as_deref(), Some("./esm.js"));
-    }
-
-    #[test]
-    fn entry_exports_dot_conditional_falls_back_to_default_then_require() {
-        let only_default = r#"{ "exports": { ".": { "default": "./d.js" } } }"#;
-        assert_eq!(
-            extract_package_entry(only_default).as_deref(),
-            Some("./d.js")
-        );
-        let only_require = r#"{ "exports": { ".": { "require": "./r.js" } } }"#;
-        assert_eq!(
-            extract_package_entry(only_require).as_deref(),
-            Some("./r.js")
-        );
-    }
-
-    #[test]
-    fn entry_main_when_no_exports() {
-        let json = r#"{ "name": "x", "main": "lib/index.js", "version": "1.0.0" }"#;
-        assert_eq!(extract_package_entry(json).as_deref(), Some("lib/index.js"));
-    }
-
-    #[test]
-    fn entry_none_when_neither() {
-        let json = r#"{ "name": "x", "version": "1.0.0" }"#;
-        assert_eq!(extract_package_entry(json), None);
-    }
-
-    #[test]
-    fn entry_whitespace_robust() {
-        let json = "{\n  \"exports\"   :   {\n    \".\" :  \"./ws.js\"\n  }\n}";
-        assert_eq!(extract_package_entry(json).as_deref(), Some("./ws.js"));
-    }
-
-    #[test]
-    fn read_json_string_unescapes() {
-        assert_eq!(read_json_string(r#""abc""#).as_deref(), Some("abc"));
-        assert_eq!(read_json_string(r#""a\"b""#).as_deref(), Some("a\"b"));
-        assert_eq!(read_json_string(r#""a/b": 1"#).as_deref(), Some("a/b"));
-    }
 }
