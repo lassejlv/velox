@@ -1096,7 +1096,12 @@ fn resolve(specifier: &str, dir: &Path, importer: &Path) -> Result<Resolution, M
     // own shims (`BUILTINS`, including non-Node ones like `_http_common`), and
     // `node:*`/bare builtins must route to them, not node_modules. Relative and
     // `#imports` specifiers can never be builtins, so skip the check for them.
-    if !is_relative_specifier(specifier) && !specifier.starts_with('#') {
+    // A trailing slash forces userland resolution in Node (`require('punycode/')`
+    // is the node_modules package, never the builtin — tr46/whatwg-url rely on
+    // this to shadow the deprecated `punycode` builtin). Skip the builtin check
+    // for such specifiers and strip the slash before handing off to the resolver.
+    let trailing_slash = !is_relative_specifier(specifier) && specifier.ends_with('/');
+    if !is_relative_specifier(specifier) && !specifier.starts_with('#') && !trailing_slash {
         if let Some(name) = supported_builtin(specifier) {
             return Ok(Resolution::Builtin(name));
         }
@@ -1107,6 +1112,11 @@ fn resolve(specifier: &str, dir: &Path, importer: &Path) -> Result<Resolution, M
             });
         }
     }
+    let specifier = if trailing_slash {
+        specifier.trim_end_matches('/')
+    } else {
+        specifier
+    };
 
     // Everything else — relative paths, bare packages (with `exports`/`imports`
     // conditions, scoped names, dir-index, `.cjs`/`.mjs`/`.json`, TS `.ts`/`.tsx`

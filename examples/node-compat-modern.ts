@@ -65,6 +65,8 @@ check("MessageChannel ports", async () => {
 
 // SharedArrayBuffer (polyfilled) + Atomics
 check("SharedArrayBuffer + Atomics", () => { const sab = new SharedArrayBuffer(16); if (!(sab instanceof SharedArrayBuffer) || sab.byteLength !== 16) throw new Error("sab"); const v = new Int32Array(sab); Atomics.store(v, 0, 40); Atomics.add(v, 0, 2); if (Atomics.load(v, 0) !== 42) throw new Error("atomics=" + Atomics.load(v, 0)); if (Atomics.compareExchange(v, 0, 42, 7) !== 42 || Atomics.load(v, 0) !== 7) throw new Error("cx"); });
+// SharedArrayBuffer.prototype.byteLength must be an accessor (webidl-conversions/whatwg-url read its .get at load).
+check("SharedArrayBuffer.prototype byteLength getter", () => { const d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength"); if (!d || typeof d.get !== "function") throw new Error("no getter"); if (d.get.call(new SharedArrayBuffer(24)) !== 24) throw new Error("len=" + d.get.call(new SharedArrayBuffer(24))); });
 
 // web crypto subtle (async)
 check("crypto.subtle.digest", async () => { const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("a")); if (new Uint8Array(d).length !== 32) throw new Error("digest"); });

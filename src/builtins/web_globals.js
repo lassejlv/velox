@@ -97,6 +97,12 @@
     SAB.prototype.constructor = SAB;
     Object.defineProperty(SAB.prototype, Symbol.toStringTag, { value: "SharedArrayBuffer", configurable: true });
     Object.defineProperty(SAB.prototype, "growable", { get: function () { return false; }, configurable: true });
+    // `byteLength` getter — webidl-conversions (whatwg-url → mongodb, etc.) reads
+    // `Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype,"byteLength").get`
+    // at load time. Our instances carry a real [[ArrayBufferData]] slot, so we
+    // delegate to ArrayBuffer's own getter.
+    var abByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+    Object.defineProperty(SAB.prototype, "byteLength", { get: function () { return abByteLength.call(this); }, configurable: true });
     // Re-map an existing shared region by id (used when a SAB crosses a worker
     // message boundary); returns null if shared memory isn't available.
     SAB.__veloxRevive = function (id) {

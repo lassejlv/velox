@@ -65,7 +65,10 @@ interface VeloxServer {
 /** WebSocket server instance (from the internal `ws` shim). */
 interface VeloxWebSocketServer {
   close(callback?: (err?: Error) => void): void;
-  on(event: "connection", listener: (ws: VeloxWebSocket, req: VeloxHttpIncomingMessage) => void): this;
+  on(
+    event: "connection",
+    listener: (ws: VeloxWebSocket, req: VeloxHttpIncomingMessage) => void,
+  ): this;
   on(event: string, listener: (...args: any[]) => void): this;
 }
 
@@ -82,8 +85,17 @@ interface VeloxWebSocket {
   data: Record<string, unknown>;
   send(data: string | ArrayBuffer | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
-  on(event: "message", listener: (data: Uint8Array | ArrayBuffer | string, isBinary: boolean) => void): this;
-  on(event: "close", listener: (code: number, reason: Uint8Array) => void): this;
+  on(
+    event: "message",
+    listener: (
+      data: Uint8Array | ArrayBuffer | string,
+      isBinary: boolean,
+    ) => void,
+  ): this;
+  on(
+    event: "close",
+    listener: (code: number, reason: Uint8Array) => void,
+  ): this;
   on(event: "error", listener: (err: Error) => void): this;
   on(event: string, listener: (...args: any[]) => void): this;
 }
@@ -95,14 +107,20 @@ interface VeloxWebSocket {
  */
 type VeloxFetchHandler = (
   request: Request,
-  serverContext?: { req: VeloxHttpIncomingMessage; res: VeloxHttpServerResponse },
+  serverContext?: {
+    req: VeloxHttpIncomingMessage;
+    res: VeloxHttpServerResponse;
+  },
 ) => Response | Promise<Response | null | undefined>;
 
 /** Minimal Node-style response for the optional `serverContext` argument. */
 interface VeloxHttpServerResponse {
   statusCode: number;
   setHeader(name: string, value: string | number): void;
-  writeHead(statusCode: number, headers?: Record<string, string | number>): void;
+  writeHead(
+    statusCode: number,
+    headers?: Record<string, string | number>,
+  ): void;
   end(data?: string | Uint8Array): void;
 }
 
@@ -110,14 +128,21 @@ interface VeloxHttpServerResponse {
  * Node-style handler: classic `(req, res)` callback.
  * Auto-detected when the handler function has arity ≥ 2.
  */
-type VeloxNodeHandler = (req: VeloxHttpIncomingMessage, res: VeloxHttpServerResponse) => void;
+type VeloxNodeHandler = (
+  req: VeloxHttpIncomingMessage,
+  res: VeloxHttpServerResponse,
+) => void;
 
 /** Lifecycle hooks for `Velox.serve({ websocket: { … } })`. */
 interface VeloxWebSocketHandlers {
   /** Called when a client completes the WebSocket handshake. */
   open?(ws: VeloxWebSocket, req: VeloxHttpIncomingMessage): void;
   /** Called for each incoming message frame. */
-  message?(ws: VeloxWebSocket, data: Uint8Array | ArrayBuffer | string, isBinary: boolean): void;
+  message?(
+    ws: VeloxWebSocket,
+    data: Uint8Array | ArrayBuffer | string,
+    isBinary: boolean,
+  ): void;
   /** Called when the connection closes. */
   close?(ws: VeloxWebSocket, code: number, reason: Uint8Array): void;
   /** Called on connection errors. */
@@ -219,8 +244,14 @@ interface VeloxGlobal {
    * Velox(3000, (req, res) => { res.end("ok"); });
    * ```
    */
-  serve(port: number, handler: VeloxNodeHandler | VeloxFetchHandler): VeloxServer;
-  serve(options: VeloxServeOptions, handler?: VeloxNodeHandler | VeloxFetchHandler): VeloxServer;
+  serve(
+    port: number,
+    handler: VeloxNodeHandler | VeloxFetchHandler,
+  ): VeloxServer;
+  serve(
+    options: VeloxServeOptions,
+    handler?: VeloxNodeHandler | VeloxFetchHandler,
+  ): VeloxServer;
 
   /** Alias for `globalThis.process`. */
   readonly process: {
@@ -233,7 +264,10 @@ interface VeloxGlobal {
 
   /** Alias for `globalThis.Buffer`. */
   readonly Buffer: {
-    from(data: string | Uint8Array | ArrayBuffer, encoding?: string): Uint8Array;
+    from(
+      data: string | Uint8Array | ArrayBuffer,
+      encoding?: string,
+    ): Uint8Array;
     alloc(size: number): Uint8Array;
     concat(list: readonly Uint8Array[]): Uint8Array;
     [key: string]: unknown;
@@ -332,7 +366,10 @@ interface VeloxGlobal {
  */
 interface VeloxCallable extends VeloxGlobal {
   (port: number, handler: VeloxNodeHandler | VeloxFetchHandler): VeloxServer;
-  (options: VeloxServeOptions, handler?: VeloxNodeHandler | VeloxFetchHandler): VeloxServer;
+  (
+    options: VeloxServeOptions,
+    handler?: VeloxNodeHandler | VeloxFetchHandler,
+  ): VeloxServer;
 }
 
 declare var Velox: VeloxCallable;
@@ -343,11 +380,17 @@ declare var Velox: VeloxCallable;
 // =============================================================================
 
 /** @see https://fetch.spec.whatwg.org/#fetch-method */
-declare function fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+declare function fetch(
+  input: RequestInfo,
+  init?: RequestInit,
+): Promise<Response>;
 
 type RequestInfo = Request | string | URL;
 type BodyInit = Blob | BufferSource | FormData | URLSearchParams | string;
-type HeadersInit = Headers | Record<string, string> | Iterable<[string, string]>;
+type HeadersInit =
+  | Headers
+  | Record<string, string>
+  | Iterable<[string, string]>;
 
 interface RequestInit {
   method?: string;
