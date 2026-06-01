@@ -66,6 +66,7 @@ echo "warming up + measuring (~1.5 min) ..."
 bench_one node  node server.cjs
 bench_one deno  deno run --allow-net --allow-read --allow-env --allow-sys server.cjs
 bench_one velox "$VELOX" server.cjs
+command -v bun >/dev/null && bench_one bun bun server.cjs
 
 echo ""
 printf "%-8s %9s %12s %9s %9s %9s %9s %6s\n" Runtime Start.ms Req/sec Lat.avg Lat.p99 Idle.MB Peak.MB CPU

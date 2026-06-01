@@ -15,25 +15,33 @@ VELOX=/path/to/velox ./bench.sh
 Apple Silicon (10 cores), express 4.22, `wrk -t8 -c200 -d15s`, `GET /json`
 (`res.json({ hello, ts })`). Median of two runs.
 
+Ordered by throughput; median of two runs.
+
 | Runtime | Cold start | Req/sec | Latency avg | Latency p99 | Idle RSS | Peak RSS | CPU |
-|---------|-----------:|--------:|------------:|------------:|---------:|---------:|----:|
-| Node 24 | 150 ms | 71,400 | 3.18 ms | 4.53 ms | 61 MB | 148 MB | 1.0 |
-| Deno 2.8 | 150 ms | 56,000 | 3.61 ms | 9.71 ms | 67 MB | 199 MB | 1.1 |
-| **velox 0.1** | **147 ms** | **90,700** | **2.17 ms** | **3.21 ms** | **39 MB** | **108 MB** | 1.0 |
+|---------|-----------:|--------:|--------:|--------:|---------:|---------:|----:|
+| Bun 1.4 | 146 ms | **106,800** | **1.9 ms** | 3.3 ms | 44 MB | 142 MB | 1.0 |
+| **velox 0.1** | **143 ms** | 89,700 | 2.2 ms | **3.2 ms** | **39 MB** | **109 MB** | 1.0 |
+| Node 24 | 147 ms | 72,200 | 3.2 ms | 3.7 ms | 62 MB | 145 MB | 1.0 |
+| Deno 2.8 | 150 ms | 56,800 | 3.7 ms | ~9 ms | 69 MB | 201 MB | 1.1 |
 
 ### Takeaways
 
-velox **wins every metric** on this workload:
-
-- **Throughput:** ~90,700 rps — **~27% faster than Node** and ~60% faster than
-  Deno. (Before the binary socket bridge below, velox was ~70k; the optimization
-  added ~27%.)
-- **Latency:** best average (2.17 ms) *and* best p99 tail (3.21 ms).
-- **Memory:** **~40% less idle** than Node/Deno (39 MB vs 61/67), and the lowest
-  peak (108 MB vs 148/199). JSC's footprint is leaner than V8's.
-- **Startup:** fastest cold start (~147 ms to first response).
+- **Throughput:** **Bun** leads (~107k rps). Bun is also built on JavaScriptCore
+  but ships a fully-native HTTP server, so it's the one to beat. **velox** is a
+  strong second (~90k) — **~25% faster than Node** and ~58% faster than Deno —
+  which is notable for a young runtime whose HTTP layer is still mostly JS.
+- **Memory:** **velox uses the least of all four** — lowest idle (39 MB vs Bun
+  44, Node 62, Deno 69) *and* lowest peak (109 MB vs Bun 142, Node 145, Deno
+  201). JSC + velox's lean stdlib win here, even vs Bun.
+- **Latency:** Bun best average; velox best/tied p99. Deno trails with a noisy
+  tail.
+- **Startup:** velox and Bun are fastest (~145 ms); all close except Deno's
+  occasional cold spikes.
 - **CPU:** all ~1 core — Express is single-threaded, so this measures per-request
   efficiency.
+
+(Before the binary socket bridge below, velox was ~70k rps; the optimization
+added ~27%, moving it past Node and Deno.)
 
 ### What made velox fast
 

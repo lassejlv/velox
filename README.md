@@ -79,13 +79,15 @@ The same **Express 4** app served by each runtime, `wrk -t8 -c200 -d15s`,
 `GET /json`, on Apple Silicon (10 cores):
 
 | Runtime | Req/sec | Latency avg | Latency p99 | Idle RSS | Peak RSS |
-|---------|--------:|------------:|------------:|---------:|---------:|
-| **velox 0.1** | **90,700** | **2.17 ms** | **3.21 ms** | **39 MB** | **108 MB** |
-| Node 24 | 71,400 | 3.18 ms | 4.53 ms | 61 MB | 148 MB |
-| Deno 2.8 | 56,000 | 3.61 ms | 9.71 ms | 67 MB | 199 MB |
+|---------|--------:|--------:|--------:|---------:|---------:|
+| Bun 1.4 | **106,800** | **1.9 ms** | 3.3 ms | 44 MB | 142 MB |
+| **velox 0.1** | 89,700 | 2.2 ms | **3.2 ms** | **39 MB** | **109 MB** |
+| Node 24 | 72,200 | 3.2 ms | 3.7 ms | 62 MB | 145 MB |
+| Deno 2.8 | 56,800 | 3.7 ms | ~9 ms | 69 MB | 201 MB |
 
-velox leads every metric here — **~27% more throughput than Node**, the best
-latency, and **~40% less memory**. Reproduce or try other workloads with
+Bun (also JavaScriptCore, with a native HTTP server) leads on throughput; velox
+is a strong second — **~25% faster than Node**, ~58% faster than Deno — and uses
+the **least memory of all four**. Reproduce or try other workloads with
 [`benchmarks/express`](benchmarks/express). (Numbers vary by hardware/OS;
 requires a signed release build for JIT.)
 
