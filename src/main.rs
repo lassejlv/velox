@@ -160,13 +160,32 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         "test" | "t" => {
             if has_help {
                 println!(
-                    "Usage: velox test [PATTERN...] [--coverage] [--watch]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --coverage    Report line/function coverage of the source under test.\n  -w, --watch   Re-run on change."
+                    "Usage: velox test [PATTERN...] [--coverage] [--watch]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  -w, --watch               Re-run on change."
                 );
                 return Some(ExitCode::SUCCESS);
             }
-            let coverage = rest.iter().any(|a| a == "--coverage" || a == "--cov");
+            // Any coverage sub-flag implies --coverage. Threshold/lcov take the
+            // attached `=VALUE` form so a bare value isn't read as a pattern.
+            let threshold =
+                flag_eq_value(rest, "--coverage-threshold").and_then(|v| v.parse::<f64>().ok());
+            // `--coverage-lcov` (default path) or `--coverage-lcov=PATH`.
+            let lcov = flag_present(rest, "--coverage-lcov").then(|| {
+                flag_eq_value(rest, "--coverage-lcov")
+                    .unwrap_or_else(|| "coverage/lcov.info".to_string())
+            });
+            let coverage = rest.iter().any(|a| a == "--coverage" || a == "--cov")
+                || threshold.is_some()
+                || lcov.is_some();
             let watch = rest.iter().any(|a| a == "--watch" || a == "-w");
-            Some(cmd_test(&positionals(), coverage, watch))
+            Some(cmd_test(
+                &positionals(),
+                CoverageOpts {
+                    on: coverage,
+                    threshold,
+                    lcov,
+                },
+                watch,
+            ))
         }
         "build" | "compile" => {
             if has_help {
@@ -418,10 +437,21 @@ fn run_bundle(js: &str) -> ExitCode {
 
 // --- `velox test` — built-in test runner ------------------------------------
 
+/// Coverage options for a `velox test` run.
+#[derive(Clone, Default)]
+struct CoverageOpts {
+    /// Collect + report coverage at all.
+    on: bool,
+    /// Fail the run if line or function coverage is below this percentage.
+    threshold: Option<f64>,
+    /// Also write an lcov report to this path.
+    lcov: Option<String>,
+}
+
 /// `velox test [patterns]` — discover test files, run them through a generated
 /// driver that loads the `velox-test` framework, and report. `--coverage`
 /// instruments the source under test; `--watch` re-runs on change.
-fn cmd_test(patterns: &[String], coverage: bool, watch: bool) -> ExitCode {
+fn cmd_test(patterns: &[String], cov: CoverageOpts, watch: bool) -> ExitCode {
     use owo_colors::OwoColorize;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -443,14 +473,14 @@ fn cmd_test(patterns: &[String], coverage: bool, watch: bool) -> ExitCode {
     }
 
     if watch {
-        return watch_tests(&files, coverage);
+        return watch_tests(&files, &cov);
     }
-    run_tests_once(&files, coverage).0
+    run_tests_once(&files, &cov).0
 }
 
 /// Bundle + run the discovered test files once. Returns the exit code and the
 /// set of source files that went into the run (for `--watch`).
-fn run_tests_once(files: &[PathBuf], coverage: bool) -> (ExitCode, Vec<PathBuf>) {
+fn run_tests_once(files: &[PathBuf], cov: &CoverageOpts) -> (ExitCode, Vec<PathBuf>) {
     use owo_colors::OwoColorize;
 
     println!(
@@ -463,7 +493,7 @@ fn run_tests_once(files: &[PathBuf], coverage: bool) -> (ExitCode, Vec<PathBuf>)
             if files.len() == 1 { "" } else { "s" }
         )
         .dimmed(),
-        if coverage {
+        if cov.on {
             " · coverage".dimmed().to_string()
         } else {
             String::new()
@@ -488,18 +518,21 @@ fn run_tests_once(files: &[PathBuf], coverage: bool) -> (ExitCode, Vec<PathBuf>)
         return (fail_msg("test: could not stage driver"), Vec::new());
     }
 
-    if coverage {
+    if cov.on {
         coverage::begin();
     }
     let built = module::bundle_with_deps(&driver_path);
-    let cov = if coverage { coverage::finish() } else { None };
+    let collected = if cov.on { coverage::finish() } else { None };
 
     let result = match built {
         Ok((js, deps)) => {
-            // Prepend the coverage prelude (counter + point table) so the
-            // injected `__VCOV(n)` calls resolve before any module runs.
-            let js = match &cov {
-                Some(c) if !c.is_empty() => format!("{}{js}", c.prelude_js()),
+            // Prepend the coverage prelude (counter + point table + reporter
+            // options) so the injected `__VCOV(n)` calls resolve before any
+            // module runs and `test.js` can find the config.
+            let js = match &collected {
+                Some(c) if !c.is_empty() => {
+                    format!("{}{}{js}", c.prelude_js(), coverage_opts_js(cov))
+                }
                 _ => js,
             };
             (run_bundle(&js), deps)
@@ -513,9 +546,23 @@ fn run_tests_once(files: &[PathBuf], coverage: bool) -> (ExitCode, Vec<PathBuf>)
     result
 }
 
+/// JS assigning `globalThis.__VCOV_OPT` — the reporter config (threshold gate +
+/// optional lcov path) that `test.js::printCoverage` reads.
+fn coverage_opts_js(cov: &CoverageOpts) -> String {
+    let threshold = match cov.threshold {
+        Some(t) => t.to_string(),
+        None => "null".to_string(),
+    };
+    let lcov = match &cov.lcov {
+        Some(p) => js_string_literal(p),
+        None => "null".to_string(),
+    };
+    format!("globalThis.__VCOV_OPT={{\"threshold\":{threshold},\"lcov\":{lcov}}};\n")
+}
+
 /// `velox test --watch`: run, then re-run whenever any source file that went
 /// into the run changes (polling its mtimes, like the top-level `--watch`).
-fn watch_tests(files: &[PathBuf], coverage: bool) -> ExitCode {
+fn watch_tests(files: &[PathBuf], cov: &CoverageOpts) -> ExitCode {
     use std::collections::HashMap;
     use std::time::{Duration, SystemTime};
 
@@ -533,7 +580,7 @@ fn watch_tests(files: &[PathBuf], coverage: bool) -> ExitCode {
 
     loop {
         print!("\x1b[2J\x1b[H"); // clear screen
-        let (_, deps) = run_tests_once(files, coverage);
+        let (_, deps) = run_tests_once(files, cov);
         // Watch the test files plus everything they pulled in; fall back to just
         // the test files if bundling failed.
         let watched: Vec<PathBuf> = if deps.is_empty() {
@@ -619,6 +666,19 @@ fn js_string_literal(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Whether `name` appears in `args` as a bare flag or in `name=...` form.
+fn flag_present(args: &[String], name: &str) -> bool {
+    let eq = format!("{name}=");
+    args.iter().any(|a| a == name || a.starts_with(&eq))
+}
+
+/// Value of `--flag=VALUE` only (the attached form).
+fn flag_eq_value(args: &[String], name: &str) -> Option<String> {
+    let eq = format!("{name}=");
+    args.iter()
+        .find_map(|a| a.strip_prefix(&eq).map(str::to_string))
 }
 
 fn fail_msg(msg: &str) -> ExitCode {

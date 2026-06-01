@@ -497,20 +497,47 @@ function compressRanges(nums) {
   return out.join(', ');
 }
 
+// Build an lcov.info report string from the per-file aggregation.
+function buildLcov(agg) {
+  var out = '';
+  agg.forEach(function (a) {
+    out += 'TN:\nSF:' + a.path + '\n';
+    a.fns.forEach(function (f) { out += 'FN:' + f.line + ',' + f.name + '\n'; });
+    a.fns.forEach(function (f) { out += 'FNDA:' + f.hits + ',' + f.name + '\n'; });
+    out += 'FNF:' + a.fns.length + '\n';
+    out += 'FNH:' + a.fns.filter(function (f) { return f.hits > 0; }).length + '\n';
+    var lines = [];
+    a.lineCov.forEach(function (count, line) { lines.push(line); });
+    lines.sort(function (x, y) { return x - y; });
+    var hit = 0;
+    lines.forEach(function (line) {
+      var c = a.lineCov.get(line);
+      if (c > 0) hit++;
+      out += 'DA:' + line + ',' + c + '\n';
+    });
+    out += 'LF:' + lines.length + '\nLH:' + hit + '\nend_of_record\n';
+  });
+  return out;
+}
+
 // Print a coverage table from the instrumentation globals (__VCOV_MAP / __VCOV_H)
-// that `velox test --coverage` injects. No-op when coverage wasn't collected.
+// that `velox test --coverage` injects. Honors __VCOV_OPT (threshold + lcov).
+// Returns true if coverage met the threshold (or no threshold), false if it
+// failed the gate, and undefined when no coverage was collected.
 function printCoverage() {
   var map = globalThis.__VCOV_MAP;
-  if (!map || !map.points || !map.points.length) return;
+  if (!map || !map.points || !map.points.length) return undefined;
   var hits = globalThis.__VCOV_H || [];
+  var opt = globalThis.__VCOV_OPT || {};
 
+  // lineCov: Map<line, hitCount>; fns: [{line, hits, name}].
   var agg = map.files.map(function (p) {
-    return { path: p, lineCov: new Map(), fnTotal: 0, fnCov: 0 };
+    return { path: p, lineCov: new Map(), fns: [] };
   });
   for (var i = 0; i < map.points.length; i++) {
-    var pt = map.points[i], a = agg[pt[0]], line = pt[1], got = (hits[i] | 0) > 0;
-    if (pt[2]) { a.fnTotal++; if (got) a.fnCov++; }
-    else { a.lineCov.set(line, (a.lineCov.get(line) || false) || got); }
+    var pt = map.points[i], a = agg[pt[0]], line = pt[1], n = hits[i] | 0;
+    if (pt[2]) { a.fns.push({ line: line, hits: n, name: 'fn_' + line }); }
+    else { a.lineCov.set(line, (a.lineCov.get(line) || 0) + n); }
   }
 
   function pct(cov, total) { return total === 0 ? 100 : (cov / total) * 100; }
@@ -520,14 +547,15 @@ function printCoverage() {
   var rows = [], totLineT = 0, totLineC = 0, totFnT = 0, totFnC = 0;
   agg.forEach(function (a) {
     var lineT = a.lineCov.size, lineC = 0, uncovered = [];
-    a.lineCov.forEach(function (covered, line) {
-      if (covered) lineC++; else uncovered.push(line);
+    a.lineCov.forEach(function (count, line) {
+      if (count > 0) lineC++; else uncovered.push(line);
     });
-    totLineT += lineT; totLineC += lineC; totFnT += a.fnTotal; totFnC += a.fnCov;
+    var fnC = a.fns.filter(function (f) { return f.hits > 0; }).length;
+    totLineT += lineT; totLineC += lineC; totFnT += a.fns.length; totFnC += fnC;
     rows.push({
       path: a.path,
       lines: pct(lineC, lineT),
-      funcs: pct(a.fnCov, a.fnTotal),
+      funcs: pct(fnC, a.fns.length),
       uncovered: compressRanges(uncovered),
     });
   });
@@ -557,6 +585,32 @@ function printCoverage() {
     color(allLines)(padStart(fmt(allLines), 6)) + '  │ ' +
     color(allFuncs)(padStart(fmt(allFuncs), 6)) + '  │'
   );
+
+  // Optional lcov report (for Codecov / Coveralls / editor coverage gutters).
+  if (opt.lcov) {
+    try {
+      var fs = require('node:fs'), path = require('node:path');
+      var dir = path.dirname(opt.lcov);
+      if (dir && dir !== '.') fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(opt.lcov, buildLcov(agg));
+      console.log(C.dim(' lcov written to ' + opt.lcov));
+    } catch (e) {
+      console.log(C.red(' could not write lcov: ' + (e && e.message || e)));
+    }
+  }
+
+  // Threshold gate: fail if either metric is below the requested percentage.
+  if (opt.threshold != null) {
+    var ok = allLines >= opt.threshold && allFuncs >= opt.threshold;
+    if (ok) {
+      console.log(C.green(' ✓ coverage ≥ ' + opt.threshold + '%'));
+    } else {
+      console.log(C.red(' ✖ coverage below threshold (' + opt.threshold + '%): ' +
+        'lines ' + fmt(allLines) + '%, functions ' + fmt(allFuncs) + '%'));
+    }
+    return ok;
+  }
+  return true;
 }
 
 // run(): execute the collected suite and report; sets process.exitCode.
@@ -592,10 +646,11 @@ async function run() {
   console.log('\n' + C.bold('Tests:') + ' ' + (parts.join(C.dim(', ')) || '0') + C.dim(' (' + total + ' total)'));
   console.log(C.bold('Time: ') + ' ' + ms + 'ms');
 
-  printCoverage();
+  var covOk = printCoverage();
+  var failed = stats.fail > 0 || covOk === false;
 
-  if (globalThis.process) globalThis.process.exitCode = stats.fail > 0 ? 1 : 0;
-  return stats.fail === 0;
+  if (globalThis.process) globalThis.process.exitCode = failed ? 1 : 0;
+  return !failed;
 }
 
 module.exports = { register: register, run: run, describe: describe, it: it, test: test, expect: expect, vi: vi, beforeAll: beforeAll, afterAll: afterAll, beforeEach: beforeEach, afterEach: afterEach };

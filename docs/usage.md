@@ -154,6 +154,16 @@ Coverage:
 Instrumentation is statement + function level: the `Uncovered` column lists the
 source lines (compressed into ranges) that never executed.
 
+For CI, gate the build with `--coverage-threshold=N` (exits non-zero if line or
+function coverage is below `N`%) and emit a standard lcov report with
+`--coverage-lcov` (writes `coverage/lcov.info`, or `--coverage-lcov=PATH`) for
+Codecov / Coveralls / editor coverage gutters:
+
+```sh
+velox test --coverage-threshold=80              # fail CI under 80%
+velox test --coverage-lcov                      # → coverage/lcov.info
+```
+
 ## Run scripts
 
 ```sh
@@ -237,7 +247,7 @@ comments, `export KEY=…` prefixes, and single/double-quoted strings. `.env.loc
 | `outdated` | List dependencies with newer versions |
 | `x <pkg> [args…]` | Run a package's executable (npx-style) |
 | `build <entry> [--out N]` | Compile to a standalone executable |
-| `test [PATTERN…] [--coverage] [-w]` | Run test files (`--coverage` reports coverage; `-w` watches) |
+| `test [PATTERN…] [--coverage] [-w]` | Run test files (`--coverage`/`--coverage-threshold=N`/`--coverage-lcov`; `-w` watches) |
 | `run [script]` | Run a package.json script |
 | `FILE [args…]` | Run a script (args go to `process.argv`) |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |
