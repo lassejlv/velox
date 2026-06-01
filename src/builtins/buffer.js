@@ -1488,7 +1488,27 @@
     }
   });
 
-  globalThis.Buffer = Buffer;
+  // Node's `Buffer` is a function, so the deprecated `Buffer(x)` form (no `new`)
+  // still works; legacy packages (speakeasy, bn.js, older deps) rely on it. Our
+  // Buffer is a `class`, which throws when called without `new`. Expose the
+  // global through a Proxy whose `apply` trap routes `Buffer(x)` to the right
+  // factory (a number → zero-filled alloc, anything else → Buffer.from). `new`,
+  // statics, `instanceof`, and `.prototype` all forward to the class unchanged;
+  // internal code keeps using the lexical class directly.
+  // Both `Buffer(x)` and the deprecated `new Buffer(x)` follow Node's legacy
+  // factory semantics (number → alloc, else → from). Internal velox code builds
+  // buffers via the lexical class (raw Uint8Array semantics), so these traps
+  // only reshape the public global and never recurse.
+  function legacyBuffer(target, args) {
+    var value = args[0];
+    if (typeof value === 'number') return target.alloc(value);
+    return target.from.apply(target, args);
+  }
+  var BufferCallable = new Proxy(Buffer, {
+    apply: function (target, _thisArg, args) { return legacyBuffer(target, args); },
+    construct: function (target, args) { return legacyBuffer(target, args); },
+  });
+  globalThis.Buffer = BufferCallable;
   if (typeof globalThis.TextEncoder === 'undefined') {
     globalThis.TextEncoder = VTextEncoder;
   }

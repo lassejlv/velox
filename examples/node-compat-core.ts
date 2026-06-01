@@ -34,6 +34,14 @@ check("fs.watch", () => { if (typeof fs.watch !== "function") throw new Error("w
 check("fs.statSync.isDirectory", () => { if (!fs.statSync(os.tmpdir()).isDirectory()) throw new Error("isDir"); });
 
 check("Buffer.concat", () => { const b = Buffer.concat([Buffer.from("a"), Buffer.from("b")]); if (b.toString()!=="ab") throw new Error("concat"); });
+// Deprecated `Buffer()` / `new Buffer()` factory forms (legacy packages: speakeasy, bn.js, …).
+check("legacy Buffer() factory", () => {
+  if ((Buffer as any)("hi").toString() !== "hi") throw new Error("call str");
+  if (new (Buffer as any)("yo").toString() !== "yo") throw new Error("new str");
+  if (new (Buffer as any)("aGk=", "base64").toString() !== "hi") throw new Error("new b64");
+  const n = (Buffer as any)(4); if (n.length !== 4 || n[0] !== 0) throw new Error("call num");
+  if (!((Buffer as any)("x") instanceof Buffer) || !Buffer.isBuffer(new (Buffer as any)("z"))) throw new Error("instanceof");
+});
 check("Buffer.readUInt32BE", () => { const b = Buffer.from([0,0,0,5]); if (b.readUInt32BE(0)!==5) throw new Error("ru32"); });
 check("Buffer.writeBigInt64BE", () => { const b = Buffer.alloc(8); if (typeof b.writeBigInt64BE !== "function") throw new Error("nofn"); b.writeBigInt64BE(5n,0); if (b.readBigInt64BE(0)!==5n) throw new Error("big"); });
 check("Buffer base64url", () => { if (Buffer.from("aGk","base64url").toString()!=="hi") throw new Error("b64url"); });

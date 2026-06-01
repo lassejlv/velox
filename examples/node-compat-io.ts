@@ -40,6 +40,16 @@ check("stream Transform", async () => {
   let out = ""; for await (const ch of Readable.from(["ab"]).pipe(upper)) out += ch;
   if (out !== "AB") throw new Error("tf " + out);
 });
+// readableObjectMode keeps pushed values as-is on the readable side (split2/object Transforms).
+check("stream Transform readableObjectMode", async () => {
+  const { Readable, Transform } = require("node:stream");
+  const lines = new Transform({
+    readableObjectMode: true,
+    transform(c: any, _e: any, cb: any) { for (const l of c.toString().split("\n")) if (l) this.push(l); cb(); },
+  });
+  const got: any[] = []; for await (const ch of Readable.from(["a\nb\nc\n"]).pipe(lines)) got.push(ch);
+  if (got.length !== 3 || typeof got[0] !== "string" || got[1] !== "b") throw new Error("objmode " + JSON.stringify(got));
+});
 
 // net echo server+client
 check("net echo", async () => {

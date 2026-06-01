@@ -100,7 +100,11 @@ Stream.prototype.pipe = function (dest, options) {
 // ===========================================================================
 function ReadableState(options, stream) {
   options = options || {};
-  this.objectMode = !!options.objectMode;
+  // The readable half honors `readableObjectMode` too — Duplex/Transform set
+  // only that to make their output side object-mode (e.g. split2 emits string
+  // lines via `readableObjectMode: true`). Without this, pushed strings/objects
+  // get coerced to Buffers.
+  this.objectMode = !!(options.objectMode || options.readableObjectMode);
   this.highWaterMark = options.highWaterMark != null
     ? options.highWaterMark
     : (this.objectMode ? 16 : 16 * 1024);
@@ -646,7 +650,8 @@ Readable.from = function (iterable, opts) {
 // ===========================================================================
 function WritableState(options, stream) {
   options = options || {};
-  this.objectMode = !!options.objectMode;
+  // Symmetric to ReadableState: the writable half honors `writableObjectMode`.
+  this.objectMode = !!(options.objectMode || options.writableObjectMode);
   this.highWaterMark = options.highWaterMark != null
     ? options.highWaterMark
     : (this.objectMode ? 16 : 16 * 1024);
