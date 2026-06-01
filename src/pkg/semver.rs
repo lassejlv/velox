@@ -185,8 +185,19 @@ fn parse_comparator_set(set: &str) -> Vec<Comparator> {
         }
         return out;
     }
-    for token in set.split_whitespace() {
-        expand_token(token, &mut out);
+    // npm allows a space between a comparator operator and its version
+    // (`>= 1.5.0 < 2`); glue a bare operator token onto the version that follows.
+    let tokens: Vec<&str> = set.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if matches!(t, ">=" | "<=" | ">" | "<" | "=") && i + 1 < tokens.len() {
+            expand_token(&format!("{t}{}", tokens[i + 1]), &mut out);
+            i += 2;
+        } else {
+            expand_token(t, &mut out);
+            i += 1;
+        }
     }
     out
 }
@@ -443,6 +454,21 @@ mod tests {
         assert!(or.matches(&v("1.2.3")));
         assert!(or.matches(&v("3.0.0")));
         assert!(!or.matches(&v("1.5.0")));
+    }
+
+    #[test]
+    fn space_between_operator_and_version() {
+        // npm allows `>= 1.5.0 < 2` (operator separated from its version).
+        let r = Range::parse(">= 1.5.0 < 2");
+        assert!(r.matches(&v("1.5.0")));
+        assert!(r.matches(&v("1.9.9")));
+        assert!(!r.matches(&v("2.0.0")));
+        assert!(!r.matches(&v("1.4.0")));
+        assert_eq!(
+            r.max_satisfying(&[v("1.4.0"), v("1.5.0"), v("2.0.2")])
+                .unwrap(),
+            &v("1.5.0")
+        );
     }
 
     #[test]
