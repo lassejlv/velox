@@ -191,7 +191,13 @@ the worker maps the same physical bytes and `Atomics` ops are coherent across
 threads (verified: 4 workers × 50k `Atomics.add` → exact, no lost updates).
 Lifetime is refcounted across every live ArrayBuffer view + in-flight transfer
 (the JSC NoCopy deallocator decrements; freed at zero). `Atomics.wait`/`notify`
-exist but don't block cross-thread. `URL` follows the WHATWG algorithm closely —
+exist but don't block cross-thread. **WebAssembly** async API
+(`instantiate`/`compile` + streaming) is reimplemented in `web_globals.js` over
+JSC's *synchronous* `Module`/`Instance` constructors: JSC's native async settles
+via its `deferredWorkTimer` (a CFRunLoop timer) which never fires under velox's
+kqueue loop, so those promises would hang forever — the shim compiles
+synchronously and resolves immediately (unblocks emscripten output, e.g. sql.js).
+`URL` follows the WHATWG algorithm closely —
 strips tab/newline/leading-trailing controls, treats backslash as slash in
 special schemes, drops default ports, normalizes dot-segments (preserving empty
 ones), percent-encodes userinfo/path/query/fragment per their encode sets,

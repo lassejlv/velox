@@ -114,6 +114,51 @@
   }
 
   // ---------------------------------------------------------------------------
+  // WebAssembly async API — JSC's WebAssembly.instantiate/compile (and their
+  // streaming variants) return promises that settle via JSC's deferredWorkTimer,
+  // a CFRunLoop timer. velox drives its own kqueue loop with no CFRunLoop, so
+  // those promises NEVER settle (the background wasm compile finishes but can't
+  // post its resolution back). The *synchronous* WebAssembly.Module/Instance
+  // constructors work fine, so reimplement the async surface on top of them
+  // (compile synchronously, resolve immediately). Unblocks emscripten output
+  // and every wasm-backed package (sql.js, wasm crypto/codecs, …).
+  // ---------------------------------------------------------------------------
+  (function () {
+    var WA = g.WebAssembly;
+    if (!WA || typeof WA.Module !== "function" || typeof WA.Instance !== "function") return;
+    WA.compile = function (bytes) {
+      try { return Promise.resolve(new WA.Module(bytes)); }
+      catch (e) { return Promise.reject(e); }
+    };
+    WA.instantiate = function (bytesOrModule, importObject) {
+      try {
+        if (bytesOrModule instanceof WA.Module) {
+          return Promise.resolve(new WA.Instance(bytesOrModule, importObject));
+        }
+        var mod = new WA.Module(bytesOrModule);
+        return Promise.resolve({ module: mod, instance: new WA.Instance(mod, importObject) });
+      } catch (e) { return Promise.reject(e); }
+    };
+    // Streaming forms: the source is a Response (or Promise of one) whose body is
+    // the wasm bytes. Read it to an ArrayBuffer, then compile synchronously.
+    function streamBytes(source) {
+      return Promise.resolve(source).then(function (resp) {
+        if (resp && typeof resp.arrayBuffer === "function") return resp.arrayBuffer();
+        return resp;
+      });
+    }
+    WA.compileStreaming = function (source) {
+      return streamBytes(source).then(function (b) { return new WA.Module(b); });
+    };
+    WA.instantiateStreaming = function (source, importObject) {
+      return streamBytes(source).then(function (b) {
+        var mod = new WA.Module(b);
+        return { module: mod, instance: new WA.Instance(mod, importObject) };
+      });
+    };
+  })();
+
+  // ---------------------------------------------------------------------------
   // V8-style structured stack traces: Error.captureStackTrace + prepareStackTrace
   // with CallSite objects. JSC only gives a string stack and ignores
   // prepareStackTrace, but packages like depd/stack-trace/source-map-support use

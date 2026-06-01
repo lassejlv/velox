@@ -67,6 +67,10 @@ check("MessageChannel ports", async () => {
 check("SharedArrayBuffer + Atomics", () => { const sab = new SharedArrayBuffer(16); if (!(sab instanceof SharedArrayBuffer) || sab.byteLength !== 16) throw new Error("sab"); const v = new Int32Array(sab); Atomics.store(v, 0, 40); Atomics.add(v, 0, 2); if (Atomics.load(v, 0) !== 42) throw new Error("atomics=" + Atomics.load(v, 0)); if (Atomics.compareExchange(v, 0, 42, 7) !== 42 || Atomics.load(v, 0) !== 7) throw new Error("cx"); });
 // SharedArrayBuffer.prototype.byteLength must be an accessor (webidl-conversions/whatwg-url read its .get at load).
 check("SharedArrayBuffer.prototype byteLength getter", () => { const d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength"); if (!d || typeof d.get !== "function") throw new Error("no getter"); if (d.get.call(new SharedArrayBuffer(24)) !== 24) throw new Error("len=" + d.get.call(new SharedArrayBuffer(24))); });
+// WebAssembly async API must resolve (JSC's native async settles via a CFRunLoop timer velox lacks; we shim over the sync constructors). Unblocks emscripten/sql.js.
+const WASM_ADD = new Uint8Array([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,1,7,0,32,0,32,1,106,11]);
+check("WebAssembly.instantiate (async)", async () => { const { instance } = await WebAssembly.instantiate(WASM_ADD); if ((instance.exports.add as any)(2, 3) !== 5) throw new Error("add"); });
+check("WebAssembly.compile (async)", async () => { const mod = await WebAssembly.compile(WASM_ADD); const inst = await WebAssembly.instantiate(mod); if ((inst.exports.add as any)(7, 8) !== 15) throw new Error("compile"); });
 
 // web crypto subtle (async)
 check("crypto.subtle.digest", async () => { const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("a")); if (new Uint8Array(d).length !== 32) throw new Error("digest"); });
