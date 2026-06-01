@@ -492,7 +492,7 @@ var C = (function () {
   return { green: w(32), red: w(31), yellow: w(33), dim: w(2), bold: w(1), cyan: w(36) };
 })();
 
-var stats = { pass: 0, fail: 0, skip: 0, todo: 0, files: 0, failures: [] };
+var stats = { pass: 0, fail: 0, skip: 0, todo: 0, files: 0, failures: [], tests: [] };
 
 // `velox test -t <pattern>` name filter (case-insensitive substring on the
 // full "suite › test" name). null = run everything. Set at run() start, since
@@ -545,8 +545,8 @@ async function runSuite(suite, depth) {
     var test = suite.tests[t];
     var fullName = ancestry(suite).map(function (s) { return s.name; }).concat(test.name).join(' › ');
     if (!matchesFilter(fullName)) continue; // filtered out by -t
-    if (test.mode === 'todo') { stats.todo++; console.log(bodyIndent + C.cyan('○') + ' ' + test.name + C.dim(' [todo]')); continue; }
-    if (test.mode === 'skip' || (anyOnly && !isOnlyPath(test))) { stats.skip++; console.log(bodyIndent + C.yellow('○') + ' ' + C.dim(test.name)); continue; }
+    if (test.mode === 'todo') { stats.todo++; stats.tests.push({ name: fullName, status: 'todo', durationMs: 0 }); console.log(bodyIndent + C.cyan('○') + ' ' + test.name + C.dim(' [todo]')); continue; }
+    if (test.mode === 'skip' || (anyOnly && !isOnlyPath(test))) { stats.skip++; stats.tests.push({ name: fullName, status: 'skipped', durationMs: 0 }); console.log(bodyIndent + C.yellow('○') + ' ' + C.dim(test.name)); continue; }
     var start = Date.now();
     // Snapshot context: full test path + a fresh per-test counter so multiple
     // toMatchSnapshot() calls in one test get distinct keys.
@@ -558,12 +558,14 @@ async function runSuite(suite, depth) {
       for (var ae = 0; ae < suite.afterEach.length; ae++) await runFn(suite.afterEach[ae]);
       stats.pass++;
       var ms = Date.now() - start;
+      stats.tests.push({ name: fullName, status: 'passed', durationMs: ms });
       console.log(bodyIndent + C.green('✓') + ' ' + test.name + (ms > 5 ? C.dim(' (' + ms + 'ms)') : ''));
     } catch (err) {
       stats.fail++;
+      var ems = Date.now() - start;
       console.log(bodyIndent + C.red('✗') + ' ' + C.red(test.name));
-      var path = ancestry(suite).map(function (s) { return s.name; }).concat(test.name).join(' › ');
-      stats.failures.push({ path: path, err: err });
+      stats.tests.push({ name: fullName, status: 'failed', durationMs: ems, error: (err && err.message != null ? String(err.message) : String(err)) });
+      stats.failures.push({ path: fullName, err: err });
     }
   }
 
@@ -736,6 +738,33 @@ function printCoverage() {
   return true;
 }
 
+// Write a machine-readable JSON report when `velox test --reporter=json[=PATH]`
+// is set (default test-results.json). The pretty terminal output is unaffected.
+function writeJsonReport(durationMs) {
+  var reporter = globalThis.__VELOX_TEST_REPORTER;
+  if (!reporter || reporter.indexOf('json') !== 0) return;
+  var file = reporter.indexOf('=') >= 0 ? reporter.slice(reporter.indexOf('=') + 1) : 'test-results.json';
+  var report = {
+    numTotalTests: stats.pass + stats.fail + stats.skip + stats.todo,
+    numPassedTests: stats.pass,
+    numFailedTests: stats.fail,
+    numSkippedTests: stats.skip,
+    numTodoTests: stats.todo,
+    success: stats.fail === 0,
+    durationMs: durationMs,
+    tests: stats.tests,
+  };
+  try {
+    var fs = require('node:fs'), path = require('node:path');
+    var dir = path.dirname(file);
+    if (dir && dir !== '.') fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(report, null, 2) + '\n');
+    console.log(C.dim(' results written to ' + file));
+  } catch (e) {
+    console.log(C.red('could not write JSON report: ' + (e && e.message || e)));
+  }
+}
+
 // run(): execute the collected suite and report; sets process.exitCode.
 async function run() {
   var start = Date.now();
@@ -779,6 +808,7 @@ async function run() {
   console.log(C.bold('Time: ') + ' ' + ms + 'ms');
 
   var covOk = printCoverage();
+  writeJsonReport(ms);
   var failed = stats.fail > 0 || covOk === false;
 
   if (globalThis.process) globalThis.process.exitCode = failed ? 1 : 0;

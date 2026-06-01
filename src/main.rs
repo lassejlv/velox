@@ -161,7 +161,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         "test" | "t" => {
             if has_help {
                 println!(
-                    "Usage: velox test [PATTERN...] [-t NAME] [--coverage] [--watch] [-u]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by file-path substring.\n\nOptions:\n  -t, --test-name-pattern N Only run tests whose name contains N.\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  -u, --update              Update toMatchSnapshot snapshots.\n  -w, --watch               Re-run on change."
+                    "Usage: velox test [PATTERN...] [-t NAME] [--coverage] [--watch] [-u]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by file-path substring.\n\nOptions:\n  -t, --test-name-pattern N Only run tests whose name contains N.\n  --coverage                Report line/function coverage of the source under test.\n  --coverage-threshold=N    Fail if line or function coverage is below N%.\n  --coverage-lcov[=PATH]    Also write lcov (default coverage/lcov.info).\n  --reporter=json[=PATH]    Write machine-readable results (default test-results.json).\n  -u, --update              Update toMatchSnapshot snapshots.\n  -w, --watch               Re-run on change."
                 );
                 return Some(ExitCode::SUCCESS);
             }
@@ -182,6 +182,8 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 || lcov.is_some();
             let watch = rest.iter().any(|a| a == "--watch" || a == "-w");
             let update = rest.iter().any(|a| a == "--update" || a == "-u");
+            // --reporter=json[=PATH] (machine-readable results to a file).
+            let reporter = flag_eq_value(rest, "--reporter");
             Some(cmd_test(
                 &test_patterns,
                 CoverageOpts {
@@ -192,6 +194,7 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
                 watch,
                 update,
                 name_filter,
+                reporter,
             ))
         }
         "bench" | "benchmark" => {
@@ -467,12 +470,14 @@ struct CoverageOpts {
 /// `velox test [patterns]` — discover test files, run them through a generated
 /// driver that loads the `velox-test` framework, and report. `--coverage`
 /// instruments the source under test; `--watch` re-runs on change.
+#[allow(clippy::too_many_arguments)]
 fn cmd_test(
     patterns: &[String],
     cov: CoverageOpts,
     watch: bool,
     update: bool,
     name_filter: Option<String>,
+    reporter: Option<String>,
 ) -> ExitCode {
     use owo_colors::OwoColorize;
 
@@ -495,9 +500,22 @@ fn cmd_test(
     }
 
     if watch {
-        return watch_tests(&files, &cov, update, name_filter.as_deref());
+        return watch_tests(
+            &files,
+            &cov,
+            update,
+            name_filter.as_deref(),
+            reporter.as_deref(),
+        );
     }
-    run_tests_once(&files, &cov, update, name_filter.as_deref()).0
+    run_tests_once(
+        &files,
+        &cov,
+        update,
+        name_filter.as_deref(),
+        reporter.as_deref(),
+    )
+    .0
 }
 
 /// Bundle + run the discovered test files once. Returns the exit code and the
@@ -507,6 +525,7 @@ fn run_tests_once(
     cov: &CoverageOpts,
     update: bool,
     name_filter: Option<&str>,
+    reporter: Option<&str>,
 ) -> (ExitCode, Vec<PathBuf>) {
     use owo_colors::OwoColorize;
 
@@ -537,6 +556,12 @@ fn run_tests_once(
         driver.push_str(&format!(
             "globalThis.__VELOX_TEST_FILTER = {};\n",
             js_string_literal(filter)
+        ));
+    }
+    if let Some(rep) = reporter {
+        driver.push_str(&format!(
+            "globalThis.__VELOX_TEST_REPORTER = {};\n",
+            js_string_literal(rep)
         ));
     }
     for f in files {
@@ -603,6 +628,7 @@ fn watch_tests(
     cov: &CoverageOpts,
     update: bool,
     name_filter: Option<&str>,
+    reporter: Option<&str>,
 ) -> ExitCode {
     use std::collections::HashMap;
     use std::time::{Duration, SystemTime};
@@ -621,7 +647,7 @@ fn watch_tests(
 
     loop {
         print!("\x1b[2J\x1b[H"); // clear screen
-        let (_, deps) = run_tests_once(files, cov, update, name_filter);
+        let (_, deps) = run_tests_once(files, cov, update, name_filter, reporter);
         // Watch the test files plus everything they pulled in; fall back to just
         // the test files if bundling failed.
         let watched: Vec<PathBuf> = if deps.is_empty() {

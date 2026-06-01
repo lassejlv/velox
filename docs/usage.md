@@ -172,7 +172,11 @@ Codecov / Coveralls / editor coverage gutters:
 ```sh
 velox test --coverage-threshold=80              # fail CI under 80%
 velox test --coverage-lcov                      # → coverage/lcov.info
+velox test --reporter=json                      # → test-results.json (machine-readable)
 ```
+
+`--reporter=json[=PATH]` writes a machine-readable results file (per-test name,
+status, duration, and failure messages) alongside the normal terminal output.
 
 ## Benchmark
 
