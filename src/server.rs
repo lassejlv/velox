@@ -942,10 +942,15 @@ fn resolve_bind_addr(host: &str, port: u16) -> Option<SocketAddr> {
     if let Ok(addr) = format!("{host}:{port}").parse::<SocketAddr>() {
         return Some(addr);
     }
-    (host, port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut a| a.next())
+    // Prefer IPv4 — `localhost` often resolves to `::1` first, but the outbound
+    // connector (`resolve_address`) prefers IPv4, so binding IPv6 here would make
+    // a `host: "localhost"` server unreachable from a `localhost` client.
+    let addrs: Vec<SocketAddr> = (host, port).to_socket_addrs().ok()?.collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.first())
+        .copied()
 }
 
 /// Throw a Node-style error by setting the callback's exception out-param.
