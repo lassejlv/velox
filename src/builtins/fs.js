@@ -207,6 +207,47 @@ function truncateSync(p, len) {
 }
 function fsyncSync() {} // no-op: writes are already synchronous to disk
 function fdatasyncSync() {}
+// Permission/ownership/time metadata ops. velox has no native chmod/chown, so
+// these are best-effort no-ops — present so libraries (graceful-fs, fs-extra)
+// that `promisify(fs.chmod)` at load time work, and chmod/chown calls succeed.
+function chmodSync() {}
+function fchmodSync() {}
+function lchmodSync() {}
+function chownSync() {}
+function fchownSync() {}
+function lchownSync() {}
+function utimesSync() {}
+function futimesSync() {}
+function lutimesSync() {}
+
+// Async fd read/write — Node calls back with (err, bytesRead/Written, buffer).
+function read(fd, buffer, offset, length, position, cb) {
+  if (typeof offset === 'object' && offset !== null) {
+    // fs.read(fd, options, cb) / fs.read(fd, buffer, options, cb)
+    var opts = offset;
+    cb = length;
+    offset = opts.offset || 0;
+    length = opts.length === undefined ? buffer.length - offset : opts.length;
+    position = opts.position == null ? null : opts.position;
+  }
+  Promise.resolve().then(function () {
+    try {
+      var bytesRead = readSync(fd, buffer, offset, length, position);
+      if (cb) cb(null, bytesRead, buffer);
+    } catch (e) { if (cb) cb(e); }
+  });
+}
+function write() {
+  var args = Array.prototype.slice.call(arguments);
+  var cb = args.pop();
+  var buffer = args[1];
+  Promise.resolve().then(function () {
+    try {
+      var bytesWritten = writeSync.apply(null, args);
+      if (cb) cb(null, bytesWritten, buffer);
+    } catch (e) { if (cb) cb(e); }
+  });
+}
 
 // --- read/write streams (sync-backed) --------------------------------------
 
@@ -486,11 +527,33 @@ module.exports = {
   truncateSync: truncateSync,
   fsyncSync: fsyncSync,
   fdatasyncSync: fdatasyncSync,
+  chmodSync: chmodSync,
+  fchmodSync: fchmodSync,
+  lchmodSync: lchmodSync,
+  chownSync: chownSync,
+  fchownSync: fchownSync,
+  lchownSync: lchownSync,
+  utimesSync: utimesSync,
+  futimesSync: futimesSync,
+  lutimesSync: lutimesSync,
   open: callbackify(openSync, true),
   close: callbackify(closeSync, false),
+  read: read,
+  write: write,
   fstat: callbackify(fstatSync, true),
   ftruncate: callbackify(ftruncateSync, false),
   truncate: callbackify(truncateSync, false),
+  fsync: callbackify(fsyncSync, false),
+  fdatasync: callbackify(fdatasyncSync, false),
+  chmod: callbackify(chmodSync, false),
+  fchmod: callbackify(fchmodSync, false),
+  lchmod: callbackify(lchmodSync, false),
+  chown: callbackify(chownSync, false),
+  fchown: callbackify(fchownSync, false),
+  lchown: callbackify(lchownSync, false),
+  utimes: callbackify(utimesSync, false),
+  futimes: callbackify(futimesSync, false),
+  lutimes: callbackify(lutimesSync, false),
   createReadStream: createReadStream,
   createWriteStream: createWriteStream,
   watch: watch,

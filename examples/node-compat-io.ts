@@ -104,6 +104,28 @@ check("string_decoder", () => { const { StringDecoder } = require("node:string_d
 // path posix/win32
 check("path.posix", () => { const path = require("node:path"); if (path.posix.join("a", "b") !== "a/b") throw new Error("posix"); });
 
+// fs async read/write + promisify(fs.chmod) (graceful-fs / create-next-app path)
+check("fs async read/write + promisify", async () => {
+  const fs = require("node:fs");
+  const { promisify } = require("node:util");
+  if (typeof fs.chmod !== "function" || typeof fs.read !== "function" || typeof fs.write !== "function") throw new Error("missing fs fns");
+  const f = "/tmp/velox-io-rw-" + Date.now() + ".txt";
+  fs.writeFileSync(f, "");
+  const wfd = fs.openSync(f, "w");
+  const wrote: number = await new Promise((res, rej) => fs.write(wfd, Buffer.from("rwtest"), 0, 6, 0, (e: any, n: number) => e ? rej(e) : res(n)));
+  fs.closeSync(wfd);
+  if (wrote !== 6) throw new Error("write " + wrote);
+  const rfd = fs.openSync(f, "r");
+  const buf = Buffer.alloc(6);
+  const out: string = await new Promise((res, rej) => fs.read(rfd, buf, 0, 6, 0, (e: any, _n: number, b: Buffer) => e ? rej(e) : res(b.toString())));
+  fs.closeSync(rfd);
+  if (out !== "rwtest") throw new Error("read " + out);
+  await promisify(fs.chmod)(f, 0o644); // no-op, must resolve
+  fs.unlinkSync(f);
+});
+// node:constants exposes O_*/S_* flags
+check("node:constants", () => { const C = require("node:constants"); if (C.O_CREAT !== 0x200 || C.S_IFREG !== 0x8000 || C.R_OK !== 4) throw new Error("constants"); });
+
 await new Promise((r) => setTimeout(r, 300));
 let pass = 0, fail = 0;
 for (const [name, ok, err] of results) { if (ok) pass++; else { fail++; console.log("FAIL " + name + ": " + err); } }
