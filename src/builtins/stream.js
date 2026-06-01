@@ -340,7 +340,12 @@ Readable.prototype.pause = function () {
 Readable.prototype.resume = function () {
   var state = this._readableState;
   if (!state.flowing) {
-    state.flowing = true;
+    // Node: resume() does NOT switch to flowing while a 'readable' listener is
+    // active (the consumer drives reads via read()/'readable'). Matching this is
+    // what lets clients like got — which add a 'readable' listener and then call
+    // resume() — keep buffering body data for read() instead of losing it as
+    // 'data' events with no 'data' listener.
+    state.flowing = !state.readableListening;
     if (!state.resumeScheduled) {
       state.resumeScheduled = true;
       nextTick(resume_, this, state);
