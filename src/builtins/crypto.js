@@ -42,6 +42,14 @@ Hmac.prototype.digest = function (enc) {
 };
 
 function createHash(algo) { return new Hash(algo); }
+
+// Node 21 one-shot hash: crypto.hash(algorithm, data[, outputEncoding]).
+// Default output is a hex string; pass "buffer" for a Buffer.
+function hash(algo, data, outputEncoding) {
+  var enc = outputEncoding === undefined ? 'hex' : outputEncoding;
+  var h = new Hash(algo).update(data);
+  return enc === 'buffer' ? h.digest() : h.digest(enc);
+}
 function createHmac(algo, key) { return new Hmac(algo, key); }
 
 function randomBytes(size, cb) {
@@ -386,6 +394,7 @@ function getCiphers() {
 
 module.exports = {
   createHash: createHash,
+  hash: hash,
   createHmac: createHmac,
   Hash: Hash,
   Hmac: Hmac,
