@@ -12,8 +12,37 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValueRef};
+
+use crate::event_loop::{arg_slice, register};
+use crate::node::js_string;
+use crate::runtime::js_value_to_string;
+
 /// The synthetic URL velox evaluates the bundle under (see `runtime::eval`).
 pub const BUNDLE_URL: &str = "velox:///bundle.js";
+
+/// Register `__velox_remap_stack(stack)` so JS (the console inspector) can map a
+/// raw `error.stack` back to source lines via [`rewrite_stack`].
+pub fn install(ctx: JSContextRef) {
+    unsafe { register(ctx, c"__velox_remap_stack", remap_stack) };
+}
+
+/// `__velox_remap_stack(stackString) -> mappedString`.
+unsafe extern "C-unwind" fn remap_stack(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let input = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    unsafe { js_string(ctx, &rewrite_stack(&input)) }
+}
 
 /// One module's placement in the bundle, for mapping bundle lines to source.
 pub struct ModuleSpan {

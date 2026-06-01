@@ -99,13 +99,18 @@ pub const INSPECT_PRELUDE: &str = r#"
     }
     if (value instanceof Error || tag === "[object Error]") {
       try {
-        var stack = value.stack;
-        if (typeof stack === "string" && stack.length) {
-          return stack.split("\n")[0];
-        }
         var nm = value.name || "Error";
         var msg = value.message;
-        return msg ? nm + ": " + msg : nm;
+        var head = msg ? nm + ": " + msg : nm;
+        // JSC's `error.stack` is just frames (no message header) and points at
+        // the bundle; map it back to source and indent under the message.
+        var stack = value.stack;
+        if (typeof stack === "string" && stack.length) {
+          var mapped = (typeof __velox_remap_stack === "function") ? __velox_remap_stack(stack) : stack;
+          var frames = mapped.split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+          if (frames.length) return head + "\n    " + frames.join("\n    ");
+        }
+        return head;
       } catch (e) {
         return "[Error]";
       }
