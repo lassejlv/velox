@@ -5,7 +5,7 @@ use std::os::raw::c_char;
 use std::ptr;
 
 use objc2::rc::Retained;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSString, NSURL};
 use objc2_javascript_core::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
     JSObjectMakeFunctionWithCallback, JSObjectRef, JSObjectSetProperty,
@@ -203,7 +203,13 @@ impl Runtime {
     /// or a formatted JS exception message.
     pub fn eval(&self, source: &str) -> Result<Evaluated, String> {
         let script = NSString::from_str(source);
-        let value = unsafe { self.context.evaluateScript(Some(&script)) };
+        // Evaluate under a synthetic URL so JSC emits line:col in error stacks;
+        // `crate::sourcemap` maps those bundle positions back to source files.
+        let url = NSURL::URLWithString(&NSString::from_str(crate::sourcemap::BUNDLE_URL));
+        let value = unsafe {
+            self.context
+                .evaluateScript_withSourceURL(Some(&script), url.as_deref())
+        };
 
         // A thrown exception is parked on the context rather than unwinding.
         if let Some(exception) = unsafe { self.context.exception() } {
@@ -355,7 +361,9 @@ fn format_exception(exception: &JSValue) -> String {
     };
 
     match stack {
-        Some(stack) if !stack.is_empty() => format!("{message}\n{stack}"),
+        Some(stack) if !stack.is_empty() => {
+            format!("{message}\n{}", crate::sourcemap::rewrite_stack(&stack))
+        }
         _ => message,
     }
 }

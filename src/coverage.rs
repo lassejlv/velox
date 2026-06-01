@@ -83,17 +83,24 @@ pub fn is_active() -> bool {
 }
 
 /// The bundler's transpile hook: instrument when coverage is active and `path`
-/// is a coverable local source file, else fall back to a plain transpile.
-pub fn instrument_or_transpile(path: &Path, source: &str) -> Result<String, Vec<OxcDiagnostic>> {
+/// is a coverable local source file, else fall back to a plain transpile. Also
+/// returns codegen source-map tokens for stack-frame mapping (empty when the
+/// module is coverage-instrumented, since its line numbers no longer match the
+/// original source).
+pub fn instrument_or_transpile_mapped(
+    path: &Path,
+    source: &str,
+) -> Result<(String, crate::transpile::MapTokens), Vec<OxcDiagnostic>> {
     if is_active() && is_coverable(path) {
-        ACTIVE.with(|a| {
+        let code = ACTIVE.with(|a| {
             a.borrow_mut()
                 .as_mut()
                 .expect("active")
                 .instrument(path, source)
-        })
+        })?;
+        Ok((code, Vec::new()))
     } else {
-        crate::transpile::transpile(path, source)
+        crate::transpile::transpile_with_map(path, source, true)
     }
 }
 

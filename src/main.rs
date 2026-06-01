@@ -14,6 +14,7 @@ mod repl;
 mod runtime;
 mod server;
 mod shared;
+mod sourcemap;
 mod sys;
 mod transpile;
 mod udp;

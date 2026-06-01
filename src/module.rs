@@ -396,6 +396,12 @@ struct Graph {
     /// modules don't — a sync wrapper lets synchronous init errors propagate
     /// through `require` instead of becoming a swallowed promise rejection.
     needs_async: Vec<bool>,
+    /// Codegen source-map tokens for each module (empty when unavailable, e.g.
+    /// coverage-instrumented or JSON modules), for stack-frame mapping.
+    maps: Vec<crate::transpile::MapTokens>,
+    /// Whether each module's body has an `__esModule` line prepended (shifts the
+    /// body's line numbers by one vs the codegen output the map describes).
+    esm: Vec<bool>,
     /// Canonical names of the `node:*` builtins to inject (transitive closure of
     /// what was imported), kept sorted for deterministic output.
     needed_builtins: BTreeSet<&'static str>,
@@ -427,6 +433,8 @@ impl Graph {
         self.bodies.push(String::new());
         self.paths.push(path.to_path_buf());
         self.needs_async.push(false);
+        self.maps.push(Vec::new());
+        self.esm.push(false);
 
         let source = std::fs::read_to_string(path).map_err(|source| ModuleError::Read {
             path: path.to_path_buf(),
@@ -446,23 +454,28 @@ impl Graph {
         // Transpile FIRST: this strips TypeScript/JSX but keeps import/export
         // statements (oxc's codegen preserves them), so we can find and rewrite
         // them in the next step.
-        let js =
-            crate::coverage::instrument_or_transpile(path, &source).map_err(|diagnostics| {
-                ModuleError::Parse {
-                    path: path.to_path_buf(),
-                    message: format_diagnostics(&source, &diagnostics),
-                }
-            })?;
+        let (js, tokens) = crate::coverage::instrument_or_transpile_mapped(path, &source).map_err(
+            |diagnostics| ModuleError::Parse {
+                path: path.to_path_buf(),
+                message: format_diagnostics(&source, &diagnostics),
+            },
+        )?;
 
-        let (body, needs_async) = self.rewrite_module(path, &js)?;
+        let (body, needs_async, is_esm) = self.rewrite_module(path, &js)?;
         self.bodies[id] = body;
         self.needs_async[id] = needs_async;
+        self.maps[id] = tokens;
+        self.esm[id] = is_esm;
         Ok(id)
     }
 
     /// Parse the already-transpiled JS for `path`, collect span-based edits that
     /// turn ESM statements into CommonJS, and apply them.
-    fn rewrite_module(&mut self, path: &Path, js: &str) -> Result<(String, bool), ModuleError> {
+    fn rewrite_module(
+        &mut self,
+        path: &Path,
+        js: &str,
+    ) -> Result<(String, bool, bool), ModuleError> {
         let allocator = Allocator::default();
         // The transpiled output is plain JS, but parsing it as a module is what
         // lets oxc surface the (preserved) import/export statements.
@@ -589,7 +602,7 @@ impl Graph {
                 "Object.defineProperty(exports, '__esModule', { value: true });\n",
             );
         }
-        Ok((body, collector.has_top_level_await))
+        Ok((body, collector.has_top_level_await, is_esm))
     }
 
     /// Resolve a specifier against `dir`, load the target, and return the id to
@@ -622,10 +635,20 @@ impl Graph {
         }
     }
 
-    /// Stitch every rewritten module body into the final bundle.
+    /// Stitch every rewritten module body into the final bundle. Also records,
+    /// per module, the bundle line range its body occupies so a runtime stack
+    /// frame can be mapped back to the original source (`crate::sourcemap`).
     fn emit(&self, entry_id: usize) -> String {
+        // Count of '\n' emitted so far; bundle line of the next char = lines + 1.
+        let mut lines: u32 = 0;
+        let mut spans: Vec<crate::sourcemap::ModuleSpan> = Vec::new();
+        fn count_nl(s: &str) -> u32 {
+            s.bytes().filter(|&b| b == b'\n').count() as u32
+        }
+
         let mut out = String::new();
         out.push_str(BUNDLE_PRELUDE);
+        lines += count_nl(BUNDLE_PRELUDE);
         for (id, body) in self.bodies.iter().enumerate() {
             // Only modules with top-level `await` get an `async` wrapper (which
             // enables TLA). All others are synchronous so that a thrown error
@@ -641,12 +664,38 @@ impl Graph {
             // require` in the preamble — UNLESS the module declares its own
             // (the ESM `const require = createRequire(import.meta.url)` pattern,
             // e.g. yargs), in which case a param named `require` would collide.
-            out.push_str(&format!(
+            let wrapper = format!(
                 "__modules['{id}'] = {async_kw}function (module, exports, __velox_require) {{\n"
-            ));
-            out.push_str(&module_preamble(self.paths.get(id), body));
+            );
+            out.push_str(&wrapper);
+            lines += count_nl(&wrapper);
+            let preamble = module_preamble(self.paths.get(id), body);
+            out.push_str(&preamble);
+            lines += count_nl(&preamble);
+
+            // The body begins on the next bundle line.
+            let start_line = lines + 1;
             out.push_str(body);
+            lines += count_nl(body);
+            // `body` doesn't end in a newline, so its last line is the current
+            // (lines+1)'th line; record the inclusive end.
+            let end_line = lines + 1;
+            if !self.maps.get(id).map(Vec::is_empty).unwrap_or(true) {
+                spans.push(crate::sourcemap::ModuleSpan {
+                    start_line,
+                    end_line,
+                    esm_shift: if *self.esm.get(id).unwrap_or(&false) {
+                        1
+                    } else {
+                        0
+                    },
+                    file: crate::sourcemap::display_path(self.paths.get(id)),
+                    tokens: self.maps[id].clone(),
+                });
+            }
+
             out.push_str("\n};\n");
+            lines += 2;
         }
 
         // Inject the transitively-needed Node builtin shims. They are CommonJS
@@ -674,6 +723,7 @@ impl Graph {
              }})();\n",
             entry_id
         ));
+        crate::sourcemap::set_table(spans);
         out
     }
 }

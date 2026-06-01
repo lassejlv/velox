@@ -411,7 +411,8 @@ unsafe extern "C-unwind" fn uncaught(
         .first()
         .map(|v| unsafe { js_value_to_string(ctx, *v) })
         .unwrap_or_default();
-    crate::ui::report_runtime_error(&message);
+    // The message carries a JS-built stack (bundle positions) — map it to source.
+    crate::ui::report_runtime_error(&crate::sourcemap::rewrite_stack(&message));
     UNCAUGHT.with(|u| u.set(true));
     unsafe { JSValue::new_undefined(ctx) }
 }
