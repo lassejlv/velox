@@ -294,7 +294,9 @@ fn absolutize(entry: &Path) -> PathBuf {
 fn bundle_cache_dir() -> Option<PathBuf> {
     let base = match std::env::var_os("VELOX_CACHE") {
         Some(c) => PathBuf::from(c),
-        None => PathBuf::from(std::env::var_os("HOME")?).join(".velox").join("cache"),
+        None => PathBuf::from(std::env::var_os("HOME")?)
+            .join(".velox")
+            .join("cache"),
     };
     Some(base.join("bundles"))
 }
@@ -357,7 +359,9 @@ fn read_bundle_cache(entry: &Path) -> Option<String> {
 
 /// Persist the bundle and a manifest of its source files' stamps (best-effort).
 fn write_bundle_cache(entry: &Path, js: &str, deps: &[PathBuf]) {
-    let Some(dir) = bundle_cache_dir() else { return };
+    let Some(dir) = bundle_cache_dir() else {
+        return;
+    };
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -442,12 +446,13 @@ impl Graph {
         // Transpile FIRST: this strips TypeScript/JSX but keeps import/export
         // statements (oxc's codegen preserves them), so we can find and rewrite
         // them in the next step.
-        let js = crate::transpile::transpile(path, &source).map_err(|diagnostics| {
-            ModuleError::Parse {
-                path: path.to_path_buf(),
-                message: format_diagnostics(&source, &diagnostics),
-            }
-        })?;
+        let js =
+            crate::coverage::instrument_or_transpile(path, &source).map_err(|diagnostics| {
+                ModuleError::Parse {
+                    path: path.to_path_buf(),
+                    message: format_diagnostics(&source, &diagnostics),
+                }
+            })?;
 
         let (body, needs_async) = self.rewrite_module(path, &js)?;
         self.bodies[id] = body;
@@ -1312,5 +1317,4 @@ mod tests {
     // --- node_modules upward walk -------------------------------------
 
     // --- package.json entry selection ---------------------------------
-
 }

@@ -484,6 +484,81 @@ function register() {
   g.vi = vi; g.jest = vi; // jest alias for compatibility
 }
 
+// Compress a list of line numbers into a "12, 30-35" range string.
+function compressRanges(nums) {
+  nums.sort(function (a, b) { return a - b; });
+  var out = [], i = 0;
+  while (i < nums.length) {
+    var s = nums[i], e = nums[i];
+    while (i + 1 < nums.length && nums[i + 1] === e + 1) { e = nums[++i]; }
+    out.push(s === e ? ('' + s) : (s + '-' + e));
+    i++;
+  }
+  return out.join(', ');
+}
+
+// Print a coverage table from the instrumentation globals (__VCOV_MAP / __VCOV_H)
+// that `velox test --coverage` injects. No-op when coverage wasn't collected.
+function printCoverage() {
+  var map = globalThis.__VCOV_MAP;
+  if (!map || !map.points || !map.points.length) return;
+  var hits = globalThis.__VCOV_H || [];
+
+  var agg = map.files.map(function (p) {
+    return { path: p, lineCov: new Map(), fnTotal: 0, fnCov: 0 };
+  });
+  for (var i = 0; i < map.points.length; i++) {
+    var pt = map.points[i], a = agg[pt[0]], line = pt[1], got = (hits[i] | 0) > 0;
+    if (pt[2]) { a.fnTotal++; if (got) a.fnCov++; }
+    else { a.lineCov.set(line, (a.lineCov.get(line) || false) || got); }
+  }
+
+  function pct(cov, total) { return total === 0 ? 100 : (cov / total) * 100; }
+  function color(p) { return p >= 80 ? C.green : p >= 50 ? C.yellow : C.red; }
+  function fmt(p) { return p.toFixed(1); }
+
+  var rows = [], totLineT = 0, totLineC = 0, totFnT = 0, totFnC = 0;
+  agg.forEach(function (a) {
+    var lineT = a.lineCov.size, lineC = 0, uncovered = [];
+    a.lineCov.forEach(function (covered, line) {
+      if (covered) lineC++; else uncovered.push(line);
+    });
+    totLineT += lineT; totLineC += lineC; totFnT += a.fnTotal; totFnC += a.fnCov;
+    rows.push({
+      path: a.path,
+      lines: pct(lineC, lineT),
+      funcs: pct(a.fnCov, a.fnTotal),
+      uncovered: compressRanges(uncovered),
+    });
+  });
+  rows.sort(function (x, y) { return x.path < y.path ? -1 : x.path > y.path ? 1 : 0; });
+
+  var fileW = Math.max(9, 'All files'.length);
+  rows.forEach(function (r) { if (r.path.length > fileW) fileW = r.path.length; });
+  function padEnd(s, w) { while (s.length < w) s += ' '; return s; }
+  function padStart(s, w) { while (s.length < w) s = ' ' + s; return s; }
+  var sep = '─'.repeat(fileW + 2) + '┼' + '─'.repeat(9) + '┼' + '─'.repeat(9) + '┼' + '─'.repeat(12);
+
+  console.log('\n' + C.bold('Coverage:'));
+  console.log(' ' + C.dim(padEnd('File', fileW) + '  │ % Lines │ % Funcs │ Uncovered'));
+  console.log(' ' + C.dim(sep));
+  rows.forEach(function (r) {
+    console.log(
+      ' ' + padEnd(r.path, fileW) + '  │ ' +
+      color(r.lines)(padStart(fmt(r.lines), 6)) + '  │ ' +
+      color(r.funcs)(padStart(fmt(r.funcs), 6)) + '  │ ' +
+      (r.uncovered ? C.red(r.uncovered) : C.dim('-'))
+    );
+  });
+  console.log(' ' + C.dim(sep));
+  var allLines = pct(totLineC, totLineT), allFuncs = pct(totFnC, totFnT);
+  console.log(
+    ' ' + C.bold(padEnd('All files', fileW)) + '  │ ' +
+    color(allLines)(padStart(fmt(allLines), 6)) + '  │ ' +
+    color(allFuncs)(padStart(fmt(allFuncs), 6)) + '  │'
+  );
+}
+
 // run(): execute the collected suite and report; sets process.exitCode.
 async function run() {
   var start = Date.now();
@@ -516,6 +591,8 @@ async function run() {
   var total = stats.pass + stats.fail + stats.skip + stats.todo;
   console.log('\n' + C.bold('Tests:') + ' ' + (parts.join(C.dim(', ')) || '0') + C.dim(' (' + total + ' total)'));
   console.log(C.bold('Time: ') + ' ' + ms + 'ms');
+
+  printCoverage();
 
   if (globalThis.process) globalThis.process.exitCode = stats.fail > 0 ? 1 : 0;
   return stats.fail === 0;

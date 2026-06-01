@@ -94,6 +94,8 @@ macOS arm64 only.
 ```sh
 velox test                 # run every test file under the cwd
 velox test math            # only files whose path contains "math"
+velox test --watch         # re-run on change (alias: -w)
+velox test --coverage      # report line/function coverage of the source under test
 ```
 
 `velox test` discovers `*.test.*` / `*.spec.*` files and files under
@@ -133,6 +135,24 @@ expect({ ok: true }).toMatchInlineSnapshot(`{ ok: true }`);
 (+ `…Once`), the `toHaveBeenCalled*`/`toHaveReturned*` matchers, and
 `toMatchInlineSnapshot`. The runner's types live in `velox-test.d.ts` (shipped by
 `velox init`) so test files type-check.
+
+**Watch + coverage.** `velox test --watch` (`-w`) re-runs the suite whenever any
+file that went into the run changes. `velox test --coverage` instruments the
+source under test (everything the tests import, excluding `node_modules` and the
+test files themselves) and prints a line/function coverage table after the
+results:
+
+```
+Coverage:
+ File       │ % Lines │ % Funcs │ Uncovered
+ ───────────┼─────────┼─────────┼────────────
+ math.ts    │   50.0  │   50.0  │ 6, 13, 18
+ ───────────┼─────────┼─────────┼────────────
+ All files  │   50.0  │   50.0  │
+```
+
+Instrumentation is statement + function level: the `Uncovered` column lists the
+source lines (compressed into ranges) that never executed.
 
 ## Run scripts
 
@@ -217,6 +237,7 @@ comments, `export KEY=…` prefixes, and single/double-quoted strings. `.env.loc
 | `outdated` | List dependencies with newer versions |
 | `x <pkg> [args…]` | Run a package's executable (npx-style) |
 | `build <entry> [--out N]` | Compile to a standalone executable |
+| `test [PATTERN…] [--coverage] [-w]` | Run test files (`--coverage` reports coverage; `-w` watches) |
 | `run [script]` | Run a package.json script |
 | `FILE [args…]` | Run a script (args go to `process.argv`) |
 | `-e`, `--eval CODE` | Evaluate a string and exit (staged as a hidden `.ts` file in cwd for imports) |

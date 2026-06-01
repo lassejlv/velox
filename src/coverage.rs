@@ -1,0 +1,334 @@
+//! Code-coverage instrumentation for `velox test --coverage`.
+//!
+//! When active, [`instrument_or_transpile`] replaces the plain transpile step in
+//! the bundler (`module.rs`) for *local* source files: every statement and
+//! function body gets a `__VCOV(n)` counter call injected, where `n` indexes a
+//! point table recorded here. At runtime the injected counters populate a global
+//! hit array; the test runner (`builtins/test.js`) reads that array plus the
+//! point table (emitted by [`Coverage::prelude_js`]) and prints a coverage
+//! report. All reporting lives in JS — Rust only instruments and ships the map.
+//!
+//! Granularity is statement + function level (istanbul-style). Single-statement
+//! un-braced bodies (`if (x) return;`) and import/export/function declarations
+//! aren't counted as line points, so they're simply excluded from the
+//! denominator rather than mis-reported.
+
+use std::cell::RefCell;
+use std::path::Path;
+
+use oxc::allocator::{Allocator, Vec as OxcVec};
+use oxc::ast::ast::{Argument, ArrowFunctionExpression, Expression, Function, Statement};
+use oxc::ast::{AstBuilder, NONE};
+use oxc::ast_visit::VisitMut;
+use oxc::ast_visit::walk_mut::{walk_arrow_function_expression, walk_function, walk_statements};
+use oxc::codegen::Codegen;
+use oxc::diagnostics::OxcDiagnostic;
+use oxc::parser::Parser;
+use oxc::semantic::SemanticBuilder;
+use oxc::span::{GetSpan, SPAN, SourceType};
+use oxc::syntax::number::NumberBase;
+use oxc::syntax::scope::ScopeFlags;
+use oxc::transformer::{TransformOptions, Transformer};
+
+/// One instrumented point. Its index in [`Coverage::points`] is the `n` passed
+/// to the injected `__VCOV(n)` call.
+struct Point {
+    file: u32,
+    line: u32,
+    is_fn: bool,
+}
+
+/// Accumulates the point table across every instrumented module in one bundle.
+#[derive(Default)]
+pub struct Coverage {
+    /// Display paths (relative to cwd when possible), indexed by file id.
+    files: Vec<String>,
+    points: Vec<Point>,
+}
+
+thread_local! {
+    /// The collector for the in-progress coverage build, if any. Set by
+    /// [`begin`], drained by [`finish`].
+    static ACTIVE: RefCell<Option<Coverage>> = const { RefCell::new(None) };
+}
+
+/// Start collecting coverage for the bundle about to be built on this thread.
+pub fn begin() {
+    ACTIVE.with(|a| *a.borrow_mut() = Some(Coverage::default()));
+}
+
+/// Stop collecting and return what was gathered (None if [`begin`] wasn't called).
+pub fn finish() -> Option<Coverage> {
+    ACTIVE.with(|a| a.borrow_mut().take())
+}
+
+/// Whether coverage collection is active on this thread.
+pub fn is_active() -> bool {
+    ACTIVE.with(|a| a.borrow().is_some())
+}
+
+/// The bundler's transpile hook: instrument when coverage is active and `path`
+/// is a coverable local source file, else fall back to a plain transpile.
+pub fn instrument_or_transpile(path: &Path, source: &str) -> Result<String, Vec<OxcDiagnostic>> {
+    if is_active() && is_coverable(path) {
+        ACTIVE.with(|a| {
+            a.borrow_mut()
+                .as_mut()
+                .expect("active")
+                .instrument(path, source)
+        })
+    } else {
+        crate::transpile::transpile(path, source)
+    }
+}
+
+/// A file is coverable if it's a JS/TS source that isn't a dependency, a test
+/// file, or the generated test driver — i.e. the actual source under test.
+fn is_coverable(path: &Path) -> bool {
+    let ext_ok = matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+    );
+    if !ext_ok {
+        return false;
+    }
+    if path.components().any(|c| c.as_os_str() == "node_modules") {
+        return false;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.starts_with(".velox-test-") || name.contains(".test.") || name.contains(".spec.") {
+        return false;
+    }
+    !path
+        .components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some("test" | "tests" | "__tests__")))
+}
+
+impl Coverage {
+    /// Transpile `source` like `transpile::transpile`, but inject `__VCOV(n)`
+    /// counters and record each point against `path`.
+    fn instrument(&mut self, path: &Path, source: &str) -> Result<String, Vec<OxcDiagnostic>> {
+        let file_id = self.files.len() as u32;
+        self.files.push(display_path(path));
+        let line_starts = line_starts(source);
+
+        let allocator = Allocator::default();
+        let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
+
+        let parser_ret = Parser::new(&allocator, source, source_type).parse();
+        if !parser_ret.errors.is_empty() {
+            return Err(parser_ret.errors);
+        }
+        let mut program = parser_ret.program;
+
+        let scoping = SemanticBuilder::new()
+            .with_enum_eval(true)
+            .build(&program)
+            .semantic
+            .into_scoping();
+        let options = TransformOptions::default();
+        let transformer_ret =
+            Transformer::new(&allocator, path, &options).build_with_scoping(scoping, &mut program);
+        if !transformer_ret.errors.is_empty() {
+            return Err(transformer_ret.errors);
+        }
+
+        let mut instr = Instrumenter {
+            builder: AstBuilder::new(&allocator),
+            points: &mut self.points,
+            file_id,
+            line_starts: &line_starts,
+        };
+        instr.visit_program(&mut program);
+
+        Ok(Codegen::new().build(&program).code)
+    }
+
+    /// JS prelude that defines the runtime counter + the point table, evaluated
+    /// before any instrumented module runs. Prepended to the coverage bundle.
+    pub fn prelude_js(&self) -> String {
+        let mut s = String::from(
+            "globalThis.__VCOV_H=[];\
+             globalThis.__VCOV=function(n){__VCOV_H[n]=(__VCOV_H[n]|0)+1;};\
+             globalThis.__VCOV_MAP={\"files\":[",
+        );
+        for (i, f) in self.files.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&json_string(f));
+        }
+        s.push_str("],\"points\":[");
+        for (i, p) in self.points.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!(
+                "[{},{},{}]",
+                p.file,
+                p.line,
+                if p.is_fn { 1 } else { 0 }
+            ));
+        }
+        s.push_str("]};\n");
+        s
+    }
+
+    /// Whether anything was instrumented (no points → nothing to report).
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+}
+
+/// Injects `__VCOV(n)` counters before each statement and at the top of each
+/// function body.
+struct Instrumenter<'a, 'c> {
+    builder: AstBuilder<'a>,
+    points: &'c mut Vec<Point>,
+    file_id: u32,
+    line_starts: &'c [u32],
+}
+
+impl<'a> Instrumenter<'a, '_> {
+    /// Record a new point and return its index (the `n` for `__VCOV(n)`).
+    fn new_point(&mut self, line: u32, is_fn: bool) -> u32 {
+        let id = self.points.len() as u32;
+        self.points.push(Point {
+            file: self.file_id,
+            line,
+            is_fn,
+        });
+        id
+    }
+
+    /// 1-based line for a byte offset.
+    fn line_of(&self, offset: u32) -> u32 {
+        (self.line_starts.partition_point(|&s| s <= offset)) as u32
+    }
+
+    /// Build the statement `__VCOV(id);`.
+    fn counter(&self, id: u32) -> Statement<'a> {
+        let b = self.builder;
+        let callee = b.expression_identifier(SPAN, "__VCOV");
+        let arg = Argument::from(b.expression_numeric_literal(
+            SPAN,
+            id as f64,
+            None,
+            NumberBase::Decimal,
+        ));
+        let args = OxcVec::from_iter_in([arg], b.allocator);
+        let call = b.expression_call(SPAN, callee, NONE, args, false);
+        b.statement_expression(SPAN, call)
+    }
+}
+
+/// Statements we don't put a line-counter in front of: hoisted declarations
+/// (covered via function coverage instead), module syntax, and our own injected
+/// counters (so re-walking can't double-instrument them).
+fn skip_line_point(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::FunctionDeclaration(_)
+        | Statement::ImportDeclaration(_)
+        | Statement::ExportNamedDeclaration(_)
+        | Statement::ExportDefaultDeclaration(_)
+        | Statement::ExportAllDeclaration(_)
+        | Statement::EmptyStatement(_) => true,
+        Statement::ExpressionStatement(es) => is_counter_call(&es.expression),
+        _ => false,
+    }
+}
+
+/// True for an already-injected `__VCOV(...)` call expression.
+fn is_counter_call(expr: &Expression) -> bool {
+    if let Expression::CallExpression(call) = expr
+        && let Expression::Identifier(id) = &call.callee
+    {
+        return id.name == "__VCOV";
+    }
+    false
+}
+
+impl<'a> VisitMut<'a> for Instrumenter<'a, '_> {
+    fn visit_statements(&mut self, stmts: &mut OxcVec<'a, Statement<'a>>) {
+        let mut rebuilt = OxcVec::with_capacity_in(stmts.len() * 2, self.builder.allocator);
+        for stmt in stmts.drain(..) {
+            if !skip_line_point(&stmt) {
+                let line = self.line_of(stmt.span().start);
+                if line > 0 {
+                    let id = self.new_point(line, false);
+                    rebuilt.push(self.counter(id));
+                }
+            }
+            rebuilt.push(stmt);
+        }
+        *stmts = rebuilt;
+        // Recurse so nested blocks / function bodies get instrumented too.
+        walk_statements(self, stmts);
+    }
+
+    fn visit_function(&mut self, func: &mut Function<'a>, flags: ScopeFlags) {
+        if let Some(body) = &mut func.body {
+            let line = self.line_of(func.span.start);
+            if line > 0 {
+                let id = self.new_point(line, true);
+                let counter = self.counter(id);
+                body.statements.insert(0, counter);
+            }
+        }
+        walk_function(self, func, flags);
+    }
+
+    fn visit_arrow_function_expression(&mut self, arrow: &mut ArrowFunctionExpression<'a>) {
+        // Block-bodied arrows count as functions; expression-bodied arrows
+        // (`x => x + 1`) have no statement list to prepend to and are covered
+        // transitively by their enclosing statement.
+        if !arrow.expression {
+            let line = self.line_of(arrow.span.start);
+            if line > 0 {
+                let id = self.new_point(line, true);
+                let counter = self.counter(id);
+                arrow.body.statements.insert(0, counter);
+            }
+        }
+        walk_arrow_function_expression(self, arrow);
+    }
+}
+
+/// Byte offsets at which each line begins (`line_starts[0] == 0`). Used to map a
+/// span offset back to a 1-based line via `partition_point`.
+fn line_starts(source: &str) -> Vec<u32> {
+    let mut starts = vec![0u32];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push((i + 1) as u32);
+        }
+    }
+    starts
+}
+
+/// A path relative to the cwd when possible (shorter report rows), else as-is.
+fn display_path(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(rel) = path.strip_prefix(&cwd)
+    {
+        return rel.to_string_lossy().into_owned();
+    }
+    path.to_string_lossy().into_owned()
+}
+
+/// Minimal JSON string escaping for file paths.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}

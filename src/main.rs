@@ -1,6 +1,7 @@
 //! velox — a tiny TypeScript/JavaScript runtime built on Apple's
 //! JavaScriptCore, transpiling with oxc and bundling relative ES modules.
 
+mod coverage;
 mod crypto;
 mod event_loop;
 mod fetch;
@@ -158,10 +159,14 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
         }
         "test" | "t" => {
             if has_help {
-                println!("Usage: velox test [PATTERN...]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.");
+                println!(
+                    "Usage: velox test [PATTERN...] [--coverage] [--watch]\n\n  Run test files (*.test.* / *.spec.* / files under test/__tests__).\n  Globals describe/it/test/expect + before*/after* hooks are provided.\n  PATTERNs filter by path substring.\n\nOptions:\n  --coverage    Report line/function coverage of the source under test.\n  -w, --watch   Re-run on change."
+                );
                 return Some(ExitCode::SUCCESS);
             }
-            Some(cmd_test(&positionals()))
+            let coverage = rest.iter().any(|a| a == "--coverage" || a == "--cov");
+            let watch = rest.iter().any(|a| a == "--watch" || a == "-w");
+            Some(cmd_test(&positionals(), coverage, watch))
         }
         "build" | "compile" => {
             if has_help {
@@ -414,8 +419,9 @@ fn run_bundle(js: &str) -> ExitCode {
 // --- `velox test` — built-in test runner ------------------------------------
 
 /// `velox test [patterns]` — discover test files, run them through a generated
-/// driver that loads the `velox-test` framework, and report.
-fn cmd_test(patterns: &[String]) -> ExitCode {
+/// driver that loads the `velox-test` framework, and report. `--coverage`
+/// instruments the source under test; `--watch` re-runs on change.
+fn cmd_test(patterns: &[String], coverage: bool, watch: bool) -> ExitCode {
     use owo_colors::OwoColorize;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -436,8 +442,19 @@ fn cmd_test(patterns: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if watch {
+        return watch_tests(&files, coverage);
+    }
+    run_tests_once(&files, coverage).0
+}
+
+/// Bundle + run the discovered test files once. Returns the exit code and the
+/// set of source files that went into the run (for `--watch`).
+fn run_tests_once(files: &[PathBuf], coverage: bool) -> (ExitCode, Vec<PathBuf>) {
+    use owo_colors::OwoColorize;
+
     println!(
-        "  {} {} {}\n",
+        "  {} {} {}{}\n",
         "velox".cyan().bold(),
         "test".dimmed(),
         format!(
@@ -445,33 +462,99 @@ fn cmd_test(patterns: &[String]) -> ExitCode {
             files.len(),
             if files.len() == 1 { "" } else { "s" }
         )
-        .dimmed()
+        .dimmed(),
+        if coverage {
+            " · coverage".dimmed().to_string()
+        } else {
+            String::new()
+        }
     );
 
     // Generate a driver that installs the test globals, loads each test file,
     // then runs the collected suite.
     let mut driver = String::from("const __t = require('velox-test');\n__t.register();\n");
-    for f in &files {
-        driver.push_str(&format!("require({});\n", js_string_literal(&f.to_string_lossy())));
+    for f in files {
+        driver.push_str(&format!(
+            "require({});\n",
+            js_string_literal(&f.to_string_lossy())
+        ));
     }
     driver.push_str("await __t.run();\n");
 
     // Stage as a hidden temp file (uncached so it doesn't pollute the bundle
     // cache), bundle + run it, then clean up.
-    let driver_path =
-        std::env::temp_dir().join(format!(".velox-test-{}.ts", std::process::id()));
+    let driver_path = std::env::temp_dir().join(format!(".velox-test-{}.ts", std::process::id()));
     if std::fs::write(&driver_path, &driver).is_err() {
-        return fail_msg("test: could not stage driver");
+        return (fail_msg("test: could not stage driver"), Vec::new());
     }
-    let result = match module::bundle(&driver_path) {
-        Ok(js) => run_bundle(&js),
+
+    if coverage {
+        coverage::begin();
+    }
+    let built = module::bundle_with_deps(&driver_path);
+    let cov = if coverage { coverage::finish() } else { None };
+
+    let result = match built {
+        Ok((js, deps)) => {
+            // Prepend the coverage prelude (counter + point table) so the
+            // injected `__VCOV(n)` calls resolve before any module runs.
+            let js = match &cov {
+                Some(c) if !c.is_empty() => format!("{}{js}", c.prelude_js()),
+                _ => js,
+            };
+            (run_bundle(&js), deps)
+        }
         Err(error) => {
             ui::report_module_error(&error.to_string());
-            ExitCode::FAILURE
+            (ExitCode::FAILURE, Vec::new())
         }
     };
     let _ = std::fs::remove_file(&driver_path);
     result
+}
+
+/// `velox test --watch`: run, then re-run whenever any source file that went
+/// into the run changes (polling its mtimes, like the top-level `--watch`).
+fn watch_tests(files: &[PathBuf], coverage: bool) -> ExitCode {
+    use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+
+    fn mtimes(files: &[PathBuf]) -> HashMap<PathBuf, SystemTime> {
+        files
+            .iter()
+            .filter_map(|f| {
+                std::fs::metadata(f)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|t| (f.clone(), t))
+            })
+            .collect()
+    }
+
+    loop {
+        print!("\x1b[2J\x1b[H"); // clear screen
+        let (_, deps) = run_tests_once(files, coverage);
+        // Watch the test files plus everything they pulled in; fall back to just
+        // the test files if bundling failed.
+        let watched: Vec<PathBuf> = if deps.is_empty() {
+            files.to_vec()
+        } else {
+            deps
+        };
+        eprintln!(
+            "\x1b[2m[velox] watching {} file(s); Ctrl-C to exit\x1b[0m",
+            watched.len()
+        );
+        let mut snapshot = mtimes(&watched);
+        loop {
+            std::thread::sleep(Duration::from_millis(150));
+            let current = mtimes(&watched);
+            if current != snapshot {
+                snapshot = current;
+                break; // re-run
+            }
+        }
+    }
 }
 
 /// Recursively collect test files under `root` (skipping node_modules / hidden
@@ -486,7 +569,10 @@ fn discover_tests(root: &Path, patterns: &[String], out: &mut Vec<PathBuf>) {
         let name = entry.file_name().to_string_lossy().into_owned();
         if path.is_dir() {
             if name.starts_with('.')
-                || matches!(name.as_str(), "node_modules" | "dist" | "build" | "target" | "coverage")
+                || matches!(
+                    name.as_str(),
+                    "node_modules" | "dist" | "build" | "target" | "coverage"
+                )
             {
                 continue;
             }
@@ -514,12 +600,8 @@ fn is_test_file(path: &Path) -> bool {
     if name.contains(".test.") || name.contains(".spec.") {
         return true;
     }
-    path.components().any(|c| {
-        matches!(
-            c.as_os_str().to_str(),
-            Some("test" | "tests" | "__tests__")
-        )
-    })
+    path.components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some("test" | "tests" | "__tests__")))
 }
 
 /// Encode a string as a JS string literal (double-quoted, escaped).
