@@ -23,8 +23,8 @@ needed) and installs into `node_modules`:
 ```sh
 velox add express              # add to dependencies + install
 velox add -D vitest            # add to devDependencies
-velox add lodash@^4            # a version or range (default: latest, pinned ^)
-velox install                  # install (from velox.lock if present, else resolve)
+velox add lodash@4.17.20       # installs exactly 4.17.20, saves ^4.17.20 (npm-style)
+velox install                  # install (from velox.lock if it matches package.json)
 velox remove express           # uninstall (updates velox.lock)
 velox update [--latest] [pkg]  # upgrade in-range (or bump ranges with --latest)
 velox outdated                 # list deps with a newer version available
@@ -45,9 +45,16 @@ disable). So re-resolving the same graph — every `add`/`install` without a
 lockfile — is near-instant on repeat instead of dozens of network round-trips,
 and installs work offline from cache.
 
-**Lockfile.** Resolution is pinned to `velox.lock` (YAML). When it exists,
-`velox install` installs exactly those versions — no resolution, fully
-reproducible — while `add`/`remove`/`update` keep it in sync. Commit it.
+**Lockfile.** Resolution is pinned to `velox.lock` (YAML). `velox install`
+installs exactly those versions — no resolution, fully reproducible — *as long
+as the lockfile still satisfies `package.json`*; if you hand-edit a dependency,
+the lockfile is detected as stale and the graph is re-resolved. `add`/`remove`/
+`update` keep it in sync. Commit it.
+
+**Installed CLIs.** A package's `bin` entries are linked into
+`node_modules/.bin` as wrappers that run through velox — so a `package.json`
+script (or `velox run`) can invoke `tsc`, `vitest`, `eslint`, `prettier`, etc.,
+executed on velox.
 
 **Workspaces.** Monorepos are supported via npm's `"workspaces"` glob array in
 the root `package.json` **or** a `pnpm-workspace.yaml` with a `packages:` list

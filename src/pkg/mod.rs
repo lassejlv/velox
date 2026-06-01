@@ -41,26 +41,41 @@ pub fn install() -> ExitCode {
     if let Some(root) = current_workspace_root() {
         return install_workspace(&root, "install");
     }
-    if let Some(locked) = lockfile::read() {
-        println!();
-        println!(
-            "  {} {} {}",
-            "velox".cyan().bold(),
-            "install".dimmed(),
-            format!(
-                "· {} locked package(s) from {}",
-                locked.len(),
-                lockfile::LOCKFILE
-            )
-            .dimmed()
-        );
-        return install_resolved(locked);
-    }
 
     let pkg_path = PathBuf::from("package.json");
-    let pkg = match load_package_json(&pkg_path) {
-        Ok(p) => p,
-        Err(e) => return fail(&e),
+    let pkg = load_package_json(&pkg_path).ok();
+
+    // Use the lockfile only if it still satisfies package.json's direct deps —
+    // otherwise it's stale (package.json was hand-edited) and we re-resolve.
+    if let Some(locked) = lockfile::read() {
+        let fresh = pkg
+            .as_ref()
+            .map(|p| lockfile_is_fresh(p, &locked))
+            .unwrap_or(true);
+        if fresh {
+            println!();
+            println!(
+                "  {} {} {}",
+                "velox".cyan().bold(),
+                "install".dimmed(),
+                format!(
+                    "· {} locked package(s) from {}",
+                    locked.len(),
+                    lockfile::LOCKFILE
+                )
+                .dimmed()
+            );
+            return install_resolved(locked);
+        }
+        println!(
+            "  {} {} is out of date with package.json — re-resolving",
+            "!".yellow(),
+            lockfile::LOCKFILE
+        );
+    }
+
+    let Some(pkg) = pkg else {
+        return fail("no package.json in the current directory (run `velox init` first)");
     };
     let roots = gather_roots(&pkg, true);
     if roots.is_empty() {
@@ -166,8 +181,12 @@ pub fn add(specs: &[String], dev: bool) -> ExitCode {
         "· resolving requested packages".dimmed()
     );
 
-    // Resolve each requested spec to a concrete version so we can pin `^x.y.z`.
+    // Resolve each requested spec to a concrete version. `save` is what goes in
+    // package.json (`^x.y.z` for a bare/exact request); `exact` is the version
+    // to actually install — so `velox add pkg@1.2.3` installs *exactly* 1.2.3
+    // (npm semantics) rather than the newest in `^1.2.3`.
     let mut to_record: Vec<(String, String)> = Vec::new();
+    let mut exact: Vec<(String, String)> = Vec::new();
     for spec in specs {
         let (name, range) = parse_spec(spec);
         let resolved = match resolve::resolve(&[(name.clone(), range.clone())]) {
@@ -180,6 +199,7 @@ pub fn add(specs: &[String], dev: bool) -> ExitCode {
         };
         let save = save_range(&range, &top.version);
         to_record.push((name.clone(), save.clone()));
+        exact.push((name.clone(), top.version.to_string()));
         println!("  {} {name} {}", "✓".green().bold(), save.dimmed());
     }
 
@@ -210,7 +230,14 @@ pub fn add(specs: &[String], dev: bool) -> ExitCode {
     if let Some(root) = current_workspace_root() {
         return install_workspace(&root, "add");
     }
-    let roots = gather_roots(&pkg, true);
+    // Install the existing graph plus the new packages — pinned to the exact
+    // requested version (not the saved `^` range).
+    let mut root_map: std::collections::BTreeMap<String, String> =
+        gather_roots(&pkg, true).into_iter().collect();
+    for (name, version) in exact {
+        root_map.insert(name, version);
+    }
+    let roots: Vec<(String, String)> = root_map.into_iter().collect();
     run_install(&roots, "add")
 }
 
@@ -416,6 +443,25 @@ fn collect_direct_deps() -> Vec<(String, String)> {
         push(&pkg);
     }
     out
+}
+
+/// Whether `locked` still satisfies every direct dependency declared in `pkg`
+/// — i.e. the lockfile isn't stale relative to a hand-edited package.json.
+fn lockfile_is_fresh(pkg: &Value, locked: &[Resolved]) -> bool {
+    use std::collections::BTreeMap;
+    let by_name: BTreeMap<&str, &Version> =
+        locked.iter().map(|r| (r.name.as_str(), &r.version)).collect();
+    for (name, range) in gather_roots(pkg, true) {
+        // Local/workspace/git specifiers aren't registry-resolved or locked.
+        if !resolve::is_registry_range(&range) {
+            continue;
+        }
+        match by_name.get(name.as_str()) {
+            Some(v) if Range::parse(&range).matches(v) => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn direct_dep_names(pkg: &Value) -> Vec<String> {
@@ -635,7 +681,71 @@ fn install_one(r: &Resolved, nm: &Path) -> Result<bool, String> {
     }
     std::fs::create_dir_all(&dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
     tarball::extract(&bytes, &dest)?;
+    link_bins(nm, &r.name);
     Ok(true)
+}
+
+/// Create `node_modules/.bin/<name>` wrappers for a package's `bin` entries, so
+/// `velox run`/`velox x` can invoke installed CLIs (tsc, vitest, eslint, …)
+/// through velox as the runtime. Each wrapper is a tiny `sh` script that execs
+/// `velox <bin.js> "$@"` (velox strips the bin's `#!/usr/bin/env node` shebang).
+fn link_bins(nm: &Path, pkg_name: &str) {
+    let pkg_dir = nm.join(pkg_name);
+    let Ok(text) = std::fs::read_to_string(pkg_dir.join("package.json")) else {
+        return;
+    };
+    let Ok(meta) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    let mut bins: Vec<(String, String)> = Vec::new();
+    match &meta["bin"] {
+        Value::String(s) => {
+            let short = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
+            bins.push((short.to_string(), s.clone()));
+        }
+        Value::Object(map) => {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    bins.push((k.clone(), s.to_string()));
+                }
+            }
+        }
+        _ => return,
+    }
+    if bins.is_empty() {
+        return;
+    }
+    let bin_dir = nm.join(".bin");
+    if std::fs::create_dir_all(&bin_dir).is_err() {
+        return;
+    }
+    let velox = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "velox".to_string());
+    for (name, rel) in bins {
+        let target = abs_path(&pkg_dir.join(rel.trim_start_matches("./")));
+        let script = format!(
+            "#!/bin/sh\nexec \"{velox}\" \"{}\" \"$@\"\n",
+            target.display()
+        );
+        let link = bin_dir.join(&name);
+        if std::fs::write(&link, script).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+}
+
+/// Make a path absolute against the current directory.
+fn abs_path(p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    }
 }
 
 /// True if `node_modules/<name>/package.json` already reports `version`.
