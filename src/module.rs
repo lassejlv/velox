@@ -256,19 +256,126 @@ pub fn bundle(entry: &Path) -> Result<String, ModuleError> {
 /// Like [`bundle`], but also returns every source file that went into the bundle
 /// (the entry plus all transitively-resolved local modules) — for `--watch`.
 pub fn bundle_with_deps(entry: &Path) -> Result<(String, Vec<PathBuf>), ModuleError> {
-    // Make the entry absolute (against cwd) so every importer directory derived
-    // from it is absolute — oxc_resolver needs an absolute base to walk
-    // `node_modules` (a relative/empty dir resolves nothing).
+    let entry = absolutize(entry);
+    let mut graph = Graph::default();
+    let entry_id = graph.load(&entry)?;
+    let js = graph.emit(entry_id);
+    Ok((js, graph.paths.clone()))
+}
+
+/// Like [`bundle`], but served from an on-disk cache when none of the source
+/// files that went into the bundle have changed — skipping the resolve +
+/// transpile + rewrite of the whole graph on repeat runs. Set `$VELOX_NO_CACHE`
+/// to disable.
+pub fn bundle_cached(entry: &Path) -> Result<String, ModuleError> {
+    let entry = absolutize(entry);
+    if std::env::var_os("VELOX_NO_CACHE").is_none()
+        && let Some(js) = read_bundle_cache(&entry)
+    {
+        return Ok(js);
+    }
+    let (js, deps) = bundle_with_deps(&entry)?;
+    write_bundle_cache(&entry, &js, &deps);
+    Ok(js)
+}
+
+/// Make `entry` absolute (against cwd) and lexically normalized. oxc_resolver
+/// needs an absolute base to walk `node_modules`.
+fn absolutize(entry: &Path) -> PathBuf {
     let entry = if entry.is_absolute() {
         entry.to_path_buf()
     } else {
         std::env::current_dir().unwrap_or_default().join(entry)
     };
-    let entry = normalize(&entry);
-    let mut graph = Graph::default();
-    let entry_id = graph.load(&entry)?;
-    let js = graph.emit(entry_id);
-    Ok((js, graph.paths.clone()))
+    normalize(&entry)
+}
+
+/// Directory holding cached bundles (`$VELOX_CACHE` or `~/.velox/cache`).
+fn bundle_cache_dir() -> Option<PathBuf> {
+    let base = match std::env::var_os("VELOX_CACHE") {
+        Some(c) => PathBuf::from(c),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".velox").join("cache"),
+    };
+    Some(base.join("bundles"))
+}
+
+/// Stable cache key for an absolute entry path.
+fn bundle_cache_key(entry: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    entry.to_string_lossy().hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Modified-time of the running velox binary (so a rebuilt/upgraded velox
+/// invalidates bundle caches even when the version string is unchanged).
+fn velox_binary_mtime() -> Option<u64> {
+    file_stamp(&std::env::current_exe().ok()?).map(|(mtime, _)| mtime)
+}
+
+/// (modified-time-nanos, size) for a source file, for cache validation.
+fn file_stamp(path: &Path) -> Option<(u64, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    let mtime = m
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos() as u64;
+    Some((mtime, m.len()))
+}
+
+/// Return the cached bundle if every recorded dependency is unchanged and the
+/// cache was written by this velox version.
+fn read_bundle_cache(entry: &Path) -> Option<String> {
+    let dir = bundle_cache_dir()?;
+    let key = bundle_cache_key(entry);
+    let meta_text = std::fs::read_to_string(dir.join(format!("{key}.meta"))).ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&meta_text).ok()?;
+    // Invalidate if the cache format, velox version, or the velox binary itself
+    // changed (the latter catches dev rebuilds + upgrades that keep the same
+    // version string but bundle differently).
+    if meta["version"].as_str() != Some(env!("CARGO_PKG_VERSION"))
+        || meta["format"].as_u64() != Some(1)
+        || meta["velox"].as_u64() != velox_binary_mtime()
+    {
+        return None;
+    }
+    let deps = meta["deps"].as_array()?;
+    if deps.is_empty() {
+        return None;
+    }
+    for d in deps {
+        let path = d[0].as_str()?;
+        let (mtime, size) = file_stamp(Path::new(path))?; // missing file → cache miss
+        if d[1].as_u64() != Some(mtime) || d[2].as_u64() != Some(size) {
+            return None;
+        }
+    }
+    std::fs::read_to_string(dir.join(format!("{key}.js"))).ok()
+}
+
+/// Persist the bundle and a manifest of its source files' stamps (best-effort).
+fn write_bundle_cache(entry: &Path, js: &str, deps: &[PathBuf]) {
+    let Some(dir) = bundle_cache_dir() else { return };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let mut dep_json = Vec::with_capacity(deps.len());
+    for d in deps {
+        if let Some((mtime, size)) = file_stamp(d) {
+            dep_json.push(serde_json::json!([d.to_string_lossy(), mtime, size]));
+        }
+    }
+    let meta = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "format": 1,
+        "velox": velox_binary_mtime(),
+        "deps": dep_json,
+    });
+    let key = bundle_cache_key(entry);
+    let _ = std::fs::write(dir.join(format!("{key}.js")), js);
+    let _ = std::fs::write(dir.join(format!("{key}.meta")), meta.to_string());
 }
 
 /// The resolved module graph: a stable ordering of modules plus the rewritten

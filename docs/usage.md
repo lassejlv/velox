@@ -104,6 +104,14 @@ velox script.js
 
 Relative `import`s and `node_modules` are resolved and bundled automatically.
 
+The bundle is **cached** between runs (under `~/.velox/cache/bundles`, or
+`$VELOX_CACHE`): a repeat `velox app.ts` whose source files are all unchanged
+skips re-resolving and re-transpiling the whole import graph and just evaluates
+the cached output — noticeably faster cold starts for dependency-heavy apps
+(e.g. a ~100-dependency app drops ~40%). The cache invalidates automatically
+when any source file (by mtime/size) or the velox binary changes. Set
+`$VELOX_NO_CACHE=1` to bypass it.
+
 ### Default-export server (Bun-style)
 
 If a script's `export default` is a server object (`{ port?, fetch }`) or a web

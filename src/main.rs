@@ -372,7 +372,8 @@ fn run_source(code: &str, _label: &str) -> ExitCode {
 fn run_file(path: &Path) -> ExitCode {
     // Resolve + transpile + bundle the entry and its relative imports into a
     // single script (JSC's evaluator does not accept ESM syntax directly).
-    let js = match module::bundle(path) {
+    // Cached: a repeat run with unchanged sources skips re-bundling.
+    let js = match module::bundle_cached(path) {
         Ok(js) => js,
         Err(error) => {
             ui::report_module_error(&error.to_string());
