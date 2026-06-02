@@ -352,6 +352,23 @@ function ServerResponse(req) {
 }
 inherits(ServerResponse, EventEmitter);
 
+// assignSocket/detachSocket — Node attaches the underlying socket to the
+// response here; HTTP-injection libraries (light-my-request, supertest) build a
+// ServerResponse over a synthetic null socket and call these, then read back
+// what was written. Mirror the contract: cross-link socket._httpMessage and
+// emit 'socket'.
+ServerResponse.prototype.assignSocket = function (socket) {
+  if (socket) socket._httpMessage = this;
+  this.socket = socket;
+  this.connection = socket;
+  this.emit('socket', socket);
+};
+ServerResponse.prototype.detachSocket = function (socket) {
+  if (socket) socket._httpMessage = null;
+  this.socket = null;
+  this.connection = null;
+};
+
 // Decide whether a request permits keep-alive: HTTP/1.1 (or HTTP/1.0 with an
 // explicit `Connection: keep-alive`) and no `Connection: close`.
 function shouldKeepAlive(req) {
