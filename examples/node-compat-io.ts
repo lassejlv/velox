@@ -21,6 +21,18 @@ check("assert strict ok", () => { const a = require("node:assert"); a.ok(true); 
 check("zlib gzip/gunzip", () => { const z = require("node:zlib"); const buf = Buffer.from("hello".repeat(50)); const g = z.gzipSync(buf); if (z.gunzipSync(g).toString() !== buf.toString()) throw new Error("gz"); });
 check("zlib deflate/inflate", () => { const z = require("node:zlib"); const buf = Buffer.from("xyz".repeat(50)); if (z.inflateSync(z.deflateSync(buf)).toString() !== buf.toString()) throw new Error("df"); });
 check("zlib brotli", () => { const z = require("node:zlib"); if (typeof z.brotliCompressSync !== "function") throw new Error("no brotli"); const b = z.brotliCompressSync(Buffer.from("hi".repeat(50))); if (z.brotliDecompressSync(b).toString() !== "hi".repeat(50)) throw new Error("br"); });
+// zlib.Inflate exposes the low-level _handle.writeSync binding protocol (pngjs subclasses it).
+check("zlib.Inflate _handle.writeSync", () => {
+  const z = require("node:zlib");
+  const data = Buffer.from("inflate me ".repeat(40));
+  const deflated = z.deflateSync(data);
+  const inf: any = new z.Inflate();
+  if (typeof inf._handle?.writeSync !== "function" || typeof inf._chunkSize !== "number" || !Buffer.isBuffer(inf._buffer)) throw new Error("no handle/fields");
+  const out = Buffer.allocUnsafe(inf._chunkSize);
+  const [, availOutAfter] = inf._handle.writeSync(4, deflated, 0, deflated.length, out, 0, out.length);
+  const produced = out.length - availOutAfter;
+  if (out.subarray(0, produced).toString() !== data.toString()) throw new Error("writeSync output");
+});
 
 // streams piping
 check("stream pipe", async () => {

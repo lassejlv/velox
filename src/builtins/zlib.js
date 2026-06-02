@@ -79,6 +79,35 @@ function promisify(syncFn) {
 // output once the writable side ends. Not incremental — fine for whole files.
 // These are real constructor classes (Node exposes `zlib.Inflate`/`Deflate`/…);
 // libraries like pngjs do `util.inherits(MyInflate, zlib.Inflate)`.
+// A stateful low-level codec handle exposing the `writeSync(flushFlag, chunk,
+// inOff, inLen, outBuf, outOff, outLen) → [availInAfter, availOutAfter]` protocol
+// that Node's zlib binding provides. pngjs's sync-inflate drives this directly
+// (it overrides `_processChunk` and reaches into `this._handle`). We run the
+// one-shot codec on first use, then dole the result out across the output
+// buffers the caller hands us, growing as its loop requests more.
+function makeZlibHandle(syncFn) {
+  var result = null;
+  var consumed = 0;
+  return {
+    writeSync: function (_flushFlag, chunk, inOff, inLen, outBuf, outOff, outLen) {
+      if (result === null) {
+        var input = inLen > 0
+          ? globalThis.Buffer.from(chunk).slice(inOff, inOff + inLen)
+          : globalThis.Buffer.alloc(0);
+        result = syncFn(input);
+        consumed = 0;
+      }
+      var remaining = result.length - consumed;
+      var toWrite = remaining < outLen ? remaining : outLen;
+      if (toWrite > 0) result.copy(outBuf, outOff, consumed, consumed + toWrite);
+      consumed += toWrite;
+      return [0, outLen - toWrite]; // [availInAfter, availOutAfter]
+    },
+    close: function () { result = null; consumed = 0; },
+    reset: function () { result = null; consumed = 0; },
+  };
+}
+
 function makeZlibClass(syncFn) {
   function ZlibStream(options) {
     if (!(this instanceof ZlibStream)) return new ZlibStream(options);
@@ -86,6 +115,19 @@ function makeZlibClass(syncFn) {
     this._chunks = [];
     this._zlibSync = syncFn;
     this.bytesWritten = 0;
+    // Low-level binding fields some libraries (pngjs) read after calling the
+    // super constructor. Harmless for the normal Transform path above.
+    var chunkSize = (options && options.chunkSize) || 16384;
+    this._chunkSize = chunkSize;
+    this._offset = 0;
+    this._outOffset = 0;
+    this._buffer = globalThis.Buffer.allocUnsafe(chunkSize);
+    this._outBuffer = this._buffer;
+    this._maxLength = (options && options.maxLength != null) ? options.maxLength : Infinity;
+    this._finishFlushFlag = 4; // Z_FINISH
+    this._hadError = false;
+    this._writeState = null;
+    this._handle = makeZlibHandle(syncFn);
   }
   ZlibStream.prototype = Object.create(Transform.prototype);
   ZlibStream.prototype.constructor = ZlibStream;
