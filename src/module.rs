@@ -628,12 +628,27 @@ impl Graph {
         // resolves through the bundle's registry instead of JSC's module loader,
         // which can't see `node_modules`).
         for (span, specifier) in collector.dynamic_imports {
-            if let Ok(id) = self.resolve_and_load(&specifier, dir, path) {
-                edits.push(Edit {
+            match self.resolve_and_load(&specifier, dir, path) {
+                Ok(id) => edits.push(Edit {
                     start: span.start,
                     end: span.end,
                     text: format!("__velox_import('{id}')"),
-                });
+                }),
+                // A *literal* `import('x')` we can't resolve at bundle time can
+                // never load at runtime either (JSC's native loader can't see
+                // node_modules), so surface a clear "Cannot find module" rejection
+                // instead of leaving it bare — which fails with JSC's cryptic
+                // "module specifier does not start with ./".
+                Err(_) => {
+                    let esc = specifier.replace('\\', "\\\\").replace('\'', "\\'");
+                    edits.push(Edit {
+                        start: span.start,
+                        end: span.end,
+                        text: format!(
+                            "Promise.reject(new Error('Cannot find module \\'{esc}\\''))"
+                        ),
+                    });
+                }
             }
         }
 
