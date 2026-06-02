@@ -77,6 +77,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("child_process", include_str!("builtins/child_process.js")),
     ("cluster", include_str!("builtins/cluster.js")),
     ("sqlite", include_str!("builtins/sqlite.js")),
+    ("better-sqlite3", include_str!("builtins/better_sqlite3.js")),
     ("tls", include_str!("builtins/tls.js")),
     ("https", include_str!("builtins/https.js")),
     ("vm", include_str!("builtins/vm.js")),
@@ -175,7 +176,18 @@ pub const GLOBALS_PRELUDE: &str = r#"
     var stream = {
       readable: true,
       fd: 0,
+      isRaw: false,
       get isTTY() { return !!__velox_isatty(0); },
+      // Interactive prompts (inquirer/prompts/create-vite) put the terminal in
+      // raw mode to read keypresses; the native sets termios and restores it on
+      // exit. A no-op when stdin isn't a TTY.
+      setRawMode: function (mode) {
+        stream.isRaw = !!mode;
+        if (typeof __velox_stdin_set_raw === "function") __velox_stdin_set_raw(!!mode);
+        return stream;
+      },
+      ref: function () { return stream; },
+      unref: function () { return stream; },
       on: on,
       addListener: on,
       once: function (ev, fn) {

@@ -162,6 +162,30 @@ check("sqlite DatabaseSync CRUD", () => {
   db.close();
   if (db.isOpen !== false) throw new Error("close");
 });
+// better-sqlite3 shim over node:sqlite (knex/Drizzle target it).
+check("better-sqlite3 shim", () => {
+  const Database = require("better-sqlite3");
+  const db = new Database(":memory:");
+  db.pragma("journal_mode = WAL");
+  db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)");
+  const ins = db.prepare("INSERT INTO t (n) VALUES (?)");
+  if (ins.run("a").lastInsertRowid !== 1) throw new Error("run");
+  const tx = db.transaction((names: string[]) => { for (const n of names) ins.run(n); });
+  tx(["b", "c"]);
+  if (db.prepare("SELECT COUNT(*) c FROM t").pluck().get() !== 3) throw new Error("tx/pluck");
+  if (db.prepare("SELECT id, n FROM t WHERE id = ?").raw().get(1)[1] !== "a") throw new Error("raw");
+  // lone array binds positionally (knex/Kysely convention)
+  if (db.prepare("SELECT n FROM t WHERE id = ?").pluck().get([2]) !== "b") throw new Error("array-bind");
+  db.close();
+});
+// process.stdin.setRawMode exists (interactive CLIs: inquirer/prompts/create-vite); no-ops off a TTY.
+check("stdin.setRawMode", () => {
+  if (typeof process.stdin.setRawMode !== "function") throw new Error("missing");
+  process.stdin.setRawMode(true);
+  if (process.stdin.isRaw !== true) throw new Error("isRaw");
+  process.stdin.setRawMode(false);
+  if (process.stdin.isRaw !== false) throw new Error("restore");
+});
 check("cp.spawnSync", () => { const cp = require("node:child_process"); if (typeof cp.spawnSync !== "function") throw new Error("no spawnSync"); const r = cp.spawnSync("echo", ["sy"]); if (r.stdout.toString().trim() !== "sy") throw new Error("got " + r.stdout); });
 check("cp.exec maxBuffer/options", async () => { const cp = require("node:child_process"); await new Promise<void>((res, rej) => cp.exec("echo hi", { encoding: "utf8" }, (e: any, out: any) => e ? rej(e) : (out.trim() === "hi" ? res() : rej(new Error("got " + out))))); });
 
