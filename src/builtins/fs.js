@@ -13,7 +13,16 @@ function fsPath(p) {
     if (p === 2) return '/dev/stderr';
     return '/dev/fd/' + p;
   }
-  return String(p);
+  // Node's fs accepts a `file:` URL object or string (ESM packages pass
+  // `new URL('../x', import.meta.url)`); convert it to a filesystem path.
+  if (p && typeof p === 'object' && p.protocol === 'file:' && typeof p.pathname === 'string') {
+    return decodeURIComponent(p.pathname);
+  }
+  var s = String(p);
+  if (s.slice(0, 7) === 'file://') {
+    try { return decodeURIComponent(new URL(s).pathname); } catch (e) {}
+  }
+  return s;
 }
 function encOf(options) {
   if (typeof options === 'string') return options;
@@ -135,24 +144,24 @@ function existsSync(p) {
 function statSync(p) { return new Stats(JSON.parse(__velox_stat(fsPath(p), true))); }
 function lstatSync(p) { return new Stats(JSON.parse(__velox_stat(fsPath(p), false))); }
 function readdirSync(p, options) {
-  var names = JSON.parse(__velox_readdir(String(p)));
+  var names = JSON.parse(__velox_readdir(fsPath(p)));
   if (options && options.withFileTypes) {
     return names.map(function (n) { return direntFor(p, n); });
   }
   return names;
 }
 function mkdirSync(p, options) {
-  __velox_mkdir(String(p), !!(options && typeof options === 'object' && options.recursive));
+  __velox_mkdir(fsPath(p), !!(options && typeof options === 'object' && options.recursive));
 }
 function rmSync(p, options) {
-  __velox_rm(String(p), !!(options && options.recursive), !!(options && options.force));
+  __velox_rm(fsPath(p), !!(options && options.recursive), !!(options && options.force));
 }
 function rmdirSync(p, options) {
-  __velox_rm(String(p), !!(options && options.recursive), false);
+  __velox_rm(fsPath(p), !!(options && options.recursive), false);
 }
-function unlinkSync(p) { __velox_rm(String(p), false, false); }
-function renameSync(a, b) { __velox_rename(String(a), String(b)); }
-function realpathSync(p) { return __velox_realpath(String(p)); }
+function unlinkSync(p) { __velox_rm(fsPath(p), false, false); }
+function renameSync(a, b) { __velox_rename(fsPath(a), fsPath(b)); }
+function realpathSync(p) { return __velox_realpath(fsPath(p)); }
 function accessSync(p) { if (!__velox_exists(fsPath(p))) { throw globalThis.__velox_fs_error('ENOENT', 'ENOENT: no such file or directory, access \'' + p + '\''); } }
 function copyFileSync(src, dest) { writeFileSync(dest, readFileSync(src)); }
 function randSuffix() {
@@ -167,7 +176,7 @@ function mkdtempSync(prefix, options) {
   }
   throw globalThis.__velox_fs_error('EEXIST', 'EEXIST: could not create unique temp dir');
 }
-function realpathSyncNative(p) { return __velox_realpath(String(p)); }
+function realpathSyncNative(p) { return __velox_realpath(fsPath(p)); }
 realpathSync.native = realpathSyncNative;
 
 // --- file descriptors (synthetic table, read-modify-write backed) ----------
