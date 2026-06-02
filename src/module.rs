@@ -1252,10 +1252,16 @@ fn velox_resolve_options(allow_import: bool) -> ResolveOptions {
         // Prefer the CommonJS `main` (velox bundles to CJS) but fall back to
         // `module` for ESM-only legacy packages without an `exports` map.
         main_fields: vec![s("main"), s("module")],
+        // Map a `.js` import onto its TS source, but try the *literal* extension
+        // first: a package whose `main: index.js` also ships `index.ts` source
+        // (fast-json-patch) must resolve to the compiled `.js`, not the source
+        // (whose dev-only imports may not bundle). The `.ts` fallback still serves
+        // the nodenext convention (`import './x.js'` for `./x.ts`) when no `.js`
+        // file exists.
         extension_alias: vec![
-            (s(".js"), vec![s(".ts"), s(".tsx"), s(".js"), s(".jsx")]),
-            (s(".mjs"), vec![s(".mts"), s(".mjs")]),
-            (s(".cjs"), vec![s(".cts"), s(".cjs")]),
+            (s(".js"), vec![s(".js"), s(".jsx"), s(".ts"), s(".tsx")]),
+            (s(".mjs"), vec![s(".mjs"), s(".mts")]),
+            (s(".cjs"), vec![s(".cjs"), s(".cts")]),
         ],
         ..ResolveOptions::default()
     }
