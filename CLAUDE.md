@@ -206,7 +206,15 @@ JSC's *synchronous* `Module`/`Instance` constructors: JSC's native async settles
 via its `deferredWorkTimer` (a CFRunLoop timer) which never fires under velox's
 kqueue loop, so those promises would hang forever — the shim compiles
 synchronously and resolves immediately (unblocks emscripten output, e.g. sql.js).
-`URL` follows the WHATWG algorithm closely —
+**`node:sqlite`** is a real embedded database: `src/sqlite.rs` bridges
+`rusqlite` (SQLite compiled in via the `bundled` feature — no system dep) behind
+`__velox_sqlite_*` natives, and `builtins/sqlite.js` wraps them as
+`DatabaseSync`/`StatementSync` (run/get/all/iterate, positional + named params,
+`:memory:` and file DBs). Values cross as JSON; BLOBs and >2^53 integers are
+tagged (`{t:"blob"|"bigint", v}`) so binary/BigInt survive the hop. Connections
+live in a thread-local registry (each worker gets its own); statements re-prepare
+from SQL per call (no cross-FFI borrow). Custom `function`/`aggregate` aren't
+bridged yet. `URL` follows the WHATWG algorithm closely —
 strips tab/newline/leading-trailing controls, treats backslash as slash in
 special schemes, drops default ports, normalizes dot-segments (preserving empty
 ones), percent-encodes userinfo/path/query/fragment per their encode sets,

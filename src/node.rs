@@ -76,6 +76,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("dns/promises", include_str!("builtins/dns_promises.js")),
     ("child_process", include_str!("builtins/child_process.js")),
     ("cluster", include_str!("builtins/cluster.js")),
+    ("sqlite", include_str!("builtins/sqlite.js")),
     ("tls", include_str!("builtins/tls.js")),
     ("https", include_str!("builtins/https.js")),
     ("vm", include_str!("builtins/vm.js")),

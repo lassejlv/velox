@@ -152,6 +152,7 @@ impl Runtime {
         crate::worker::install(ctx);
         crate::vm::install(ctx);
         crate::shared::install(ctx);
+        crate::sqlite::install(ctx);
         crate::udp::install(ctx);
         crate::sourcemap::install(ctx);
         let _ = runtime.eval(crate::node::GLOBALS_PRELUDE);

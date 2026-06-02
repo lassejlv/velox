@@ -140,6 +140,28 @@ check("cp.fork", () => { const cp = require("node:child_process"); if (typeof cp
 check("cluster primary stub", () => { const cluster = require("node:cluster"); if (cluster.isPrimary !== true || cluster.isMaster !== true || cluster.isWorker !== false) throw new Error("flags"); if (typeof cluster.on !== "function" || typeof cluster.fork !== "function") throw new Error("api"); });
 // tls.Server exists for instanceof checks (supertest: `app instanceof tls.Server`).
 check("tls.Server constructor", () => { const tls = require("node:tls"); if (typeof tls.Server !== "function" || typeof tls.createServer !== "function") throw new Error("no Server"); const s = new tls.Server(); const net = require("node:net"); if (!(s instanceof net.Server)) throw new Error("not net.Server"); if (({}) instanceof tls.Server) throw new Error("false positive"); });
+// node:sqlite — real embedded SQLite (DatabaseSync/StatementSync).
+check("sqlite DatabaseSync CRUD", () => {
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, data BLOB)");
+  const ins = db.prepare("INSERT INTO t (name, data) VALUES (?, ?)");
+  const info = ins.run("Alice", Buffer.from([1, 2, 3]));
+  if (info.changes !== 1 || info.lastInsertRowid !== 1) throw new Error("run");
+  ins.run("Bob", null);
+  const row: any = db.prepare("SELECT * FROM t WHERE name = ?").get("Alice");
+  if (row.id !== 1 || row.name !== "Alice" || !Buffer.isBuffer(row.data) || row.data[2] !== 3) throw new Error("get/blob");
+  const all: any[] = db.prepare("SELECT name FROM t ORDER BY id").all();
+  if (all.length !== 2 || all[0].name !== "Alice" || all[1].name !== "Bob") throw new Error("all");
+  const named: any = db.prepare("SELECT * FROM t WHERE id = :id").get({ id: 2 });
+  if (named.name !== "Bob" || named.data !== null) throw new Error("named/null");
+  const it: string[] = [];
+  for (const r of db.prepare("SELECT name FROM t ORDER BY name").iterate() as any) it.push(r.name);
+  if (it.join(",") !== "Alice,Bob") throw new Error("iterate");
+  if (db.isOpen !== true) throw new Error("isOpen");
+  db.close();
+  if (db.isOpen !== false) throw new Error("close");
+});
 check("cp.spawnSync", () => { const cp = require("node:child_process"); if (typeof cp.spawnSync !== "function") throw new Error("no spawnSync"); const r = cp.spawnSync("echo", ["sy"]); if (r.stdout.toString().trim() !== "sy") throw new Error("got " + r.stdout); });
 check("cp.exec maxBuffer/options", async () => { const cp = require("node:child_process"); await new Promise<void>((res, rej) => cp.exec("echo hi", { encoding: "utf8" }, (e: any, out: any) => e ? rej(e) : (out.trim() === "hi" ? res() : rej(new Error("got " + out))))); });
 
