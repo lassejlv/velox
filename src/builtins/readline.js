@@ -136,50 +136,106 @@ function Interface(input, output, completer, terminal) {
   this.line = '';
   this.cursor = 0;
   this._closed = false;
+  // In terminal mode the interface is a line editor: it consumes keypresses to
+  // maintain `line`/`cursor` (which @clack/inquirer read after each keypress)
+  // and emits 'line' on Enter. Raw mode lets individual keys through.
+  if (this.terminal && this.input && typeof this.input.on === 'function') {
+    if (this.input.setRawMode) this.input.setRawMode(true);
+    emitKeypressEvents(this.input, this);
+    var self = this;
+    this._onKeypress = function (str, key) { self._editKey(str, key || {}); };
+    this.input.on('keypress', this._onKeypress);
+    if (this.input.resume) this.input.resume();
+  }
 }
 Interface.prototype = Object.create(EventEmitter.prototype);
 Interface.prototype.constructor = Interface;
 
-// question(query, cb) / question(query, opts, cb) — read one line. Decodes
-// keypresses so it works under raw mode; resolves on Enter.
+Interface.prototype._insert = function (text) {
+  this.line = this.line.slice(0, this.cursor) + text + this.line.slice(this.cursor);
+  this.cursor += text.length;
+};
+
+// Apply one editing key to the line buffer. Shared by the keypress handler and
+// by `write(null, key)` (which @clack uses to send backspace etc.).
+Interface.prototype._editKey = function (str, key) {
+  var name = key.name;
+  if (name === 'return' || name === 'enter') {
+    var line = this.line;
+    this.line = ''; this.cursor = 0;
+    this.emit('line', line);
+    return;
+  }
+  if (name === 'backspace' || (key.ctrl && name === 'h')) {
+    if (this.cursor > 0) { this.line = this.line.slice(0, this.cursor - 1) + this.line.slice(this.cursor); this.cursor--; }
+    return;
+  }
+  if (name === 'delete' || (key.ctrl && name === 'd' && this.line)) {
+    if (this.cursor < this.line.length) this.line = this.line.slice(0, this.cursor) + this.line.slice(this.cursor + 1);
+    return;
+  }
+  if (name === 'left') { if (this.cursor > 0) this.cursor--; return; }
+  if (name === 'right') { if (this.cursor < this.line.length) this.cursor++; return; }
+  if (name === 'home' || (key.ctrl && name === 'a')) { this.cursor = 0; return; }
+  if (name === 'end' || (key.ctrl && name === 'e')) { this.cursor = this.line.length; return; }
+  if (key.ctrl && name === 'u') { this.line = this.line.slice(this.cursor); this.cursor = 0; return; }
+  if (key.ctrl && name === 'k') { this.line = this.line.slice(0, this.cursor); return; }
+  if (key.ctrl && name === 'w') {
+    var i = this.cursor;
+    while (i > 0 && this.line[i - 1] === ' ') i--;
+    while (i > 0 && this.line[i - 1] !== ' ') i--;
+    this.line = this.line.slice(0, i) + this.line.slice(this.cursor); this.cursor = i;
+    return;
+  }
+  // A printable character (not a control/escape combo) is inserted.
+  if (str && str.length === 1 && !key.ctrl && !key.meta && str >= ' ' && str !== '\x7f') {
+    this._insert(str);
+  }
+};
+
+// question(query[, opts], cb) — read one line; resolves on Enter.
 Interface.prototype.question = function (query, optionsOrCb, maybeCb) {
   var cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
   var self = this;
   if (query && this.output) this.output.write(String(query));
   else if (query && globalThis.process.stdout) globalThis.process.stdout.write(String(query));
-  var line = '';
-  var input = this.input;
-  if (!input || typeof input.on !== 'function') {
+  if (!this.input || typeof this.input.on !== 'function') {
     if (cb) Promise.resolve().then(function () { cb(''); });
     return;
   }
-  function onData(chunk) {
-    var s = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    for (var i = 0; i < s.length; i++) {
-      var c = s.charCodeAt(i);
-      if (c === 13 || c === 10) {
-        input.removeListener('data', onData);
-        self.line = '';
-        if (cb) cb(line);
-        self.emit('line', line);
-        return;
-      } else if (c === 127 || c === 8) {
-        line = line.slice(0, -1);
-      } else if (c >= 32) {
-        line += s[i];
-      }
-    }
-    self.line = line;
+  // Ensure the line editor is active even if the interface wasn't terminal.
+  if (!this._onKeypress) {
+    if (this.input.setRawMode) this.input.setRawMode(true);
+    emitKeypressEvents(this.input, this);
+    this._onKeypress = function (str, key) { self._editKey(str, key || {}); };
+    this.input.on('keypress', this._onKeypress);
+    if (this.input.resume) this.input.resume();
   }
-  input.on('data', onData);
-  if (input.resume) input.resume();
+  function onLine(answer) {
+    self.removeListener('line', onLine);
+    if (cb) cb(answer);
+  }
+  this.on('line', onLine);
 };
 Interface.prototype.prompt = function () { if (this.output && this._prompt) this.output.write(this._prompt); };
 Interface.prototype.setPrompt = function (p) { this._prompt = p; };
-Interface.prototype.write = function (data) { if (this.output && data != null) this.output.write(String(data)); };
+// write(data[, key]) — Node's dual form: a string is inserted at the cursor; a
+// `(null, key)` call applies an editing key. @clack uses both.
+Interface.prototype.write = function (data, key) {
+  if (this._closed) return;
+  if (data === null || data === undefined) {
+    if (key) this._editKey(key.sequence || '', key);
+  } else {
+    this._insert(String(data));
+  }
+};
 Interface.prototype.close = function () {
   if (this._closed) return;
   this._closed = true;
+  if (this._onKeypress && this.input) {
+    this.input.removeListener('keypress', this._onKeypress);
+    this._onKeypress = null;
+  }
   this.emit('close');
 };
 Interface.prototype.pause = function () { if (this.input && this.input.pause) this.input.pause(); this.emit('pause'); return this; };

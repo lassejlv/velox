@@ -162,9 +162,15 @@ pub const GLOBALS_PRELUDE: &str = r#"
     var started = false;
     var encoding = null;
     var token = stdinToken++;
-    function emit(ev, arg) {
+    function emit(ev) {
       var l = listeners[ev];
-      if (l) for (var i = 0; i < l.slice().length; i++) l[i](arg);
+      if (!l) return false;
+      // Forward ALL arguments — `keypress` events carry (str, key); a single-arg
+      // emit would drop the key object, breaking interactive prompts.
+      var args = Array.prototype.slice.call(arguments, 1);
+      var copy = l.slice();
+      for (var i = 0; i < copy.length; i++) copy[i].apply(stream, args);
+      return true;
     }
     function start() {
       if (started) return;
