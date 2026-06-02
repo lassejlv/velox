@@ -138,6 +138,8 @@ check("cp.execFile async", async () => { const cp = require("node:child_process"
 check("cp.fork", () => { const cp = require("node:child_process"); if (typeof cp.fork !== "function") throw new Error("no fork"); });
 // node:cluster primary-only stub (rate-limiter-flexible and others require it at load).
 check("cluster primary stub", () => { const cluster = require("node:cluster"); if (cluster.isPrimary !== true || cluster.isMaster !== true || cluster.isWorker !== false) throw new Error("flags"); if (typeof cluster.on !== "function" || typeof cluster.fork !== "function") throw new Error("api"); });
+// tls.Server exists for instanceof checks (supertest: `app instanceof tls.Server`).
+check("tls.Server constructor", () => { const tls = require("node:tls"); if (typeof tls.Server !== "function" || typeof tls.createServer !== "function") throw new Error("no Server"); const s = new tls.Server(); const net = require("node:net"); if (!(s instanceof net.Server)) throw new Error("not net.Server"); if (({}) instanceof tls.Server) throw new Error("false positive"); });
 check("cp.spawnSync", () => { const cp = require("node:child_process"); if (typeof cp.spawnSync !== "function") throw new Error("no spawnSync"); const r = cp.spawnSync("echo", ["sy"]); if (r.stdout.toString().trim() !== "sy") throw new Error("got " + r.stdout); });
 check("cp.exec maxBuffer/options", async () => { const cp = require("node:child_process"); await new Promise<void>((res, rej) => cp.exec("echo hi", { encoding: "utf8" }, (e: any, out: any) => e ? rej(e) : (out.trim() === "hi" ? res() : rej(new Error("got " + out))))); });
 

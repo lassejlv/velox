@@ -25,8 +25,36 @@ function connect(port, host, options, cb) {
   return socket;
 }
 
+// tls.Server — a net.Server subclass. velox's HTTPS server drives TLS itself, so
+// this is mostly a real constructor for `instanceof` checks (supertest does
+// `app instanceof tls.Server` to choose http vs https) and for libraries that
+// subclass it. createServer wires the secureConnection→connection alias.
+function Server(options, secureConnectionListener) {
+  if (!(this instanceof Server)) return new Server(options, secureConnectionListener);
+  if (typeof options === "function") { secureConnectionListener = options; options = {}; }
+  net.Server.call(this, options);
+  if (typeof secureConnectionListener === "function") {
+    this.on("secureConnection", secureConnectionListener);
+    this.on("connection", function (socket) {
+      socket.authorized = true;
+      socket.encrypted = true;
+      this.emit("secureConnection", socket);
+    });
+  }
+}
+Server.prototype = Object.create(net.Server.prototype);
+Server.prototype.constructor = Server;
+Server.prototype.setSecureContext = function () {};
+Server.prototype.addContext = function () {};
+
+function createServer(options, secureConnectionListener) {
+  return new Server(options, secureConnectionListener);
+}
+
 module.exports = {
   connect: connect,
+  Server: Server,
+  createServer: createServer,
   TLSSocket: net.Socket,
   rootCertificates: [],
   DEFAULT_MIN_VERSION: "TLSv1.2",
