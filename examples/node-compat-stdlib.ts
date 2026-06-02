@@ -136,6 +136,8 @@ check("stream/promises finished works", async () => {
 check("cp.execFileSync", () => { const cp = require("node:child_process"); if (typeof cp.execFileSync !== "function") throw new Error("no execFileSync"); const o = cp.execFileSync("echo", ["hi"]).toString().trim(); if (o !== "hi") throw new Error("got " + o); });
 check("cp.execFile async", async () => { const cp = require("node:child_process"); if (typeof cp.execFile !== "function") throw new Error("no execFile"); await new Promise<void>((res, rej) => cp.execFile("echo", ["yo"], (e: any, out: any) => e ? rej(e) : (out.trim() === "yo" ? res() : rej(new Error("got " + out))))); });
 check("cp.fork", () => { const cp = require("node:child_process"); if (typeof cp.fork !== "function") throw new Error("no fork"); });
+// node:cluster primary-only stub (rate-limiter-flexible and others require it at load).
+check("cluster primary stub", () => { const cluster = require("node:cluster"); if (cluster.isPrimary !== true || cluster.isMaster !== true || cluster.isWorker !== false) throw new Error("flags"); if (typeof cluster.on !== "function" || typeof cluster.fork !== "function") throw new Error("api"); });
 check("cp.spawnSync", () => { const cp = require("node:child_process"); if (typeof cp.spawnSync !== "function") throw new Error("no spawnSync"); const r = cp.spawnSync("echo", ["sy"]); if (r.stdout.toString().trim() !== "sy") throw new Error("got " + r.stdout); });
 check("cp.exec maxBuffer/options", async () => { const cp = require("node:child_process"); await new Promise<void>((res, rej) => cp.exec("echo hi", { encoding: "utf8" }, (e: any, out: any) => e ? rej(e) : (out.trim() === "hi" ? res() : rej(new Error("got " + out))))); });
 
