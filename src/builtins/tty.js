@@ -9,7 +9,11 @@ function ReadStream(fd) {
   this.isRaw = false;
   this.isTTY = exports.isatty(fd);
 }
-ReadStream.prototype.setRawMode = function () { return this; };
+ReadStream.prototype.setRawMode = function (mode) {
+  this.isRaw = !!mode;
+  if (typeof __velox_stdin_set_raw === 'function' && this.fd === 0) __velox_stdin_set_raw(!!mode);
+  return this;
+};
 
 function WriteStream(fd) {
   this.fd = fd;

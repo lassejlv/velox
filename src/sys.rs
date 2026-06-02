@@ -37,6 +37,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_spawn_sync", spawn_sync);
         register(ctx, c"__velox_exec", exec);
         register(ctx, c"__velox_stdin_start", stdin_start);
+        register(ctx, c"__velox_stdin_set_raw", stdin_set_raw);
         register(ctx, c"__velox_read_file_async", read_file_async);
         register(ctx, c"__velox_write_file_async", write_file_async);
         register(ctx, c"__velox_fs_op_async", fs_op_async);
@@ -395,6 +396,78 @@ unsafe extern "C-unwind" fn stdin_start(
         let _ = tx.send((token, None));
         let _ = waker.wake();
     });
+    unsafe { JSValue::new_undefined(ctx) }
+}
+
+// ---------------------------------------------------------------------------
+// stdin raw mode (terminal)
+// ---------------------------------------------------------------------------
+
+/// The terminal's original termios, saved the first time raw mode is enabled so
+/// it can be restored on disable or at process exit.
+static SAVED_TERMIOS: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
+
+/// Restore the saved cooked-mode termios. Registered with `atexit` so a program
+/// that leaves stdin in raw mode (or panics mid-prompt) doesn't wreck the user's
+/// shell.
+extern "C" fn restore_termios() {
+    if let Ok(saved) = SAVED_TERMIOS.lock()
+        && let Some(orig) = saved.as_ref()
+    {
+        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, orig) };
+    }
+}
+
+/// `__velox_stdin_set_raw(enable)` — put stdin into raw mode (no canonical line
+/// buffering, no echo, no signal generation) so interactive prompts (inquirer,
+/// prompts, create-vite, …) receive individual keypresses. A no-op when stdin
+/// isn't a TTY. Mirrors libuv's TTY raw flags; keeps output post-processing so
+/// terminal output still renders.
+unsafe extern "C-unwind" fn stdin_set_raw(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let enable = args
+        .first()
+        .map(|v| unsafe { JSValue::to_boolean(ctx, *v) })
+        .unwrap_or(false);
+    let fd = libc::STDIN_FILENO;
+    if unsafe { libc::isatty(fd) } == 0 {
+        return unsafe { JSValue::new_undefined(ctx) };
+    }
+    unsafe {
+        if enable {
+            let mut term: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(fd, &mut term) != 0 {
+                return JSValue::new_undefined(ctx);
+            }
+            {
+                let mut saved = SAVED_TERMIOS.lock().unwrap();
+                if saved.is_none() {
+                    *saved = Some(term);
+                    libc::atexit(restore_termios);
+                }
+            }
+            let mut raw = term;
+            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
+            raw.c_iflag &= !(libc::ICRNL
+                | libc::INLCR
+                | libc::IGNCR
+                | libc::IXON
+                | libc::ISTRIP
+                | libc::BRKINT);
+            raw.c_cc[libc::VMIN] = 1;
+            raw.c_cc[libc::VTIME] = 0;
+            libc::tcsetattr(fd, libc::TCSANOW, &raw);
+        } else if let Some(orig) = SAVED_TERMIOS.lock().unwrap().as_ref() {
+            libc::tcsetattr(fd, libc::TCSANOW, orig);
+        }
+    }
     unsafe { JSValue::new_undefined(ctx) }
 }
 
