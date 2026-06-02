@@ -10,120 +10,468 @@
 
 /// Helper specifier → CommonJS source, keyed by the full import path.
 pub const OXC_HELPERS: &[(&str, &str)] = &[
-    ("@oxc-project/runtime/helpers/applyDecoratedDescriptor", include_str!("builtins/oxc_helpers/applyDecoratedDescriptor.js")),
-    ("@oxc-project/runtime/helpers/applyDecs", include_str!("builtins/oxc_helpers/applyDecs.js")),
-    ("@oxc-project/runtime/helpers/applyDecs2203", include_str!("builtins/oxc_helpers/applyDecs2203.js")),
-    ("@oxc-project/runtime/helpers/applyDecs2203R", include_str!("builtins/oxc_helpers/applyDecs2203R.js")),
-    ("@oxc-project/runtime/helpers/applyDecs2301", include_str!("builtins/oxc_helpers/applyDecs2301.js")),
-    ("@oxc-project/runtime/helpers/applyDecs2305", include_str!("builtins/oxc_helpers/applyDecs2305.js")),
-    ("@oxc-project/runtime/helpers/applyDecs2311", include_str!("builtins/oxc_helpers/applyDecs2311.js")),
-    ("@oxc-project/runtime/helpers/arrayLikeToArray", include_str!("builtins/oxc_helpers/arrayLikeToArray.js")),
-    ("@oxc-project/runtime/helpers/arrayWithHoles", include_str!("builtins/oxc_helpers/arrayWithHoles.js")),
-    ("@oxc-project/runtime/helpers/arrayWithoutHoles", include_str!("builtins/oxc_helpers/arrayWithoutHoles.js")),
-    ("@oxc-project/runtime/helpers/assertClassBrand", include_str!("builtins/oxc_helpers/assertClassBrand.js")),
-    ("@oxc-project/runtime/helpers/assertThisInitialized", include_str!("builtins/oxc_helpers/assertThisInitialized.js")),
-    ("@oxc-project/runtime/helpers/asyncGeneratorDelegate", include_str!("builtins/oxc_helpers/asyncGeneratorDelegate.js")),
-    ("@oxc-project/runtime/helpers/asyncIterator", include_str!("builtins/oxc_helpers/asyncIterator.js")),
-    ("@oxc-project/runtime/helpers/asyncToGenerator", include_str!("builtins/oxc_helpers/asyncToGenerator.js")),
-    ("@oxc-project/runtime/helpers/awaitAsyncGenerator", include_str!("builtins/oxc_helpers/awaitAsyncGenerator.js")),
-    ("@oxc-project/runtime/helpers/AwaitValue", include_str!("builtins/oxc_helpers/AwaitValue.js")),
-    ("@oxc-project/runtime/helpers/callSuper", include_str!("builtins/oxc_helpers/callSuper.js")),
-    ("@oxc-project/runtime/helpers/checkInRHS", include_str!("builtins/oxc_helpers/checkInRHS.js")),
-    ("@oxc-project/runtime/helpers/checkPrivateRedeclaration", include_str!("builtins/oxc_helpers/checkPrivateRedeclaration.js")),
-    ("@oxc-project/runtime/helpers/classApplyDescriptorDestructureSet", include_str!("builtins/oxc_helpers/classApplyDescriptorDestructureSet.js")),
-    ("@oxc-project/runtime/helpers/classApplyDescriptorGet", include_str!("builtins/oxc_helpers/classApplyDescriptorGet.js")),
-    ("@oxc-project/runtime/helpers/classApplyDescriptorSet", include_str!("builtins/oxc_helpers/classApplyDescriptorSet.js")),
-    ("@oxc-project/runtime/helpers/classCallCheck", include_str!("builtins/oxc_helpers/classCallCheck.js")),
-    ("@oxc-project/runtime/helpers/classCheckPrivateStaticAccess", include_str!("builtins/oxc_helpers/classCheckPrivateStaticAccess.js")),
-    ("@oxc-project/runtime/helpers/classCheckPrivateStaticFieldDescriptor", include_str!("builtins/oxc_helpers/classCheckPrivateStaticFieldDescriptor.js")),
-    ("@oxc-project/runtime/helpers/classExtractFieldDescriptor", include_str!("builtins/oxc_helpers/classExtractFieldDescriptor.js")),
-    ("@oxc-project/runtime/helpers/classNameTDZError", include_str!("builtins/oxc_helpers/classNameTDZError.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldDestructureSet", include_str!("builtins/oxc_helpers/classPrivateFieldDestructureSet.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldGet", include_str!("builtins/oxc_helpers/classPrivateFieldGet.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldGet2", include_str!("builtins/oxc_helpers/classPrivateFieldGet2.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldInitSpec", include_str!("builtins/oxc_helpers/classPrivateFieldInitSpec.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldLooseBase", include_str!("builtins/oxc_helpers/classPrivateFieldLooseBase.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldLooseKey", include_str!("builtins/oxc_helpers/classPrivateFieldLooseKey.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldSet", include_str!("builtins/oxc_helpers/classPrivateFieldSet.js")),
-    ("@oxc-project/runtime/helpers/classPrivateFieldSet2", include_str!("builtins/oxc_helpers/classPrivateFieldSet2.js")),
-    ("@oxc-project/runtime/helpers/classPrivateGetter", include_str!("builtins/oxc_helpers/classPrivateGetter.js")),
-    ("@oxc-project/runtime/helpers/classPrivateMethodGet", include_str!("builtins/oxc_helpers/classPrivateMethodGet.js")),
-    ("@oxc-project/runtime/helpers/classPrivateMethodInitSpec", include_str!("builtins/oxc_helpers/classPrivateMethodInitSpec.js")),
-    ("@oxc-project/runtime/helpers/classPrivateMethodSet", include_str!("builtins/oxc_helpers/classPrivateMethodSet.js")),
-    ("@oxc-project/runtime/helpers/classPrivateSetter", include_str!("builtins/oxc_helpers/classPrivateSetter.js")),
-    ("@oxc-project/runtime/helpers/classStaticPrivateFieldDestructureSet", include_str!("builtins/oxc_helpers/classStaticPrivateFieldDestructureSet.js")),
-    ("@oxc-project/runtime/helpers/classStaticPrivateFieldSpecGet", include_str!("builtins/oxc_helpers/classStaticPrivateFieldSpecGet.js")),
-    ("@oxc-project/runtime/helpers/classStaticPrivateFieldSpecSet", include_str!("builtins/oxc_helpers/classStaticPrivateFieldSpecSet.js")),
-    ("@oxc-project/runtime/helpers/classStaticPrivateMethodGet", include_str!("builtins/oxc_helpers/classStaticPrivateMethodGet.js")),
-    ("@oxc-project/runtime/helpers/classStaticPrivateMethodSet", include_str!("builtins/oxc_helpers/classStaticPrivateMethodSet.js")),
-    ("@oxc-project/runtime/helpers/construct", include_str!("builtins/oxc_helpers/construct.js")),
-    ("@oxc-project/runtime/helpers/createClass", include_str!("builtins/oxc_helpers/createClass.js")),
-    ("@oxc-project/runtime/helpers/createForOfIteratorHelper", include_str!("builtins/oxc_helpers/createForOfIteratorHelper.js")),
-    ("@oxc-project/runtime/helpers/createForOfIteratorHelperLoose", include_str!("builtins/oxc_helpers/createForOfIteratorHelperLoose.js")),
-    ("@oxc-project/runtime/helpers/createSuper", include_str!("builtins/oxc_helpers/createSuper.js")),
-    ("@oxc-project/runtime/helpers/decorate", include_str!("builtins/oxc_helpers/decorate.js")),
-    ("@oxc-project/runtime/helpers/decorateMetadata", include_str!("builtins/oxc_helpers/decorateMetadata.js")),
-    ("@oxc-project/runtime/helpers/decorateParam", include_str!("builtins/oxc_helpers/decorateParam.js")),
-    ("@oxc-project/runtime/helpers/defaults", include_str!("builtins/oxc_helpers/defaults.js")),
-    ("@oxc-project/runtime/helpers/defineAccessor", include_str!("builtins/oxc_helpers/defineAccessor.js")),
-    ("@oxc-project/runtime/helpers/defineEnumerableProperties", include_str!("builtins/oxc_helpers/defineEnumerableProperties.js")),
-    ("@oxc-project/runtime/helpers/defineProperty", include_str!("builtins/oxc_helpers/defineProperty.js")),
-    ("@oxc-project/runtime/helpers/dispose", include_str!("builtins/oxc_helpers/dispose.js")),
-    ("@oxc-project/runtime/helpers/extends", include_str!("builtins/oxc_helpers/extends.js")),
-    ("@oxc-project/runtime/helpers/get", include_str!("builtins/oxc_helpers/get.js")),
-    ("@oxc-project/runtime/helpers/getPrototypeOf", include_str!("builtins/oxc_helpers/getPrototypeOf.js")),
-    ("@oxc-project/runtime/helpers/identity", include_str!("builtins/oxc_helpers/identity.js")),
-    ("@oxc-project/runtime/helpers/importDeferProxy", include_str!("builtins/oxc_helpers/importDeferProxy.js")),
-    ("@oxc-project/runtime/helpers/inherits", include_str!("builtins/oxc_helpers/inherits.js")),
-    ("@oxc-project/runtime/helpers/inheritsLoose", include_str!("builtins/oxc_helpers/inheritsLoose.js")),
-    ("@oxc-project/runtime/helpers/initializerDefineProperty", include_str!("builtins/oxc_helpers/initializerDefineProperty.js")),
-    ("@oxc-project/runtime/helpers/initializerWarningHelper", include_str!("builtins/oxc_helpers/initializerWarningHelper.js")),
-    ("@oxc-project/runtime/helpers/instanceof", include_str!("builtins/oxc_helpers/instanceof.js")),
-    ("@oxc-project/runtime/helpers/interopRequireDefault", include_str!("builtins/oxc_helpers/interopRequireDefault.js")),
-    ("@oxc-project/runtime/helpers/interopRequireWildcard", include_str!("builtins/oxc_helpers/interopRequireWildcard.js")),
-    ("@oxc-project/runtime/helpers/isNativeFunction", include_str!("builtins/oxc_helpers/isNativeFunction.js")),
-    ("@oxc-project/runtime/helpers/isNativeReflectConstruct", include_str!("builtins/oxc_helpers/isNativeReflectConstruct.js")),
-    ("@oxc-project/runtime/helpers/iterableToArray", include_str!("builtins/oxc_helpers/iterableToArray.js")),
-    ("@oxc-project/runtime/helpers/iterableToArrayLimit", include_str!("builtins/oxc_helpers/iterableToArrayLimit.js")),
-    ("@oxc-project/runtime/helpers/jsx", include_str!("builtins/oxc_helpers/jsx.js")),
-    ("@oxc-project/runtime/helpers/maybeArrayLike", include_str!("builtins/oxc_helpers/maybeArrayLike.js")),
-    ("@oxc-project/runtime/helpers/newArrowCheck", include_str!("builtins/oxc_helpers/newArrowCheck.js")),
-    ("@oxc-project/runtime/helpers/nonIterableRest", include_str!("builtins/oxc_helpers/nonIterableRest.js")),
-    ("@oxc-project/runtime/helpers/nonIterableSpread", include_str!("builtins/oxc_helpers/nonIterableSpread.js")),
-    ("@oxc-project/runtime/helpers/nullishReceiverError", include_str!("builtins/oxc_helpers/nullishReceiverError.js")),
-    ("@oxc-project/runtime/helpers/objectDestructuringEmpty", include_str!("builtins/oxc_helpers/objectDestructuringEmpty.js")),
-    ("@oxc-project/runtime/helpers/objectSpread", include_str!("builtins/oxc_helpers/objectSpread.js")),
-    ("@oxc-project/runtime/helpers/objectSpread2", include_str!("builtins/oxc_helpers/objectSpread2.js")),
-    ("@oxc-project/runtime/helpers/objectWithoutProperties", include_str!("builtins/oxc_helpers/objectWithoutProperties.js")),
-    ("@oxc-project/runtime/helpers/objectWithoutPropertiesLoose", include_str!("builtins/oxc_helpers/objectWithoutPropertiesLoose.js")),
-    ("@oxc-project/runtime/helpers/OverloadYield", include_str!("builtins/oxc_helpers/OverloadYield.js")),
-    ("@oxc-project/runtime/helpers/possibleConstructorReturn", include_str!("builtins/oxc_helpers/possibleConstructorReturn.js")),
-    ("@oxc-project/runtime/helpers/readOnlyError", include_str!("builtins/oxc_helpers/readOnlyError.js")),
-    ("@oxc-project/runtime/helpers/regeneratorRuntime", include_str!("builtins/oxc_helpers/regeneratorRuntime.js")),
-    ("@oxc-project/runtime/helpers/set", include_str!("builtins/oxc_helpers/set.js")),
-    ("@oxc-project/runtime/helpers/setFunctionName", include_str!("builtins/oxc_helpers/setFunctionName.js")),
-    ("@oxc-project/runtime/helpers/setPrototypeOf", include_str!("builtins/oxc_helpers/setPrototypeOf.js")),
-    ("@oxc-project/runtime/helpers/skipFirstGeneratorNext", include_str!("builtins/oxc_helpers/skipFirstGeneratorNext.js")),
-    ("@oxc-project/runtime/helpers/slicedToArray", include_str!("builtins/oxc_helpers/slicedToArray.js")),
-    ("@oxc-project/runtime/helpers/superPropBase", include_str!("builtins/oxc_helpers/superPropBase.js")),
-    ("@oxc-project/runtime/helpers/superPropGet", include_str!("builtins/oxc_helpers/superPropGet.js")),
-    ("@oxc-project/runtime/helpers/superPropSet", include_str!("builtins/oxc_helpers/superPropSet.js")),
-    ("@oxc-project/runtime/helpers/taggedTemplateLiteral", include_str!("builtins/oxc_helpers/taggedTemplateLiteral.js")),
-    ("@oxc-project/runtime/helpers/taggedTemplateLiteralLoose", include_str!("builtins/oxc_helpers/taggedTemplateLiteralLoose.js")),
-    ("@oxc-project/runtime/helpers/tdz", include_str!("builtins/oxc_helpers/tdz.js")),
-    ("@oxc-project/runtime/helpers/temporalRef", include_str!("builtins/oxc_helpers/temporalRef.js")),
-    ("@oxc-project/runtime/helpers/temporalUndefined", include_str!("builtins/oxc_helpers/temporalUndefined.js")),
-    ("@oxc-project/runtime/helpers/toArray", include_str!("builtins/oxc_helpers/toArray.js")),
-    ("@oxc-project/runtime/helpers/toConsumableArray", include_str!("builtins/oxc_helpers/toConsumableArray.js")),
-    ("@oxc-project/runtime/helpers/toPrimitive", include_str!("builtins/oxc_helpers/toPrimitive.js")),
-    ("@oxc-project/runtime/helpers/toPropertyKey", include_str!("builtins/oxc_helpers/toPropertyKey.js")),
-    ("@oxc-project/runtime/helpers/toSetter", include_str!("builtins/oxc_helpers/toSetter.js")),
-    ("@oxc-project/runtime/helpers/typeof", include_str!("builtins/oxc_helpers/typeof.js")),
-    ("@oxc-project/runtime/helpers/unsupportedIterableToArray", include_str!("builtins/oxc_helpers/unsupportedIterableToArray.js")),
-    ("@oxc-project/runtime/helpers/using", include_str!("builtins/oxc_helpers/using.js")),
-    ("@oxc-project/runtime/helpers/usingCtx", include_str!("builtins/oxc_helpers/usingCtx.js")),
-    ("@oxc-project/runtime/helpers/wrapAsyncGenerator", include_str!("builtins/oxc_helpers/wrapAsyncGenerator.js")),
-    ("@oxc-project/runtime/helpers/wrapNativeSuper", include_str!("builtins/oxc_helpers/wrapNativeSuper.js")),
-    ("@oxc-project/runtime/helpers/wrapRegExp", include_str!("builtins/oxc_helpers/wrapRegExp.js")),
-    ("@oxc-project/runtime/helpers/writeOnlyError", include_str!("builtins/oxc_helpers/writeOnlyError.js")),
+    (
+        "@oxc-project/runtime/helpers/applyDecoratedDescriptor",
+        include_str!("builtins/oxc_helpers/applyDecoratedDescriptor.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/applyDecs",
+        include_str!("builtins/oxc_helpers/applyDecs.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/applyDecs2203",
+        include_str!("builtins/oxc_helpers/applyDecs2203.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/applyDecs2203R",
+        include_str!("builtins/oxc_helpers/applyDecs2203R.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/applyDecs2301",
+        include_str!("builtins/oxc_helpers/applyDecs2301.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/applyDecs2305",
+        include_str!("builtins/oxc_helpers/applyDecs2305.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/applyDecs2311",
+        include_str!("builtins/oxc_helpers/applyDecs2311.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/arrayLikeToArray",
+        include_str!("builtins/oxc_helpers/arrayLikeToArray.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/arrayWithHoles",
+        include_str!("builtins/oxc_helpers/arrayWithHoles.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/arrayWithoutHoles",
+        include_str!("builtins/oxc_helpers/arrayWithoutHoles.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/assertClassBrand",
+        include_str!("builtins/oxc_helpers/assertClassBrand.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/assertThisInitialized",
+        include_str!("builtins/oxc_helpers/assertThisInitialized.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/asyncGeneratorDelegate",
+        include_str!("builtins/oxc_helpers/asyncGeneratorDelegate.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/asyncIterator",
+        include_str!("builtins/oxc_helpers/asyncIterator.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/asyncToGenerator",
+        include_str!("builtins/oxc_helpers/asyncToGenerator.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/awaitAsyncGenerator",
+        include_str!("builtins/oxc_helpers/awaitAsyncGenerator.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/AwaitValue",
+        include_str!("builtins/oxc_helpers/AwaitValue.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/callSuper",
+        include_str!("builtins/oxc_helpers/callSuper.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/checkInRHS",
+        include_str!("builtins/oxc_helpers/checkInRHS.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/checkPrivateRedeclaration",
+        include_str!("builtins/oxc_helpers/checkPrivateRedeclaration.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classApplyDescriptorDestructureSet",
+        include_str!("builtins/oxc_helpers/classApplyDescriptorDestructureSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classApplyDescriptorGet",
+        include_str!("builtins/oxc_helpers/classApplyDescriptorGet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classApplyDescriptorSet",
+        include_str!("builtins/oxc_helpers/classApplyDescriptorSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classCallCheck",
+        include_str!("builtins/oxc_helpers/classCallCheck.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classCheckPrivateStaticAccess",
+        include_str!("builtins/oxc_helpers/classCheckPrivateStaticAccess.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classCheckPrivateStaticFieldDescriptor",
+        include_str!("builtins/oxc_helpers/classCheckPrivateStaticFieldDescriptor.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classExtractFieldDescriptor",
+        include_str!("builtins/oxc_helpers/classExtractFieldDescriptor.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classNameTDZError",
+        include_str!("builtins/oxc_helpers/classNameTDZError.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldDestructureSet",
+        include_str!("builtins/oxc_helpers/classPrivateFieldDestructureSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldGet",
+        include_str!("builtins/oxc_helpers/classPrivateFieldGet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldGet2",
+        include_str!("builtins/oxc_helpers/classPrivateFieldGet2.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldInitSpec",
+        include_str!("builtins/oxc_helpers/classPrivateFieldInitSpec.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldLooseBase",
+        include_str!("builtins/oxc_helpers/classPrivateFieldLooseBase.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldLooseKey",
+        include_str!("builtins/oxc_helpers/classPrivateFieldLooseKey.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldSet",
+        include_str!("builtins/oxc_helpers/classPrivateFieldSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateFieldSet2",
+        include_str!("builtins/oxc_helpers/classPrivateFieldSet2.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateGetter",
+        include_str!("builtins/oxc_helpers/classPrivateGetter.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateMethodGet",
+        include_str!("builtins/oxc_helpers/classPrivateMethodGet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateMethodInitSpec",
+        include_str!("builtins/oxc_helpers/classPrivateMethodInitSpec.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateMethodSet",
+        include_str!("builtins/oxc_helpers/classPrivateMethodSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classPrivateSetter",
+        include_str!("builtins/oxc_helpers/classPrivateSetter.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classStaticPrivateFieldDestructureSet",
+        include_str!("builtins/oxc_helpers/classStaticPrivateFieldDestructureSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classStaticPrivateFieldSpecGet",
+        include_str!("builtins/oxc_helpers/classStaticPrivateFieldSpecGet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classStaticPrivateFieldSpecSet",
+        include_str!("builtins/oxc_helpers/classStaticPrivateFieldSpecSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classStaticPrivateMethodGet",
+        include_str!("builtins/oxc_helpers/classStaticPrivateMethodGet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/classStaticPrivateMethodSet",
+        include_str!("builtins/oxc_helpers/classStaticPrivateMethodSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/construct",
+        include_str!("builtins/oxc_helpers/construct.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/createClass",
+        include_str!("builtins/oxc_helpers/createClass.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/createForOfIteratorHelper",
+        include_str!("builtins/oxc_helpers/createForOfIteratorHelper.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/createForOfIteratorHelperLoose",
+        include_str!("builtins/oxc_helpers/createForOfIteratorHelperLoose.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/createSuper",
+        include_str!("builtins/oxc_helpers/createSuper.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/decorate",
+        include_str!("builtins/oxc_helpers/decorate.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/decorateMetadata",
+        include_str!("builtins/oxc_helpers/decorateMetadata.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/decorateParam",
+        include_str!("builtins/oxc_helpers/decorateParam.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/defaults",
+        include_str!("builtins/oxc_helpers/defaults.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/defineAccessor",
+        include_str!("builtins/oxc_helpers/defineAccessor.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/defineEnumerableProperties",
+        include_str!("builtins/oxc_helpers/defineEnumerableProperties.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/defineProperty",
+        include_str!("builtins/oxc_helpers/defineProperty.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/dispose",
+        include_str!("builtins/oxc_helpers/dispose.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/extends",
+        include_str!("builtins/oxc_helpers/extends.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/get",
+        include_str!("builtins/oxc_helpers/get.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/getPrototypeOf",
+        include_str!("builtins/oxc_helpers/getPrototypeOf.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/identity",
+        include_str!("builtins/oxc_helpers/identity.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/importDeferProxy",
+        include_str!("builtins/oxc_helpers/importDeferProxy.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/inherits",
+        include_str!("builtins/oxc_helpers/inherits.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/inheritsLoose",
+        include_str!("builtins/oxc_helpers/inheritsLoose.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/initializerDefineProperty",
+        include_str!("builtins/oxc_helpers/initializerDefineProperty.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/initializerWarningHelper",
+        include_str!("builtins/oxc_helpers/initializerWarningHelper.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/instanceof",
+        include_str!("builtins/oxc_helpers/instanceof.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/interopRequireDefault",
+        include_str!("builtins/oxc_helpers/interopRequireDefault.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/interopRequireWildcard",
+        include_str!("builtins/oxc_helpers/interopRequireWildcard.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/isNativeFunction",
+        include_str!("builtins/oxc_helpers/isNativeFunction.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/isNativeReflectConstruct",
+        include_str!("builtins/oxc_helpers/isNativeReflectConstruct.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/iterableToArray",
+        include_str!("builtins/oxc_helpers/iterableToArray.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/iterableToArrayLimit",
+        include_str!("builtins/oxc_helpers/iterableToArrayLimit.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/jsx",
+        include_str!("builtins/oxc_helpers/jsx.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/maybeArrayLike",
+        include_str!("builtins/oxc_helpers/maybeArrayLike.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/newArrowCheck",
+        include_str!("builtins/oxc_helpers/newArrowCheck.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/nonIterableRest",
+        include_str!("builtins/oxc_helpers/nonIterableRest.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/nonIterableSpread",
+        include_str!("builtins/oxc_helpers/nonIterableSpread.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/nullishReceiverError",
+        include_str!("builtins/oxc_helpers/nullishReceiverError.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/objectDestructuringEmpty",
+        include_str!("builtins/oxc_helpers/objectDestructuringEmpty.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/objectSpread",
+        include_str!("builtins/oxc_helpers/objectSpread.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/objectSpread2",
+        include_str!("builtins/oxc_helpers/objectSpread2.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/objectWithoutProperties",
+        include_str!("builtins/oxc_helpers/objectWithoutProperties.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/objectWithoutPropertiesLoose",
+        include_str!("builtins/oxc_helpers/objectWithoutPropertiesLoose.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/OverloadYield",
+        include_str!("builtins/oxc_helpers/OverloadYield.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/possibleConstructorReturn",
+        include_str!("builtins/oxc_helpers/possibleConstructorReturn.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/readOnlyError",
+        include_str!("builtins/oxc_helpers/readOnlyError.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/regeneratorRuntime",
+        include_str!("builtins/oxc_helpers/regeneratorRuntime.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/set",
+        include_str!("builtins/oxc_helpers/set.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/setFunctionName",
+        include_str!("builtins/oxc_helpers/setFunctionName.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/setPrototypeOf",
+        include_str!("builtins/oxc_helpers/setPrototypeOf.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/skipFirstGeneratorNext",
+        include_str!("builtins/oxc_helpers/skipFirstGeneratorNext.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/slicedToArray",
+        include_str!("builtins/oxc_helpers/slicedToArray.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/superPropBase",
+        include_str!("builtins/oxc_helpers/superPropBase.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/superPropGet",
+        include_str!("builtins/oxc_helpers/superPropGet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/superPropSet",
+        include_str!("builtins/oxc_helpers/superPropSet.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/taggedTemplateLiteral",
+        include_str!("builtins/oxc_helpers/taggedTemplateLiteral.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/taggedTemplateLiteralLoose",
+        include_str!("builtins/oxc_helpers/taggedTemplateLiteralLoose.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/tdz",
+        include_str!("builtins/oxc_helpers/tdz.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/temporalRef",
+        include_str!("builtins/oxc_helpers/temporalRef.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/temporalUndefined",
+        include_str!("builtins/oxc_helpers/temporalUndefined.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/toArray",
+        include_str!("builtins/oxc_helpers/toArray.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/toConsumableArray",
+        include_str!("builtins/oxc_helpers/toConsumableArray.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/toPrimitive",
+        include_str!("builtins/oxc_helpers/toPrimitive.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/toPropertyKey",
+        include_str!("builtins/oxc_helpers/toPropertyKey.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/toSetter",
+        include_str!("builtins/oxc_helpers/toSetter.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/typeof",
+        include_str!("builtins/oxc_helpers/typeof.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/unsupportedIterableToArray",
+        include_str!("builtins/oxc_helpers/unsupportedIterableToArray.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/using",
+        include_str!("builtins/oxc_helpers/using.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/usingCtx",
+        include_str!("builtins/oxc_helpers/usingCtx.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/wrapAsyncGenerator",
+        include_str!("builtins/oxc_helpers/wrapAsyncGenerator.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/wrapNativeSuper",
+        include_str!("builtins/oxc_helpers/wrapNativeSuper.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/wrapRegExp",
+        include_str!("builtins/oxc_helpers/wrapRegExp.js"),
+    ),
+    (
+        "@oxc-project/runtime/helpers/writeOnlyError",
+        include_str!("builtins/oxc_helpers/writeOnlyError.js"),
+    ),
 ];
