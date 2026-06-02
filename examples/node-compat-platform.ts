@@ -27,6 +27,16 @@ check("process.cpuUsage", () => { if (typeof process.cpuUsage !== "function") th
 check("process.hrtime tuple", () => { const t = process.hrtime(); if (!Array.isArray(t) || t.length !== 2) throw new Error("hr"); const d = process.hrtime(t); if (!Array.isArray(d)) throw new Error("hrdiff"); });
 check("process.uptime", () => { if (typeof process.uptime() !== "number") throw new Error("uptime"); });
 check("process.umask get/set", () => { const cur = process.umask(); if (typeof cur !== "number") throw new Error("umask not number"); const prev = process.umask(0o27); if (prev !== cur) throw new Error("set should return previous"); if (process.umask() !== 0o27) throw new Error("set ignored"); process.umask(cur); });
+// Unhandled promise rejections fire process 'unhandledRejection' (JSC rejection hook) instead of vanishing.
+check("unhandledRejection event", async () => {
+  const got = await new Promise<any>((resolve) => {
+    const onRej = (reason: any) => { process.removeListener("unhandledRejection", onRej); resolve(reason); };
+    process.on("unhandledRejection", onRej);
+    Promise.reject(new Error("intentional-unhandled"));
+    setTimeout(() => resolve(null), 1000);
+  });
+  if (!got || got.message !== "intentional-unhandled") throw new Error("not fired: " + (got && got.message));
+});
 check("process.title", () => { if (typeof process.title !== "string") throw new Error("title"); });
 check("process.stdout.columns", () => { const c = process.stdout.columns; if (c !== undefined && typeof c !== "number") throw new Error("cols"); });
 check("process.emitWarning", () => { if (typeof process.emitWarning !== "function") throw new Error("no warn"); process.emitWarning("test"); });

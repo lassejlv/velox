@@ -355,6 +355,18 @@ pub const GLOBALS_PRELUDE: &str = r#"
 
   globalThis.process = process;
   globalThis.global = globalThis;
+
+  // Called by JSC's unhandled-rejection hook (src/event_loop.rs). Emits
+  // process 'unhandledRejection'; with no listener, surfaces the error like
+  // Node (print + non-zero exit) instead of the loop silently draining.
+  globalThis.__velox_report_unhandled_rejection = function (reason, promise) {
+    if (process.emit('unhandledRejection', reason, promise)) return;
+    var msg = reason && reason.stack
+      ? reason.stack
+      : (reason && reason.message ? reason.message : String(reason));
+    __velox_uncaught('Unhandled promise rejection: ' + msg);
+  };
+
   // stdin chunk/EOF dispatchers (called by the host's reader thread).
   globalThis.__velox_stdin_data = function (token, latin1) {
     var s = stdinRegistry[token];

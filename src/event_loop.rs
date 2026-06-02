@@ -396,6 +396,57 @@ pub(crate) unsafe fn register(ctx: JSContextRef, name: &CStr, callback: NativeFn
     }
 }
 
+// `JSGlobalContextSetUnhandledRejectionCallback` is a private but exported
+// (present in JavaScriptCore.tbd) JSC API: it invokes `function(promise, reason)`
+// whenever a promise rejection is still unhandled after the microtask queue
+// drains. The public C API has no equivalent, so without this hook a
+// rejected-and-unobserved promise (a fire-and-forget async call, an uncaught
+// dynamic-import failure) vanishes and the process just exits silently.
+#[link(name = "JavaScriptCore", kind = "framework")]
+unsafe extern "C" {
+    fn JSGlobalContextSetUnhandledRejectionCallback(
+        ctx: JSContextRef,
+        function: JSObjectRef,
+        exception: *mut JSValueRef,
+    );
+}
+
+/// Route JSC's unhandled-rejection notifications to the JS reporter
+/// (`__velox_report_unhandled_rejection`), which emits `process`'s
+/// 'unhandledRejection' or, with no listener, surfaces the error.
+pub(crate) fn install_unhandled_rejection(ctx: JSContextRef) {
+    unsafe {
+        let name = JSStringCreateWithUTF8CString(c"__velox_rejection_cb".as_ptr());
+        let cb = JSObjectMakeFunctionWithCallback(ctx, name, Some(unhandled_rejection_cb));
+        JSStringRelease(name);
+        let mut exc: JSValueRef = ptr::null_mut();
+        JSGlobalContextSetUnhandledRejectionCallback(ctx, cb, &mut exc);
+    }
+}
+
+unsafe extern "C-unwind" fn unhandled_rejection_cb(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let undef = unsafe { JSValue::new_undefined(ctx) };
+    // JSC passes (promise, reason); the reporter wants (reason, promise).
+    let promise = args.first().copied().unwrap_or(undef);
+    let reason = args.get(1).copied().unwrap_or(undef);
+    unsafe {
+        crate::node::call_named(
+            ctx,
+            c"__velox_report_unhandled_rejection",
+            &[reason, promise],
+        );
+        JSValue::new_undefined(ctx)
+    }
+}
+
 /// `__velox_uncaught(message)` — report an async failure and flag a non-zero
 /// exit. Used by the bundle to surface rejected top-level `await`.
 unsafe extern "C-unwind" fn uncaught(

@@ -141,6 +141,7 @@ impl Runtime {
         runtime.install_console();
         let ctx = runtime.global_context();
         crate::event_loop::install(ctx);
+        crate::event_loop::install_unhandled_rejection(ctx);
         crate::fetch::install(ctx);
         let _ = runtime.eval(crate::fetch::FETCH_PRELUDE);
         // Node compatibility: native primitives + globals (process, Buffer, URL,
