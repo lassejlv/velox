@@ -33,6 +33,60 @@ function decodeValue(v) {
   return v;
 }
 
+// --- user-defined function / aggregate registry ----------------------------
+// The native scalar/aggregate callbacks (running inside SQL execution) call back
+// into these dispatchers, keyed by "<dbId>\0<name>". The user's JS functions are
+// held here (GC-reachable), so the native side never protects a JS value.
+
+var fnRegistry = {};
+var aggRegistry = {};
+function fnKey(dbId, name) { return dbId + '\0' + name; }
+
+globalThis.__velox_sqlite_call_function = function (dbId, name, argsJson) {
+  var fn = fnRegistry[fnKey(dbId, name)];
+  if (!fn) return JSON.stringify({ err: 'no such function: ' + name });
+  try {
+    var args = JSON.parse(argsJson).map(decodeValue);
+    return JSON.stringify(encodeParam(fn.apply(null, args)));
+  } catch (e) {
+    return JSON.stringify({ err: String((e && e.message) || e) });
+  }
+};
+
+globalThis.__velox_sqlite_agg_start = function (dbId, name) {
+  var a = aggRegistry[fnKey(dbId, name)];
+  if (!a) return 'null';
+  try {
+    var start = typeof a.start === 'function' ? a.start() : a.start;
+    return JSON.stringify(start === undefined ? null : start);
+  } catch (e) { return JSON.stringify({ err: String((e && e.message) || e) }); }
+};
+
+globalThis.__velox_sqlite_agg_step = function (dbId, name, accJson, argsJson) {
+  var a = aggRegistry[fnKey(dbId, name)];
+  if (!a) return accJson;
+  try {
+    var acc = JSON.parse(accJson);
+    var args = JSON.parse(argsJson).map(decodeValue);
+    var next = a.step.apply(null, [acc].concat(args));
+    // better-sqlite3 lets step mutate-and-return-undefined; keep the old acc then.
+    return JSON.stringify(next === undefined ? acc : next);
+  } catch (e) { return JSON.stringify({ err: String((e && e.message) || e) }); }
+};
+
+globalThis.__velox_sqlite_agg_result = function (dbId, name, accJson) {
+  var a = aggRegistry[fnKey(dbId, name)];
+  if (!a) return 'null';
+  try {
+    var parsed = JSON.parse(accJson);
+    if (parsed !== null && typeof parsed === 'object' && typeof parsed.err === 'string') {
+      return accJson; // propagate a step error straight through
+    }
+    var result = typeof a.result === 'function' ? a.result(parsed) : parsed;
+    return JSON.stringify(encodeParam(result));
+  } catch (e) { return JSON.stringify({ err: String((e && e.message) || e) }); }
+};
+
 // Normalize the variadic params of run/get/all/iterate into the JSON shape the
 // native expects: a positional array, or a named object whose keys carry their
 // sigil. Node accepts a single object of named params, otherwise positionals.
@@ -162,13 +216,29 @@ DatabaseSync.prototype.location = function () {
   return this._path === ':memory:' ? null : this._path;
 };
 
-// Custom functions/aggregates aren't bridged yet; surface a clear error rather
-// than silently no-op so callers know.
-DatabaseSync.prototype.function = function () {
-  throw new Error('DatabaseSync.function() is not supported in velox yet');
+// function(name[, options], fn) — register a scalar SQL function. options may
+// carry { varargs, deterministic, directOnly } (only varargs affects arity here).
+DatabaseSync.prototype.function = function (name, optionsOrFn, maybeFn) {
+  if (!this._open) throw new Error('database is not open');
+  var fn = typeof optionsOrFn === 'function' ? optionsOrFn : maybeFn;
+  var options = (optionsOrFn && typeof optionsOrFn === 'object') ? optionsOrFn : {};
+  if (typeof fn !== 'function') throw new TypeError('The "function" argument must be a function');
+  fnRegistry[fnKey(this._id, name)] = fn;
+  var nArgs = options.varargs ? -1 : fn.length;
+  __velox_sqlite_create_function(this._id, name, nArgs);
 };
-DatabaseSync.prototype.aggregate = function () {
-  throw new Error('DatabaseSync.aggregate() is not supported in velox yet');
+
+// aggregate(name, options) — options: { start, step, result?, inverse? }. start
+// may be a value or a factory function; step(acc, ...args) → acc; result(acc) →
+// value. (Window-function `inverse` isn't bridged.)
+DatabaseSync.prototype.aggregate = function (name, options) {
+  if (!this._open) throw new Error('database is not open');
+  if (!options || typeof options.step !== 'function') {
+    throw new TypeError('The "options.step" argument must be a function');
+  }
+  aggRegistry[fnKey(this._id, name)] = options;
+  var nArgs = options.varargs ? -1 : Math.max(0, options.step.length - 1);
+  __velox_sqlite_create_aggregate(this._id, name, nArgs);
 };
 
 Object.defineProperty(DatabaseSync.prototype, 'isOpen', {

@@ -46,7 +46,7 @@ rand = "0.8"
 rcgen = "0.14.8"
 ring = "0.17.14"
 rsa = { version = "0.9", features = ["pem"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2.0"
 rustls-pki-types = "1.14.1"

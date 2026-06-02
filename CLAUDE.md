@@ -213,8 +213,16 @@ synchronously and resolves immediately (unblocks emscripten output, e.g. sql.js)
 `:memory:` and file DBs). Values cross as JSON; BLOBs and >2^53 integers are
 tagged (`{t:"blob"|"bigint", v}`) so binary/BigInt survive the hop. Connections
 live in a thread-local registry (each worker gets its own); statements re-prepare
-from SQL per call (no cross-FFI borrow). Custom `function`/`aggregate` aren't
-bridged yet. `URL` follows the WHATWG algorithm closely —
+from SQL per call (no cross-FFI borrow). User-defined scalar `function`s and
+`aggregate`s are bridged: the rusqlite callback marshals args to JSON and calls a
+JS dispatcher (the user's fn is held JS-side, GC-reachable; the captured
+`JSContextRef` rides in a `Send` newtype since the callback only runs on the
+owning thread) — don't re-enter the same DB from inside one (the connection is
+borrowed for the query). A `better-sqlite3` shim (`builtins/better_sqlite3.js`,
+registered as a builtin so `require('better-sqlite3')` routes to it not the
+unusable native addon) maps that package's API onto node:sqlite, so knex,
+Drizzle, and Kysely run against a real DB. `URL` follows the WHATWG algorithm
+closely —
 strips tab/newline/leading-trailing controls, treats backslash as slash in
 special schemes, drops default ports, normalizes dot-segments (preserving empty
 ones), percent-encodes userinfo/path/query/fragment per their encode sets,

@@ -162,11 +162,20 @@ Database.prototype.close = function () {
   return this;
 };
 
-Database.prototype.function = function () {
-  throw new Error('better-sqlite3 .function() is not supported in velox yet');
+// function(name[, options], fn) — better-sqlite3 passes options like
+// { varargs, deterministic, safeIntegers }. Delegate to node:sqlite.
+Database.prototype.function = function (name, optionsOrFn, maybeFn) {
+  var fn = typeof optionsOrFn === 'function' ? optionsOrFn : maybeFn;
+  var options = (optionsOrFn && typeof optionsOrFn === 'object') ? optionsOrFn : {};
+  this._db.function(name, options, fn);
+  return this;
 };
-Database.prototype.aggregate = function () {
-  throw new Error('better-sqlite3 .aggregate() is not supported in velox yet');
+
+// aggregate(name, options) — better-sqlite3 options: { start, step, result,
+// inverse }. start may be a value or factory. node:sqlite uses the same shape.
+Database.prototype.aggregate = function (name, options) {
+  this._db.aggregate(name, options);
+  return this;
 };
 Database.prototype.loadExtension = function () {
   throw new Error('better-sqlite3 .loadExtension() is not supported in velox');

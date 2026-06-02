@@ -45,7 +45,44 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_sqlite_exec", exec_fn);
         register(ctx, c"__velox_sqlite_run", run_fn);
         register(ctx, c"__velox_sqlite_query", query_fn);
+        register(ctx, c"__velox_sqlite_create_function", create_function_fn);
+        register(ctx, c"__velox_sqlite_create_aggregate", create_aggregate_fn);
     }
+}
+
+/// A `JSContextRef` captured into a rusqlite callback. The callback only ever
+/// runs on the connection's owning thread (where the context lives), so sharing
+/// the raw pointer is sound despite the `Send` bound `create_*_function` demands.
+struct SendCtx(JSContextRef);
+unsafe impl Send for SendCtx {}
+impl SendCtx {
+    /// Read the context pointer. Going through `&self` makes a closure capture
+    /// the whole `SendCtx` (which is `Send`) rather than the bare pointer field
+    /// (which isn't) under edition-2024 disjoint closure captures.
+    fn ctx(&self) -> JSContextRef {
+        self.0
+    }
+}
+
+/// Marshal a function callback's SQL arguments to a JSON array string.
+fn args_to_json(fctx: &rusqlite::functions::Context) -> String {
+    let mut arr: Vec<Json> = Vec::with_capacity(fctx.len());
+    for i in 0..fctx.len() {
+        arr.push(sql_to_json(fctx.get_raw(i), false));
+    }
+    Json::Array(arr).to_string()
+}
+
+/// Interpret a JSON result returned from the JS side (a tagged value, or an
+/// `{err}` marker) as a SQLite value or a user-function error.
+fn json_result_to_sql(json: &str) -> rusqlite::Result<Value> {
+    let parsed: Json = serde_json::from_str(json).unwrap_or(Json::Null);
+    if let Json::Object(o) = &parsed
+        && let Some(msg) = o.get("err").and_then(|e| e.as_str())
+    {
+        return Err(rusqlite::Error::UserFunctionError(msg.to_string().into()));
+    }
+    Ok(json_to_sql(&parsed))
 }
 
 unsafe fn throw(ctx: JSContextRef, exception: *mut JSValueRef, message: &str) -> JSValueRef {
@@ -292,6 +329,161 @@ unsafe extern "C-unwind" fn query_fn(
     });
     match result {
         Ok(s) => unsafe { js_string(ctx, &s) },
+        Err(e) => unsafe { throw(ctx, exc, &e) },
+    }
+}
+
+/// `__velox_sqlite_create_function(id, name, nArgs)` — register a scalar SQL
+/// function. When SQL invokes it, the closure marshals the args to JSON, calls
+/// the JS dispatcher `__velox_sqlite_call_function(id, name, argsJson)`, and turns
+/// the returned tagged value back into a SQLite value. The JS side holds the
+/// user's function (GC-reachable), so nothing is protected on the Rust side.
+unsafe extern "C-unwind" fn create_function_fn(
+    ctx: JSContextRef,
+    _f: JSObjectRef,
+    _t: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exc: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let id = arg_u64(ctx, args, 0);
+    let name = arg_string(ctx, args, 1);
+    let n_args = args
+        .get(2)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(-1.0) as i32;
+
+    let sctx = SendCtx(ctx);
+    let fname = name.clone();
+    let dbid = id.to_string();
+
+    let result = DBS.with(|d| -> Result<(), String> {
+        let dbs = d.borrow();
+        let conn = dbs.get(&id).ok_or("database is not open")?;
+        conn.create_scalar_function(
+            &name,
+            if n_args < 0 { -1 } else { n_args },
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+            move |fctx| {
+                let c = sctx.ctx();
+                let args_json = args_to_json(fctx);
+                let out = unsafe {
+                    let jsargs = [
+                        js_string(c, &dbid),
+                        js_string(c, &fname),
+                        js_string(c, &args_json),
+                    ];
+                    let r = call_named(c, c"__velox_sqlite_call_function", &jsargs);
+                    js_value_to_string(c, r)
+                };
+                json_result_to_sql(&out)
+            },
+        )
+        .map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(()) => unsafe { JSValue::new_undefined(ctx) },
+        Err(e) => unsafe { throw(ctx, exc, &e) },
+    }
+}
+
+/// A JS-backed aggregate. The accumulator crosses the FFI as a JSON string; each
+/// phase calls the matching JS dispatcher.
+struct JsAggregate {
+    ctx: SendCtx,
+    dbid: String,
+    name: String,
+}
+
+impl rusqlite::functions::Aggregate<String, Value> for JsAggregate {
+    fn init(&self, _: &mut rusqlite::functions::Context) -> rusqlite::Result<String> {
+        let c = self.ctx.0;
+        let out = unsafe {
+            let jsargs = [js_string(c, &self.dbid), js_string(c, &self.name)];
+            let r = call_named(c, c"__velox_sqlite_agg_start", &jsargs);
+            js_value_to_string(c, r)
+        };
+        Ok(out)
+    }
+
+    fn step(
+        &self,
+        fctx: &mut rusqlite::functions::Context,
+        acc: &mut String,
+    ) -> rusqlite::Result<()> {
+        let c = self.ctx.0;
+        let args_json = args_to_json(fctx);
+        let next = unsafe {
+            let jsargs = [
+                js_string(c, &self.dbid),
+                js_string(c, &self.name),
+                js_string(c, acc),
+                js_string(c, &args_json),
+            ];
+            let r = call_named(c, c"__velox_sqlite_agg_step", &jsargs);
+            js_value_to_string(c, r)
+        };
+        *acc = next;
+        Ok(())
+    }
+
+    fn finalize(
+        &self,
+        _: &mut rusqlite::functions::Context,
+        acc: Option<String>,
+    ) -> rusqlite::Result<Value> {
+        let c = self.ctx.0;
+        let acc = acc.unwrap_or_else(|| "null".to_string());
+        let out = unsafe {
+            let jsargs = [
+                js_string(c, &self.dbid),
+                js_string(c, &self.name),
+                js_string(c, &acc),
+            ];
+            let r = call_named(c, c"__velox_sqlite_agg_result", &jsargs);
+            js_value_to_string(c, r)
+        };
+        json_result_to_sql(&out)
+    }
+}
+
+/// `__velox_sqlite_create_aggregate(id, name, nArgs)` — register an aggregate
+/// whose start/step/result callbacks live in JS.
+unsafe extern "C-unwind" fn create_aggregate_fn(
+    ctx: JSContextRef,
+    _f: JSObjectRef,
+    _t: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exc: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let id = arg_u64(ctx, args, 0);
+    let name = arg_string(ctx, args, 1);
+    let n_args = args
+        .get(2)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(-1.0) as i32;
+
+    let aggr = JsAggregate {
+        ctx: SendCtx(ctx),
+        dbid: id.to_string(),
+        name: name.clone(),
+    };
+    let result = DBS.with(|d| -> Result<(), String> {
+        let dbs = d.borrow();
+        let conn = dbs.get(&id).ok_or("database is not open")?;
+        conn.create_aggregate_function(
+            &name,
+            if n_args < 0 { -1 } else { n_args },
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+            aggr,
+        )
+        .map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(()) => unsafe { JSValue::new_undefined(ctx) },
         Err(e) => unsafe { throw(ctx, exc, &e) },
     }
 }

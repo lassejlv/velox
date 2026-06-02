@@ -162,6 +162,24 @@ check("sqlite DatabaseSync CRUD", () => {
   db.close();
   if (db.isOpen !== false) throw new Error("close");
 });
+// node:sqlite user-defined scalar functions + aggregates.
+check("sqlite function/aggregate", () => {
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.function("add2", (a: number, b: number) => a + b);
+  if ((db.prepare("SELECT add2(3,4) r").get() as any).r !== 7) throw new Error("scalar");
+  db.function("boom", () => { throw new Error("kaboom"); });
+  let threw = false;
+  try { db.prepare("SELECT boom()").get(); } catch (e: any) { threw = /kaboom/.test(String(e.message)); }
+  if (!threw) throw new Error("error not propagated");
+  db.exec("CREATE TABLE n (v INTEGER)");
+  db.prepare("INSERT INTO n VALUES (1),(2),(3),(4)").run();
+  db.aggregate("sumSq", { start: 0, step: (acc: number, v: number) => acc + v * v });
+  if ((db.prepare("SELECT sumSq(v) s FROM n").get() as any).s !== 30) throw new Error("aggregate");
+  db.aggregate("collect", { start: () => [], step: (a: number[], v: number) => { a.push(v); return a; }, result: (a: number[]) => a.join("-") });
+  if ((db.prepare("SELECT collect(v) c FROM n").get() as any).c !== "1-2-3-4") throw new Error("agg result");
+  db.close();
+});
 // better-sqlite3 shim over node:sqlite (knex/Drizzle target it).
 check("better-sqlite3 shim", () => {
   const Database = require("better-sqlite3");
