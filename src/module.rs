@@ -535,6 +535,10 @@ impl Graph {
 
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         let mut edits: Vec<Edit> = Vec::new();
+        // Export glue that must run at the top of the wrapper (function exports —
+        // hoisted, so they're visible to circular importers). Injected after the
+        // `__esModule` marker below.
+        let mut hoisted = String::new();
 
         for statement in &parsed.program.body {
             match statement {
@@ -554,7 +558,7 @@ impl Graph {
                         rewrite_reexport_named(decl, &id)
                     } else if let Some(declaration) = &decl.declaration {
                         // `export const x = …`, `export function f(){}`, etc.
-                        rewrite_export_decl(path, declaration, js)?
+                        rewrite_export_decl(path, declaration, js, &mut hoisted)?
                     } else {
                         // `export { a, b as c }` referring to local bindings.
                         rewrite_export_specifiers(decl)
@@ -656,6 +660,11 @@ impl Graph {
         // rewrite it to a per-module object defined in the wrapper preamble
         // (carries the module's own `url`/`dirname`/`filename`/`resolve`).
         let mut body = apply_edits(js, edits).replace("import.meta", "__velox_module_meta");
+        // Hoisted function-export getters run before the body (and before any
+        // import this module triggers), so circular dependents see the exports.
+        if !hoisted.is_empty() {
+            body.insert_str(0, &hoisted);
+        }
         if is_esm {
             body.insert_str(
                 0,
@@ -1055,6 +1064,7 @@ fn rewrite_export_decl(
     path: &Path,
     declaration: &Declaration,
     source: &str,
+    hoisted: &mut String,
 ) -> Result<String, ModuleError> {
     match declaration {
         Declaration::VariableDeclaration(var) => {
@@ -1075,13 +1085,20 @@ fn rewrite_export_decl(
             Ok(out)
         }
         Declaration::FunctionDeclaration(func) => {
+            // Function declarations hoist, so their export binding is emitted as a
+            // live getter *hoisted to the top of the module wrapper* (not in
+            // place). This is what makes circular ESM work: a module paused mid-
+            // import that gets re-entered (e.g. kysely's table-parser ↔
+            // query-creator) already exposes its functions, so the importer's
+            // binding resolves instead of snapshotting `undefined`.
             let text = slice(source, func.span.start, func.span.end);
             let name = func
                 .id
                 .as_ref()
                 .map(|i| i.name.as_str())
                 .unwrap_or_default();
-            Ok(format!("{}\nexports.{} = {};", text, name, name))
+            hoisted.push_str(&live_export_binding(name));
+            Ok(text.to_string())
         }
         Declaration::ClassDeclaration(class) => {
             let text = slice(source, class.span.start, class.span.end);
