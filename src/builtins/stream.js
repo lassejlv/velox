@@ -656,6 +656,28 @@ Readable.from = function (iterable, opts) {
   return r;
 };
 
+// Static stream-state predicates (Node 16.8+). @hono/node-server probes
+// `Readable.isDisturbed(req)` before reading a request body; others check
+// isErrored/isReadable. Duck-type via the readable state, with a fallback for
+// foreign stream objects.
+Readable.isDisturbed = function (stream) {
+  if (!stream) return false;
+  var s = stream._readableState;
+  if (s) return !!(s.dataEmitted || s.endEmitted || s.destroyed);
+  return !!(stream.readableDidRead || stream.destroyed);
+};
+Readable.isErrored = function (stream) {
+  if (!stream) return false;
+  var s = stream._readableState;
+  return !!(s ? s.errored : stream.errored);
+};
+Readable.isReadable = function (stream) {
+  if (!stream) return false;
+  var s = stream._readableState;
+  if (s) return !!(stream.readable && !s.endEmitted && !s.destroyed);
+  return !!stream.readable;
+};
+
 // ===========================================================================
 // Writable
 // ===========================================================================

@@ -44,6 +44,17 @@ check("stream read(n) byte-precise", () => {
   if (!b || b.length !== 2 || b[0] !== 2 || b[1] !== 3) throw new Error("read2");
   if (!c || c.length !== 2 || c[0] !== 4 || c[1] !== 5) throw new Error("read3");
 });
+// Static stream-state predicates (@hono/node-server probes Readable.isDisturbed before reading a body).
+check("Readable.isDisturbed/isErrored/isReadable", async () => {
+  const { Readable } = require("node:stream");
+  const r = new Readable({ read() {} });
+  if (Readable.isDisturbed(r) !== false) throw new Error("fresh disturbed");
+  if (Readable.isReadable(r) !== true) throw new Error("not readable");
+  if (Readable.isErrored(r) !== false) throw new Error("errored");
+  r.push("x"); r.push(null);
+  await new Promise<void>((res) => { r.on("data", () => {}); r.on("end", () => res()); });
+  if (Readable.isDisturbed(r) !== true) throw new Error("not disturbed after read");
+});
 check("stream Transform", async () => {
   const { Readable, Transform } = require("node:stream");
   const upper = new Transform({ transform(c: any, e: any, cb: any) { cb(null, c.toString().toUpperCase()); } });
