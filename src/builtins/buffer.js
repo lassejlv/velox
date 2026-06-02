@@ -1475,6 +1475,15 @@
   // ---------------------------------------------------------------------------
   // Install globals
   // ---------------------------------------------------------------------------
+  // Class static methods have no [[Construct]] slot, but Node's Buffer.alloc*
+  // are plain functions that some packages invoke with `new`
+  // (cbor-x: `new Buffer.allocUnsafeSlow(8192)`). Re-expose them as plain,
+  // constructable functions — a `new` call returns the Buffer they produce.
+  ['alloc', 'allocUnsafe', 'allocUnsafeSlow'].forEach(function (m) {
+    var orig = Buffer[m];
+    Buffer[m] = function () { return orig.apply(Buffer, arguments); };
+  });
+
   // Node's Buffer static methods are enumerable own properties; `class` statics
   // are non-enumerable, so libraries that copy Buffer's statics with a `for...in`
   // loop (safer-buffer → iconv-lite, used by express's body-parser) would miss
