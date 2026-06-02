@@ -34,6 +34,16 @@ check("stream pipe", async () => {
   });
   if (out !== "abc") throw new Error("pipe " + out);
 });
+// read(n) must return *exactly* n bytes, slicing a chunk and keeping the tail (cbor/binary parsers pull byte-by-byte).
+check("stream read(n) byte-precise", () => {
+  const { Readable } = require("node:stream");
+  const r = new Readable({ read() {} });
+  r.push(Buffer.from([1, 2, 3, 4, 5])); r.push(null);
+  const a = r.read(1), b = r.read(2), c = r.read(2);
+  if (!a || a.length !== 1 || a[0] !== 1) throw new Error("read1");
+  if (!b || b.length !== 2 || b[0] !== 2 || b[1] !== 3) throw new Error("read2");
+  if (!c || c.length !== 2 || c[0] !== 4 || c[1] !== 5) throw new Error("read3");
+});
 check("stream Transform", async () => {
   const { Readable, Transform } = require("node:stream");
   const upper = new Transform({ transform(c: any, e: any, cb: any) { cb(null, c.toString().toUpperCase()); } });

@@ -313,13 +313,24 @@ function fromList(n, state) {
     state.length = 0;
     return decodeChunk(state, ret);
   }
-  // Partial read of n bytes (buffer mode only) — rarely hit, keep it simple.
+  // Partial read of *exactly* n bytes (buffer mode). Consume whole chunks until
+  // the boundary, then slice the straddling chunk and leave its tail at the
+  // front of the queue for the next read — byte-precise readers (cbor's
+  // binary-parse-stream, which pulls one byte at a time) depend on this.
   var collected = [];
   var got = 0;
   while (got < n && state.buffer.length) {
-    var piece = state.buffer.shift();
-    collected.push(piece);
-    got += piece.length;
+    var piece = state.buffer[0];
+    var need = n - got;
+    if (piece.length <= need) {
+      collected.push(piece);
+      got += piece.length;
+      state.buffer.shift();
+    } else {
+      collected.push(piece.slice(0, need));
+      state.buffer[0] = piece.slice(need);
+      got += need;
+    }
   }
   state.length -= got;
   if (BufferImpl) ret = collected.length === 1 ? collected[0] : BufferImpl.concat(collected);
