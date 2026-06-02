@@ -186,6 +186,18 @@ check("stdin.setRawMode", () => {
   process.stdin.setRawMode(false);
   if (process.stdin.isRaw !== false) throw new Error("restore");
 });
+// readline.emitKeypressEvents decodes raw stdin bytes into keypress events (@clack/inquirer/prompts).
+check("readline.emitKeypressEvents decoder", () => {
+  const readline = require("node:readline");
+  const { EventEmitter } = require("node:events");
+  const s = new EventEmitter(); (s as any).resume = () => {};
+  const names: string[] = [];
+  readline.emitKeypressEvents(s);
+  s.on("keypress", (_str: string, key: any) => names.push(key.name + (key.ctrl ? "+c" : "") + (key.shift ? "+s" : "")));
+  s.emit("data", Buffer.from("\x1b[A\x1b[B\rh\x03\x7f\x1b[Z", "latin1"));
+  const expect = ["up", "down", "return", "h", "c+c", "backspace", "tab+s"];
+  if (JSON.stringify(names) !== JSON.stringify(expect)) throw new Error("decoded " + JSON.stringify(names));
+});
 check("cp.spawnSync", () => { const cp = require("node:child_process"); if (typeof cp.spawnSync !== "function") throw new Error("no spawnSync"); const r = cp.spawnSync("echo", ["sy"]); if (r.stdout.toString().trim() !== "sy") throw new Error("got " + r.stdout); });
 check("cp.exec maxBuffer/options", async () => { const cp = require("node:child_process"); await new Promise<void>((res, rej) => cp.exec("echo hi", { encoding: "utf8" }, (e: any, out: any) => e ? rej(e) : (out.trim() === "hi" ? res() : rej(new Error("got " + out))))); });
 

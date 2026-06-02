@@ -33,6 +33,10 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("process", include_str!("builtins/process.js")),
     ("tty", include_str!("builtins/tty.js")),
     ("readline", include_str!("builtins/readline.js")),
+    (
+        "readline/promises",
+        include_str!("builtins/readline_promises.js"),
+    ),
     ("os", include_str!("builtins/os.js")),
     ("events", include_str!("builtins/events.js")),
     ("fs", include_str!("builtins/fs.js")),
