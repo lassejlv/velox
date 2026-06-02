@@ -48,6 +48,15 @@ check("Buffer base64url", () => { if (Buffer.from("aGk","base64url").toString()!
 
 check("events.once", async () => { const { EventEmitter, once } = require("node:events"); const ee = new EventEmitter(); setTimeout(()=>ee.emit("x",42),5); const [v] = await once(ee,"x"); if (v!==42) throw new Error("once"); });
 check("EventEmitter.getMaxListeners", () => { const { EventEmitter } = require("node:events"); const ee = new EventEmitter(); if (typeof ee.getMaxListeners() !== "number") throw new Error("gml"); });
+// EventEmitterAsyncResource — worker-pool libs (tinypool) `extends` it.
+check("EventEmitterAsyncResource", () => {
+  const { EventEmitterAsyncResource } = require("node:events");
+  if (typeof EventEmitterAsyncResource !== "function") throw new Error("missing");
+  class Pool extends EventEmitterAsyncResource {}
+  const p = new Pool({ name: "Pool" });
+  let got = 0; p.on("x", (v: number) => { got = v; }); p.emit("x", 7);
+  if (got !== 7) throw new Error("emit"); if (typeof p.asyncResource !== "object") throw new Error("asyncResource"); if (typeof p.asyncId !== "number") throw new Error("asyncId");
+});
 
 check("stream.Readable.from", async () => { const { Readable } = require("node:stream"); const r = Readable.from(["a","b"]); let out=""; for await (const c of r) out+=c; if (out!=="ab") throw new Error("fromiter "+out); });
 check("stream.pipeline promise", () => { const { pipeline } = require("node:stream/promises"); if (typeof pipeline !== "function") throw new Error("nopromises"); });

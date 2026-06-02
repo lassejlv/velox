@@ -198,7 +198,42 @@ function on(emitter, event, options) {
   return iterator;
 }
 
+// EventEmitterAsyncResource — an EventEmitter whose handlers run inside an
+// AsyncResource scope. Worker-pool libraries (tinypool) `extends` it, so it must
+// be a real constructor. Backed by velox's async_hooks AsyncResource.
+function EventEmitterAsyncResource(options) {
+  options = options || {};
+  EventEmitter.call(this, options);
+  var AsyncResource = require('node:async_hooks').AsyncResource;
+  var name = options.name
+    || (this.constructor && this.constructor.name)
+    || 'EventEmitterAsyncResource';
+  var resource = new AsyncResource(String(name), {
+    triggerAsyncId: options.triggerAsyncId,
+    requireManualDestroy: options.requireManualDestroy,
+  });
+  Object.defineProperty(this, 'asyncResource', { value: resource, enumerable: false, configurable: true });
+}
+EventEmitterAsyncResource.prototype = Object.create(EventEmitter.prototype);
+EventEmitterAsyncResource.prototype.constructor = EventEmitterAsyncResource;
+EventEmitterAsyncResource.prototype.emit = function () {
+  var self = this, args = arguments;
+  return this.asyncResource.runInAsyncScope(function () {
+    return EventEmitter.prototype.emit.apply(self, args);
+  });
+};
+EventEmitterAsyncResource.prototype.emitDestroy = function () {
+  return this.asyncResource.emitDestroy();
+};
+Object.defineProperty(EventEmitterAsyncResource.prototype, 'asyncId', {
+  configurable: true, get: function () { return this.asyncResource.asyncId(); },
+});
+Object.defineProperty(EventEmitterAsyncResource.prototype, 'triggerAsyncId', {
+  configurable: true, get: function () { return this.asyncResource.triggerAsyncId(); },
+});
+
 EventEmitter.on = on;
+EventEmitter.EventEmitterAsyncResource = EventEmitterAsyncResource;
 EventEmitter.setMaxListeners = setMaxListeners;
 EventEmitter.getEventListeners = getEventListeners;
 EventEmitter.addAbortListener = addAbortListener;
@@ -216,4 +251,5 @@ module.exports.once = EventEmitter.once;
 module.exports.listenerCount = EventEmitter.listenerCount;
 module.exports.errorMonitor = EventEmitter.errorMonitor;
 module.exports.captureRejectionSymbol = EventEmitter.captureRejectionSymbol;
+module.exports.EventEmitterAsyncResource = EventEmitterAsyncResource;
 module.exports.default = EventEmitter;
