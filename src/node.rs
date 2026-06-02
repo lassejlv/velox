@@ -142,9 +142,20 @@ pub const GLOBALS_PRELUDE: &str = r#"
       get isTTY() { return !!__velox_isatty(fd); },
       get columns() { return 80; },
       get rows() { return 24; },
+      // Minimal EventEmitter surface — no real events fire on the write streams,
+      // but interactive libs (@clack/prompts) call output.on/off('resize', …)
+      // and must not hit an undefined method.
       on: function () { return this; },
+      addListener: function () { return this; },
       once: function () { return this; },
+      off: function () { return this; },
       removeListener: function () { return this; },
+      removeAllListeners: function () { return this; },
+      prependListener: function () { return this; },
+      emit: function () { return false; },
+      listenerCount: function () { return 0; },
+      listeners: function () { return []; },
+      eventNames: function () { return []; },
       cork: function () {},
       uncork: function () {},
       getColorDepth: function () { return __velox_isatty(fd) ? 8 : 1; },
@@ -211,6 +222,8 @@ pub const GLOBALS_PRELUDE: &str = r#"
         return stream;
       },
       off: function (ev, fn) { return stream.removeListener(ev, fn); },
+      removeAllListeners: function (ev) { if (ev) delete listeners[ev]; else listeners = {}; return stream; },
+      listenerCount: function (ev) { return (listeners[ev] || []).length; },
       emit: emit,
       resume: function () { start(); return stream; },
       pause: function () { return stream; },
@@ -221,6 +234,9 @@ pub const GLOBALS_PRELUDE: &str = r#"
         on("end", function () { if (dest.end) dest.end(); });
         return dest;
       },
+      // No pipe-destination tracking; interactive libs (@clack/prompts) call
+      // unpipe() during teardown and only need it to exist and not throw.
+      unpipe: function () { return stream; },
       _encoding: function () { return encoding; },
       _emit: emit,
     };
