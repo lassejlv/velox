@@ -534,7 +534,7 @@ pub fn x(spec: &str, args: &[String]) -> ExitCode {
         if let Err(e) = std::fs::create_dir_all(&nm) {
             return fail(&format!("mkdir {}: {e}", nm.display()));
         }
-        let outcomes = par_map(resolved.clone(), DOWNLOAD_WORKERS, |r| install_one(&r, &nm));
+        let outcomes = install_phased(resolved.clone(), &nm, |_r, result| result);
         for outcome in outcomes {
             if let Err(e) = outcome {
                 return fail(&e);
@@ -616,12 +616,37 @@ fn run_install(roots: &[(String, String)], verb: &str) -> ExitCode {
     install_resolved(resolved)
 }
 
+/// Install `resolved` in two phases — every hoisted (root) package first, then
+/// the nested ones — so a parent package's extract (which `remove_dir_all`s its
+/// own directory before unpacking) can never race with a nested package being
+/// created beneath it. Running both in one pass occasionally wiped a just-created
+/// `<parent>/node_modules/<dep>` or hit `mkdir … Invalid argument` mid-delete.
+/// `worker` runs per package inside the pool (so progress can stream).
+fn install_phased<F, T>(resolved: Vec<Resolved>, nm: &Path, worker: F) -> Vec<T>
+where
+    F: Fn(Resolved, Result<bool, String>) -> T + Sync,
+    T: Send,
+{
+    let (roots, nested): (Vec<Resolved>, Vec<Resolved>) =
+        resolved.into_iter().partition(|r| r.nest_under.is_none());
+    let mut out = Vec::new();
+    for batch in [roots, nested] {
+        if batch.is_empty() {
+            continue;
+        }
+        out.extend(par_map(batch, DOWNLOAD_WORKERS, |r| {
+            let result = install_one(&r, nm);
+            worker(r, result)
+        }));
+    }
+    out
+}
+
 /// Download + extract a fully-resolved set of packages concurrently, reporting
 /// progress. Shared by `run_install` (resolve path) and `install` (lockfile).
 fn install_resolved(resolved: Vec<Resolved>) -> ExitCode {
     let nm = node_modules_dir();
-    let outcomes = par_map(resolved, DOWNLOAD_WORKERS, |r| {
-        let result = install_one(&r, &nm);
+    let outcomes = install_phased(resolved, &nm, |r, result| {
         if let Ok(true) = &result {
             println!(
                 "  {} {}@{}",

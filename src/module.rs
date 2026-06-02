@@ -765,16 +765,38 @@ impl Graph {
             }
         }
 
+        // Modules that use top-level `await` set some exports only *after* the
+        // await suspends, so a synchronous `require()` of them would see empty
+        // exports (e.g. tempy ← temp-dir, whose `export default` follows
+        // `await fs.realpath(...)`). Pre-initialize them — awaiting each to
+        // completion — before the entry runs, so the cached exports are fully
+        // populated by the time an importer's sync `require()` reads them. (A
+        // TLA module that itself imports another TLA module remains best-effort.)
+        let tla_ids: Vec<String> = (0..self.bodies.len())
+            .filter(|&id| id != entry_id && *self.needs_async.get(id).unwrap_or(&false))
+            .map(|id| format!("'{id}'"))
+            .collect();
+
         // Run the entry module, surfacing any rejection from a top-level
         // `await` (which settles later, on the event loop) as an uncaught error.
         out.push_str(&format!(
             "(function () {{\n  \
-               const module = {{ exports: {{}} }};\n  \
-               __cache['{0}'] = module;\n  \
-               Promise.resolve(__modules['{0}'](module, module.exports, require))\n    \
-                 .then(function () {{ __velox_maybe_serve(module.exports); }}, function (e) {{ __velox_uncaught(String(e) + (e && e.stack ? '\\n' + String(e.stack) : '')); }});\n\
+               function __ensure(id) {{\n    \
+                 if (__cache[id]) return __cache[id].__init || Promise.resolve();\n    \
+                 const m = {{ exports: {{}} }};\n    \
+                 __cache[id] = m;\n    \
+                 const p = Promise.resolve(__modules[id](m, m.exports, require));\n    \
+                 m.__init = p;\n    \
+                 return p;\n  \
+               }}\n  \
+               Promise.all([{1}].map(__ensure)).then(function () {{\n    \
+                 const module = {{ exports: {{}} }};\n    \
+                 __cache['{0}'] = module;\n    \
+                 return Promise.resolve(__modules['{0}'](module, module.exports, require))\n      \
+                   .then(function () {{ __velox_maybe_serve(module.exports); }});\n  \
+               }}).then(undefined, function (e) {{ __velox_uncaught(String(e) + (e && e.stack ? '\\n' + String(e.stack) : '')); }});\n\
              }})();\n",
-            entry_id
+            entry_id, tla_ids.join(", ")
         ));
         crate::sourcemap::set_table(spans);
         out
