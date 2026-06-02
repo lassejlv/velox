@@ -125,17 +125,37 @@ impl<'a> Visit<'a> for RequireCollector {
         if let Expression::Identifier(callee) = &call.callee
             && callee.name == "require"
             && call.arguments.len() == 1
-            && let Argument::StringLiteral(lit) = &call.arguments[0]
         {
-            self.calls.push((lit.span, lit.value.to_string()));
+            match &call.arguments[0] {
+                Argument::StringLiteral(lit) => {
+                    self.calls.push((lit.span, lit.value.to_string()));
+                }
+                // No-substitution template literal: `require(`./x.cjs`)`. Minified
+                // bundler output (e.g. remeda) uses backtick specifiers; treat them
+                // exactly like a string literal (replace the whole template span).
+                Argument::TemplateLiteral(tpl) => {
+                    if let Some(s) = no_subst_template(tpl) {
+                        self.calls.push((tpl.span, s));
+                    }
+                }
+                _ => {}
+            }
         }
         walk::walk_call_expression(self, call);
     }
 
     fn visit_import_expression(&mut self, import: &ImportExpression<'a>) {
-        if let Expression::StringLiteral(lit) = &import.source {
-            self.dynamic_imports
-                .push((import.span, lit.value.to_string()));
+        match &import.source {
+            Expression::StringLiteral(lit) => {
+                self.dynamic_imports
+                    .push((import.span, lit.value.to_string()));
+            }
+            Expression::TemplateLiteral(tpl) => {
+                if let Some(s) = no_subst_template(tpl) {
+                    self.dynamic_imports.push((import.span, s));
+                }
+            }
+            _ => {}
         }
         walk::walk_import_expression(self, import);
     }
@@ -164,6 +184,21 @@ impl<'a> Visit<'a> for RequireCollector {
         }
         walk::walk_for_of_statement(self, stmt);
     }
+}
+
+/// If `tpl` is a no-substitution template literal (one quasi, no `${…}`), return
+/// its static string value — so `require(`./x`)` / `import(`./x`)` follow the
+/// same bundling path as a quoted-string specifier.
+fn no_subst_template(tpl: &oxc::ast::ast::TemplateLiteral) -> Option<String> {
+    if !tpl.expressions.is_empty() || tpl.quasis.len() != 1 {
+        return None;
+    }
+    let q = &tpl.quasis[0];
+    q.value
+        .cooked
+        .as_ref()
+        .map(|c| c.to_string())
+        .or_else(|| Some(q.value.raw.to_string()))
 }
 
 /// Everything that can go wrong while bundling.
