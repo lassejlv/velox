@@ -125,10 +125,16 @@ fn resolve_flat(
             break;
         }
 
-        // Fetch the whole wave's metadata in parallel.
+        // Fetch the whole wave's metadata in parallel. For an `npm:` alias,
+        // fetch the *real* package and pick against its inner range, but keep
+        // the alias as the install name so it lands at `node_modules/<alias>`.
         let fetched = par_map(wave, FETCH_WORKERS, |(name, range)| {
-            let meta = registry::fetch_metadata(&name);
-            (name, range, meta)
+            let (fetch_name, eff_range) = match parse_npm_alias(&range) {
+                Some((real, inner)) => (real, inner),
+                None => (name.clone(), range.clone()),
+            };
+            let meta = registry::fetch_metadata(&fetch_name);
+            (name, eff_range, meta)
         });
 
         let mut next: Vec<(String, String, String)> = Vec::new();
@@ -218,6 +224,10 @@ fn pick_version(meta: &Value, range_str: &str) -> Option<Version> {
 }
 
 fn range_matches(range_str: &str, v: &Version) -> bool {
+    // An `npm:<name>@<range>` alias matches on its inner range.
+    if let Some((_, inner)) = parse_npm_alias(range_str) {
+        return range_matches(&inner, v);
+    }
     // Treat dist-tags as "any" for the satisfied check.
     if matches!(range_str, "latest" | "next" | "*" | "") {
         return true;
@@ -225,11 +235,57 @@ fn range_matches(range_str: &str, v: &Version) -> bool {
     Range::parse(range_str).matches(v)
 }
 
+/// Parse an `npm:<name>@<range>` aliased dependency (e.g. pretty-format's
+/// `"react-is-18": "npm:react-is@^18.3.1"`). Returns the *real* package name and
+/// version range; the dependency key stays the alias (so it installs under that
+/// directory and `require('react-is-18')` resolves to react-is@18). A missing
+/// range means `*`. The leading `@` of a scoped name is not a range separator.
+pub fn parse_npm_alias(spec: &str) -> Option<(String, String)> {
+    let rest = spec.trim().strip_prefix("npm:")?;
+    let scope_skip = usize::from(rest.starts_with('@'));
+    match rest[scope_skip..].find('@') {
+        Some(rel) => {
+            let at = scope_skip + rel;
+            Some((rest[..at].to_string(), rest[at + 1..].to_string()))
+        }
+        None => Some((rest.to_string(), "*".to_string())),
+    }
+}
+
 /// Whether a dependency range refers to the npm registry (vs git/url/file/etc.).
+/// `npm:<name>@<range>` aliases *are* registry deps (resolved via the alias).
 pub fn is_registry_range(range: &str) -> bool {
     let r = range.trim();
+    if r.starts_with("npm:") {
+        return true;
+    }
     !(r.contains('/') && (r.contains(':') || r.starts_with("git") || r.starts_with("file")))
         && !r.starts_with("workspace:")
         && !r.starts_with("link:")
-        && !r.starts_with("npm:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_npm_alias;
+
+    #[test]
+    fn npm_alias_parsing() {
+        assert_eq!(
+            parse_npm_alias("npm:react-is@^18.3.1"),
+            Some(("react-is".into(), "^18.3.1".into()))
+        );
+        // Scoped real package: the leading '@' is not a range separator.
+        assert_eq!(
+            parse_npm_alias("npm:@scope/pkg@~1.2.0"),
+            Some(("@scope/pkg".into(), "~1.2.0".into()))
+        );
+        // No range → "*".
+        assert_eq!(
+            parse_npm_alias("npm:lodash"),
+            Some(("lodash".into(), "*".into()))
+        );
+        // Non-alias specs are not parsed as aliases.
+        assert_eq!(parse_npm_alias("^1.2.3"), None);
+        assert_eq!(parse_npm_alias("npm-check"), None);
+    }
 }
