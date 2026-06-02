@@ -733,12 +733,14 @@ impl Graph {
             } else {
                 ""
             };
-            // `require` is passed as `__velox_require` and re-bound to `const
-            // require` in the preamble — UNLESS the module declares its own
-            // (the ESM `const require = createRequire(import.meta.url)` pattern,
-            // e.g. yargs), in which case a param named `require` would collide.
+            // `module` and `require` are passed under `__velox_`-prefixed param
+            // names and re-bound to plain `const module`/`require` in the preamble
+            // — UNLESS the module declares its own (legal in real ESM, e.g.
+            // `const module = …` in a wasm shim, or `const require =
+            // createRequire(import.meta.url)` in yargs), where a colliding param
+            // would throw "Cannot declare a const variable twice".
             let wrapper = format!(
-                "__modules['{id}'] = {async_kw}function (module, exports, __velox_require) {{\n"
+                "__modules['{id}'] = {async_kw}function (__velox_module, exports, __velox_require) {{\n"
             );
             out.push_str(&wrapper);
             lines += count_nl(&wrapper);
@@ -863,6 +865,11 @@ fn module_preamble(path: Option<&PathBuf>, body: &str) -> String {
     // itself, and reference the string literals elsewhere so there's no TDZ.
     let mut out = String::new();
     out.push_str(&format!("const __velox_pdir = {d};\n"));
+    // Re-bind the renamed `module` param to a plain `const module` — unless the
+    // module declares its own local `module` (legal ESM), which would collide.
+    if !declares_binding(body, "module") {
+        out.push_str("const module = __velox_module;\n");
+    }
     // Re-bind the renamed `require` param — unless the module brings its own.
     if !declares_binding(body, "require") {
         out.push_str(
@@ -883,7 +890,7 @@ fn module_preamble(path: Option<&PathBuf>, body: &str) -> String {
     out.push_str(&format!(
         "const __velox_module_meta = {{ url: {u}, filename: {f}, dirname: {d}, \
          resolve: function (s) {{ try {{ return new URL(s, {u}).href; }} catch (e) {{ return s; }} }} }};\n\
-         module.filename = {f}; module.path = {d};\n"
+         __velox_module.filename = {f}; __velox_module.path = {d};\n"
     ));
     out
 }
