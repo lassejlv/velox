@@ -866,7 +866,12 @@ unsafe extern "C-unwind" fn hash_fn(
         .get(1)
         .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
         .unwrap_or_default();
-    match digest(&algo, &data) {
+    // args[2] (optional): output length in bytes for XOF hashes (shake128/256).
+    let out_len = args
+        .get(2)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0) as usize;
+    match digest(&algo, &data, out_len) {
         Some(out) => unsafe { js_string_latin1(ctx, &out) },
         None => unsafe {
             throw(
@@ -912,7 +917,22 @@ unsafe extern "C-unwind" fn hmac_fn(
     }
 }
 
-fn digest(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
+fn digest(algo: &str, data: &[u8], out_len: usize) -> Option<Vec<u8>> {
+    use sha3::digest::{ExtendableOutput, Update, XofReader};
+    let shake = |mut x: sha3::Shake256, n: usize| -> Vec<u8> {
+        x.update(data);
+        let mut r = x.finalize_xof();
+        let mut buf = vec![0u8; n];
+        r.read(&mut buf);
+        buf
+    };
+    let shake128 = |mut x: sha3::Shake128, n: usize| -> Vec<u8> {
+        x.update(data);
+        let mut r = x.finalize_xof();
+        let mut buf = vec![0u8; n];
+        r.read(&mut buf);
+        buf
+    };
     Some(match normalize(algo).as_str() {
         "md5" => Md5::digest(data).to_vec(),
         "sha1" => Sha1::digest(data).to_vec(),
@@ -920,6 +940,17 @@ fn digest(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
         "sha256" => Sha256::digest(data).to_vec(),
         "sha384" => Sha384::digest(data).to_vec(),
         "sha512" => Sha512::digest(data).to_vec(),
+        "sha3256" => sha3::Sha3_256::digest(data).to_vec(),
+        "sha3384" => sha3::Sha3_384::digest(data).to_vec(),
+        "sha3512" => sha3::Sha3_512::digest(data).to_vec(),
+        "shake128" => shake128(
+            sha3::Shake128::default(),
+            if out_len > 0 { out_len } else { 16 },
+        ),
+        "shake256" => shake(
+            sha3::Shake256::default(),
+            if out_len > 0 { out_len } else { 32 },
+        ),
         _ => return None,
     })
 }

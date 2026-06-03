@@ -56,6 +56,7 @@ scrypt = "0.12.0"
 serde_json = "1.0.150"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
+sha3 = "0.11.0"
 # Renamed sha2 0.10 (digest 0.10) for the rsa crate's OAEP hashes, which require
 # digest 0.10 — incompatible with the primary sha2 0.11 (digest 0.11) above.
 sha2_oaep = { package = "sha2", version = "0.10" }

@@ -9,21 +9,24 @@ function toLatin1(data, enc) {
   return Buffer.from(String(data), enc || "utf8").toString("latin1");
 }
 
-function Hash(algo) {
+function Hash(algo, options) {
   this._algo = String(algo).toLowerCase();
   this._parts = [];
+  // outputLength (bytes) for XOF hashes (shake128/shake256); 0 = algo default.
+  this._outputLength = options && options.outputLength ? options.outputLength | 0 : 0;
 }
 Hash.prototype.update = function (data, enc) {
   this._parts.push(toLatin1(data, enc));
   return this;
 };
 Hash.prototype.digest = function (enc) {
-  var out = Buffer.from(__velox_hash(this._algo, this._parts.join("")), "latin1");
+  var out = Buffer.from(__velox_hash(this._algo, this._parts.join(""), this._outputLength), "latin1");
   return enc ? out.toString(enc) : out;
 };
 Hash.prototype.copy = function () {
   var h = new Hash(this._algo);
   h._parts = this._parts.slice();
+  h._outputLength = this._outputLength;
   return h;
 };
 
@@ -41,7 +44,7 @@ Hmac.prototype.digest = function (enc) {
   return enc ? out.toString(enc) : out;
 };
 
-function createHash(algo) { return new Hash(algo); }
+function createHash(algo, options) { return new Hash(algo, options); }
 
 // Node 21 one-shot hash: crypto.hash(algorithm, data[, outputEncoding]).
 // Default output is a hex string; pass "buffer" for a Buffer.
@@ -195,7 +198,7 @@ function timingSafeEqual(a, b) {
   return diff === 0;
 }
 function createHashAlgos() {
-  return ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
+  return ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-256", "sha3-384", "sha3-512", "shake128", "shake256"];
 }
 
 // --- key derivation --------------------------------------------------------
