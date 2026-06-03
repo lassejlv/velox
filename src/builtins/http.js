@@ -433,6 +433,15 @@ function shouldKeepAlive(req) {
   return conn.indexOf('keep-alive') !== -1;
 }
 
+// Internal Node API some tests/libraries poke: write a raw piece of the
+// response (header-flushing handled by write()).
+ServerResponse.prototype._send = function (data, encoding, cb) {
+  if (data != null && data !== '') return this.write(data, encoding, cb);
+  if (!this._headerSent) this._sendHeaders(null);
+  if (typeof cb === 'function') nextTick(cb);
+  return true;
+};
+
 ServerResponse.prototype.setHeader = function (name, value) {
   if (this.headersSent) throw new Error('Cannot set headers after they are sent to the client');
   this._headers[name.toLowerCase()] = { name: name, value: value };
@@ -501,7 +510,21 @@ ServerResponse.prototype._sendHeaders = function (knownLength, defer) {
   // once headersSent flips below).
   this._hasContentLength = this.hasHeader('content-length');
   if (!this._hasContentLength && !this.hasHeader('transfer-encoding')) {
-    if (knownLength != null) {
+    var req10 = this._req && this._req.httpVersionMajor === 1 && this._req.httpVersionMinor === 0;
+    if (req10) {
+      // HTTP/1.0: chunked doesn't exist and Node never invents framing the
+      // user didn't provide. If the client advertised `TE: chunked`, chunked
+      // is fair game (and the connection may persist); otherwise stream raw
+      // and mark the end of the body by closing the connection.
+      var te = String((this._req.headers && this._req.headers['te']) || '').toLowerCase();
+      if (te.indexOf('chunked') !== -1) {
+        this._headers['transfer-encoding'] = { name: 'Transfer-Encoding', value: 'chunked' };
+        this._chunked = true;
+      } else {
+        this._rawStream = true;
+        this._forceClose = true; // no framing → the close IS the terminator
+      }
+    } else if (knownLength != null) {
       this._headers['content-length'] = { name: 'Content-Length', value: String(knownLength) };
       this._hasContentLength = true;
     } else {
@@ -517,6 +540,7 @@ ServerResponse.prototype._sendHeaders = function (knownLength, defer) {
   // not override the Connection header. The request is re-read here (not at
   // construction) because its headers are only parsed by send time.
   var reqKeepAlive = this._req ? shouldKeepAlive(this._req) : false;
+  if (this._forceClose) reqKeepAlive = false;
   if (this.hasHeader('connection')) {
     var connVal = String(this.getHeader('connection')).toLowerCase();
     this._willKeepAlive = connVal.indexOf('close') === -1 && reqKeepAlive;
@@ -663,6 +687,7 @@ ServerResponse.prototype.writeEarlyHints = function (hints, cb) {
 // Server — wraps a net.Server; wires the parser to each connection.
 // ---------------------------------------------------------------------------
 function Server(options, requestListener) {
+  if (!(this instanceof Server)) return new Server(options, requestListener);
   if (typeof options === 'function') {
     requestListener = options;
     options = {};
@@ -853,12 +878,25 @@ function normalizeClientOptions(options) {
 // per socket, like Node); pass `new http.Agent({ keepAlive: true })` to reuse
 // sockets (and TLS sessions) across requests to the same host.
 function Agent(options) {
+  if (!(this instanceof Agent)) return new Agent(options);
+  EventEmitter.call(this);
   options = options || {};
+  this.options = options;
   this.keepAlive = !!options.keepAlive;
-  this.maxSockets = options.maxSockets || Infinity;
+  this.keepAliveMsecs = options.keepAliveMsecs || 1000;
+  this.maxSockets = options.maxSockets !== undefined ? options.maxSockets : Infinity;
   this.maxFreeSockets = options.maxFreeSockets || 256;
-  this._free = {}; // key -> [idle sockets]
+  this.maxTotalSockets = options.maxTotalSockets || Infinity;
+  this.scheduling = options.scheduling || 'lifo';
+  this.defaultPort = options.defaultPort || 80;
+  this.protocol = options.protocol || 'http:';
+  // Node's public bookkeeping maps (tooling inspects these).
+  this.sockets = {};
+  this.freeSockets = {};
+  this.requests = {};
+  this._free = {}; // key -> [idle sockets] (velox's internal keep-alive pool)
 }
+inherits(Agent, EventEmitter);
 Agent.prototype._acquire = function (key) {
   var list = this._free[key];
   while (list && list.length) {
@@ -877,16 +915,94 @@ Agent.prototype.destroy = function () {
   for (var k in this._free) this._free[k].forEach(function (s) { if (s.end) s.end(); });
   this._free = {};
 };
+// Node's socket-pool name: host:port[:localAddress][:family] — note no
+// protocol prefix and no `path` (velox's internal pool key is separate).
 Agent.prototype.getName = function (o) {
   o = o || {};
-  return (o.protocol === 'https:' ? 'https' : 'http') + ':' +
-    (o.host || o.hostname || 'localhost') + ':' + (o.port || '');
+  var name = (o.host || o.hostname || 'localhost') + ':' + (o.port || '');
+  if (o.localAddress) name += ':' + o.localAddress;
+  if (o.family === 4 || o.family === 6) name += ':' + o.family;
+  return name;
+};
+
+// Legacy request-scheduling surface. velox drives requests from ClientRequest
+// directly, but the bookkeeping mirrors Node: over maxSockets the request
+// queues under its pool name; otherwise a connection is created for it.
+Agent.prototype.addRequest = function (req, options, port, localAddress) {
+  if (typeof options === 'string') {
+    options = { host: options, port: port, localAddress: localAddress };
+  }
+  options = options || {};
+  var name = this.getName(options);
+  var active = (this.sockets[name] || []).length;
+  if (active >= this.maxSockets) {
+    (this.requests[name] = this.requests[name] || []).push(req);
+    return;
+  }
+  var self = this;
+  var socket = this.createConnection(options);
+  (this.sockets[name] = this.sockets[name] || []).push(socket);
+  if (socket && typeof socket.once === 'function') {
+    socket.once('close', function () {
+      var list = self.sockets[name];
+      if (list) {
+        var i = list.indexOf(socket);
+        if (i !== -1) list.splice(i, 1);
+        if (!list.length) delete self.sockets[name];
+      }
+    });
+  }
+  if (req && typeof req.onSocket === 'function') req.onSocket(socket);
+};
+
+// Open a raw connection for this agent (Node's overridable hook; supports an
+// AbortSignal in the options and an optional (err, socket) callback).
+Agent.prototype.createConnection = function (options, cb) {
+  var net = require('node:net');
+  var socket = net.connect(options);
+  if (typeof cb === 'function') {
+    socket.once('connect', function () { cb(null, socket); });
+    socket.once('error', function (e) { cb(e); });
+  }
+  return socket;
+};
+Agent.prototype.keepSocketAlive = function () { return !!this.keepAlive; };
+Agent.prototype.reuseSocket = function () {};
+Agent.prototype.removeSocket = function (socket, options) {
+  var name = this.getName(options || {});
+  var list = this.sockets[name];
+  if (list) {
+    var i = list.indexOf(socket);
+    if (i !== -1) list.splice(i, 1);
+    if (!list.length) delete this.sockets[name];
+  }
 };
 var globalAgent = new Agent({ keepAlive: false });
 
 function ClientRequest(options, cb) {
   EventEmitter.call(this);
   options = normalizeClientOptions(options);
+
+  // AbortSignal: abort the request (AbortError 'error' + destroy) on signal.
+  if (options.signal) {
+    var sig = options.signal;
+    var reqSelf = this;
+    var onReqAbort = function () {
+      if (reqSelf.destroyed) return;
+      var err = sig.reason instanceof Error ? sig.reason : (function () {
+        try { return new DOMException('This operation was aborted', 'AbortError'); }
+        catch (e) { var a = new Error('This operation was aborted'); a.name = 'AbortError'; return a; }
+      })();
+      reqSelf.destroy(err);
+    };
+    if (sig.aborted) { nextTick(onReqAbort); }
+    else if (typeof sig.addEventListener === 'function') {
+      sig.addEventListener('abort', onReqAbort, { once: true });
+      this.once('close', function () {
+        if (typeof sig.removeEventListener === 'function') sig.removeEventListener('abort', onReqAbort);
+      });
+    }
+  }
 
   var useTls = options.protocol === 'https:' || options._tls === true;
   this._tls = useTls;
@@ -1182,8 +1298,15 @@ ClientRequest.prototype.abort = function () {
 ClientRequest.prototype.destroy = function (err) {
   if (this.destroyed) return this;
   this.destroyed = true;
-  if (this.socket) this.socket.destroy(err);
-  if (err) this.emit('error', err);
+  // Destroy the socket plainly — the error surfaces on the REQUEST (a socket
+  // 'error' with no listener would throw from a microtask).
+  if (this.socket) this.socket.destroy();
+  // Node delivers the destroy error on the next tick — callers attach their
+  // 'error' listener right after the destroy()/abort() call.
+  if (err) {
+    var self = this;
+    nextTick(function () { self.emit('error', err); });
+  }
   return this;
 };
 ClientRequest.prototype.setTimeout = function (ms, cb) {

@@ -272,6 +272,26 @@ Socket.prototype.connect = function (port, host, connectListener) {
     // ALPN: request h2/http1.1 negotiation when the caller lists 'h2' (used by
     // http2.connect over https). socket.alpnProtocol reports the result.
     if (opts.ALPNProtocols && opts.ALPNProtocols.indexOf && opts.ALPNProtocols.indexOf('h2') !== -1) this._alpn = true;
+    // AbortSignal: destroy the socket with an AbortError when it fires (a
+    // pre-aborted signal errors on the next tick, before any connection).
+    if (opts.signal) {
+      var sig = opts.signal;
+      var sock = this;
+      var onAbort = function () {
+        var err = sig.reason instanceof Error ? sig.reason : (function () {
+          try { return new DOMException('This operation was aborted', 'AbortError'); }
+          catch (e) { var a = new Error('This operation was aborted'); a.name = 'AbortError'; return a; }
+        })();
+        sock.destroy(err);
+      };
+      if (sig.aborted) { nextTick(onAbort); }
+      else if (typeof sig.addEventListener === 'function') {
+        sig.addEventListener('abort', onAbort, { once: true });
+        sock.once('close', function () {
+          if (typeof sig.removeEventListener === 'function') sig.removeEventListener('abort', onAbort);
+        });
+      }
+    }
   } else if (typeof port === 'string' && !/^\d+$/.test(port)) {
     // connect(path) — a non-numeric string is a unix socket path.
     throw new Error('unix domain sockets are not supported');
@@ -321,6 +341,7 @@ Socket.prototype._pushData = function (data) {
 // Server
 // ---------------------------------------------------------------------------
 function Server(options, connectionListener) {
+  if (!(this instanceof Server)) return new Server(options, connectionListener);
   if (typeof options === 'function') {
     connectionListener = options;
     options = {};

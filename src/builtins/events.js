@@ -195,6 +195,11 @@ function setMaxListeners(n) {
 function getEventListeners(target, type) {
   if (target && typeof target.listeners === 'function') return target.listeners(type);
   if (target && target._events && target._events[type]) return target._events[type].slice();
+  // Web EventTarget (the velox shim keeps a `_listeners` Map of {listener}).
+  if (target && target._listeners && typeof target._listeners.get === 'function') {
+    var list = target._listeners.get(String(type));
+    if (list) return list.map(function (entry) { return entry.listener; });
+  }
   return [];
 }
 // `events.addAbortListener(signal, listener)` → returns a Disposable-ish handle.
