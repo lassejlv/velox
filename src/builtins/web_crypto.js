@@ -128,7 +128,11 @@
       }
       if (format === "jwk") {
         if (keyData.kty === "oct") return importKey("raw", b64uToBuf(keyData.k), algorithm, extractable, usages);
-        throw new Error("Unsupported jwk key type " + keyData.kty);
+        // EC/OKP public keys: rebuild the SPKI PEM from the JWK coordinates.
+        // (Private JWKs — those carrying `d` — aren't supported yet.)
+        if (keyData.kty === "EC" && !keyData.d) return Promise.resolve(new CryptoKey("public", fullAsymAlg(algorithm), extractable, usages, { pem: ecJwkToSpkiPem(keyData) }));
+        if (keyData.kty === "OKP" && !keyData.d) return Promise.resolve(new CryptoKey("public", fullAsymAlg(algorithm), extractable, usages, { pem: okpJwkToSpkiPem(keyData) }));
+        throw new Error("Unsupported jwk key type " + keyData.kty + (keyData.d ? " (private)" : ""));
       }
       if (format === "pkcs8") return Promise.resolve(new CryptoKey("private", fullAsymAlg(algorithm), extractable, usages, { pem: derToPem(keyData, "PRIVATE KEY") }));
       if (format === "spki") return Promise.resolve(new CryptoKey("public", fullAsymAlg(algorithm), extractable, usages, { pem: derToPem(keyData, "PUBLIC KEY") }));
@@ -143,6 +147,34 @@
     return out;
   }
 
+  // Minimal DER encoders for rebuilding EC/OKP SubjectPublicKeyInfo from JWK.
+  function derLen(n) {
+    if (n < 128) return Buffer.from([n]);
+    var bytes = [];
+    while (n > 0) { bytes.unshift(n & 0xff); n = Math.floor(n / 256); }
+    return Buffer.from([0x80 | bytes.length].concat(bytes));
+  }
+  function derSeq(content) { return Buffer.concat([Buffer.from([0x30]), derLen(content.length), content]); }
+  function derBitString(content) { var c = Buffer.concat([Buffer.from([0x00]), content]); return Buffer.concat([Buffer.from([0x03]), derLen(c.length), c]); }
+  // AlgorithmIdentifier DER (ecPublicKey + namedCurve OID, or the OKP curve OID).
+  var EC_ALGID = {
+    "P-256": "301306072a8648ce3d020106082a8648ce3d030107",
+    "P-384": "301006072a8648ce3d020106052b81040022",
+    "P-521": "301006072a8648ce3d020106052b81040023",
+  };
+  var OKP_ALGID = { "Ed25519": "300506032b6570", "X25519": "300506032b656e" };
+  function ecCoordLen(crv) { return crv === "P-384" ? 48 : crv === "P-521" ? 66 : 32; }
+  function ecJwkToSpkiPem(jwk) {
+    var x = b64uToBuf(jwk.x), y = b64uToBuf(jwk.y);
+    var point = Buffer.concat([Buffer.from([0x04]), x, y]);
+    var spki = derSeq(Buffer.concat([Buffer.from(EC_ALGID[jwk.crv], "hex"), derBitString(point)]));
+    return derToPem(spki, "PUBLIC KEY");
+  }
+  function okpJwkToSpkiPem(jwk) {
+    var spki = derSeq(Buffer.concat([Buffer.from(OKP_ALGID[jwk.crv], "hex"), derBitString(b64uToBuf(jwk.x))]));
+    return derToPem(spki, "PUBLIC KEY");
+  }
+
   function exportKey(format, key) {
     try {
       if (format === "raw") {
@@ -151,7 +183,27 @@
       }
       if (format === "jwk") {
         if (key._m.secret) return Promise.resolve({ kty: "oct", k: bufToB64u(key._m.secret), key_ops: key.usages, ext: key.extractable });
-        throw new Error("jwk export is only supported for secret keys");
+        if (key._m.pem) {
+          // Public-key JWK: the public point/key is the trailing element of the
+          // SPKI, so slice it by length. (Private-key JWK isn't supported — Web
+          // Crypto private keys are non-extractable by default anyway.)
+          if (key.type !== "public") throw new Error("jwk export of a private key is not supported");
+          var algName = key.algorithm.name;
+          var der = pemToDer(key._m.pem);
+          if (algName === "ECDSA" || algName === "ECDH") {
+            var crv = key.algorithm.namedCurve;
+            var pointLen = 1 + 2 * ecCoordLen(crv);
+            var point = der.slice(der.length - pointLen);
+            var cl = ecCoordLen(crv);
+            return Promise.resolve({ kty: "EC", crv: crv, x: bufToB64u(point.slice(1, 1 + cl)), y: bufToB64u(point.slice(1 + cl)), key_ops: key.usages, ext: key.extractable });
+          }
+          if (algName === "Ed25519" || algName === "EdDSA" || algName === "X25519") {
+            var raw = der.slice(der.length - 32);
+            return Promise.resolve({ kty: "OKP", crv: algName === "EdDSA" ? "Ed25519" : algName, x: bufToB64u(raw), key_ops: key.usages, ext: key.extractable });
+          }
+          throw new Error("jwk export unsupported for " + algName);
+        }
+        throw new Error("jwk export is only supported for secret and public keys");
       }
       if (format === "pkcs8" || format === "spki") {
         if (key._m.pem) return Promise.resolve(toAB(pemToDer(key._m.pem)));
