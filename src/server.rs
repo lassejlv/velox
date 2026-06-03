@@ -272,6 +272,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_server_port", server_port);
         register(ctx, c"__velox_connect", connect);
         register(ctx, c"__velox_connect_tls", connect_tls);
+        register(ctx, c"__velox_socket_start_tls", socket_start_tls);
         register(ctx, c"__velox_socket_alpn", socket_alpn);
         register(ctx, c"__velox_socket_write", socket_write);
         register(ctx, c"__velox_socket_write_bytes", socket_write_bytes);
@@ -695,6 +696,61 @@ unsafe extern "C-unwind" fn connect_tls(
     _exception: *mut JSValueRef,
 ) -> JSValueRef {
     unsafe { start_connect(ctx, arg_slice(argc, argv), true) }
+}
+
+/// `__velox_socket_start_tls(socketId, host, alpn)` — upgrade an already-
+/// connected plain socket to TLS in place (the STARTTLS pattern: postgres-js,
+/// node-postgres, SMTP/IMAP/FTP all connect plaintext, negotiate, then wrap the
+/// SAME socket via `tls.connect({ socket })`). Attaches a fresh rustls client
+/// connection to the existing `Conn`, flips it back to `connecting`, and re-arms
+/// WRITABLE so the reactor drives the handshake and re-emits `on_connect` (→
+/// `secureConnect`) when it completes. All subsequent reads/writes on this token
+/// transparently go through TLS.
+unsafe extern "C-unwind" fn socket_start_tls(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let token = socket_token(ctx, args.first());
+    let host = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string());
+    let alpn = args
+        .get(2)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0)
+        != 0.0;
+
+    let result = CONNS.with(|c| {
+        let mut map = c.borrow_mut();
+        match map.get_mut(&token) {
+            Some(conn) => match make_tls(&host, alpn) {
+                Ok(tls) => {
+                    conn.tls = Some(tls);
+                    conn.connecting = true;
+                    conn.want_write = true;
+                    let _ = registry().reregister(
+                        &mut conn.stream,
+                        token,
+                        Interest::READABLE | Interest::WRITABLE,
+                    );
+                    Ok(())
+                }
+                Err(message) => Err(message),
+            },
+            None => Err("socket is not connected".to_string()),
+        }
+    });
+    if let Err(message) = result {
+        emit_error(ctx, token, &message);
+    }
+    unsafe { JSValue::new_undefined(ctx) }
 }
 
 /// Begin an outbound connection: resolve DNS off-thread and register the

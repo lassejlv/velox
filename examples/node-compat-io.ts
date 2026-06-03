@@ -285,6 +285,26 @@ check("net socket write honors Buffer byteOffset (subarray view)", async () => {
   });
 });
 
+check("tls.connect({socket}) upgrades existing socket in place (STARTTLS)", async () => {
+  const net = require("node:net"); const tls = require("node:tls");
+  await new Promise<void>((resolve, reject) => {
+    // Postgres/SMTP negotiate over plaintext then secure the SAME socket via
+    // tls.connect({ socket }). The contract: the existing socket is upgraded in
+    // place (returned identity-equal, no new connection dialed) — the old bug was
+    // tls.connect ignoring `socket` and connecting to host:undefined (EADDRNOTAVAIL).
+    const srv = net.createServer((sock: any) => { sock.on("data", () => {}); });
+    srv.listen(0, () => {
+      const c = net.connect(srv.address().port, "127.0.0.1", () => {
+        const upgraded = tls.connect({ socket: c, servername: "localhost", rejectUnauthorized: false });
+        const ok = upgraded === c && c._useTls === true;
+        c.on("error", () => {}); // handshake will fail vs the plain server; ignore
+        setTimeout(() => { c.destroy(); srv.close(); ok ? resolve() : reject(new Error("not upgraded in place")); }, 50);
+      });
+      c.on("error", reject);
+    });
+  });
+});
+
 await new Promise((r) => setTimeout(r, 300));
 let pass = 0, fail = 0;
 for (const [name, ok, err] of results) { if (ok) pass++; else { fail++; console.log("FAIL " + name + ": " + err); } }

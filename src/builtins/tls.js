@@ -12,6 +12,28 @@ function connect(port, host, options, cb) {
     options.port = port;
     if (host) options.host = host;
   }
+  // STARTTLS upgrade: `tls.connect({ socket })` wraps an ALREADY-connected plain
+  // net.Socket in TLS in place (Postgres/SMTP/IMAP negotiate over plaintext, then
+  // secure the same connection). Drive a TLS handshake on the existing socketId
+  // and surface its completion as 'secureConnect'.
+  if (options.socket && options.socket._socketId != null) {
+    var existing = options.socket;
+    var servername = options.servername || existing.servername || existing.remoteAddress || existing.host || '';
+    var wantAlpn = options.ALPNProtocols && options.ALPNProtocols.indexOf && options.ALPNProtocols.indexOf('h2') !== -1;
+    if (typeof cb === 'function') existing.once('secureConnect', cb);
+    // The reactor re-emits 'connect' (via __velox_on_connect) once the handshake
+    // completes; turn that into 'secureConnect'.
+    existing.once('connect', function () {
+      existing.authorized = true;
+      existing.encrypted = true;
+      existing.servername = servername;
+      existing.emit('secureConnect');
+    });
+    existing._useTls = true;
+    __velox_socket_start_tls(existing._socketId, servername, wantAlpn ? 1 : 0);
+    return existing;
+  }
+
   options = Object.assign({}, options, { tls: true });
   if (options.host == null && options.servername) options.host = options.servername;
   var socket = new net.Socket();
