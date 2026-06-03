@@ -88,8 +88,10 @@ fn main() -> ExitCode {
     match cli.file {
         Some(path) if cli.watch => watch_loop(&path),
         Some(path) => run_file(&path),
+        // A bare `velox` shows the home screen rather than dropping into the
+        // REPL — the REPL now lives behind `velox repl` (Bun-style).
         None => {
-            repl::start();
+            ui::about();
             ExitCode::SUCCESS
         }
     }
@@ -110,6 +112,28 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
     };
 
     match cmd {
+        "repl" => {
+            if has_help {
+                println!(
+                    "Usage: velox repl\n\n  Start the interactive REPL (top-level await supported)."
+                );
+                return Some(ExitCode::SUCCESS);
+            }
+            repl::start();
+            Some(ExitCode::SUCCESS)
+        }
+        // A bare `velox help` / `velox --help` / `velox -h` shows the home
+        // screen; clap still handles `velox <command> --help` for per-command
+        // usage (those have a non-empty `rest`/different `cmd`).
+        "help" | "-h" | "--help" if rest.is_empty() => {
+            ui::about();
+            Some(ExitCode::SUCCESS)
+        }
+        // Accept `-v` too (clap's built-in short is `-V`); match Node/Bun.
+        "-v" | "-V" | "--version" if rest.is_empty() => {
+            println!("velox {}", env!("CARGO_PKG_VERSION"));
+            Some(ExitCode::SUCCESS)
+        }
         "init" => {
             if has_help {
                 println!(
