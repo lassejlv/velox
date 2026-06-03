@@ -37,7 +37,7 @@ mio = { version = "1.2.1", features = ["os-poll", "net"] }
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
 objc2-javascript-core = "0.3.2"
-owo-colors = "4.3.0"
+owo-colors = { version = "4.3.0", features = ["supports-colors"] }
 p256 = { version = "0.13", features = ["ecdh"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 oxc_resolver = "11"

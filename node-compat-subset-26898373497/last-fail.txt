@@ -1,8 +1,0 @@
-test-event-emitter-add-listeners
-test-event-emitter-error-monitor
-test-event-emitter-listener-count
-test-event-emitter-once
-test-event-emitter-prepend
-test-stringbytes-external
-test-timers-immediate
-test-timers-unref

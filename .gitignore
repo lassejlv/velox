@@ -8,3 +8,5 @@
 /tests/node/failures.log
 /tests/node/last-pass.txt
 /tests/node/last-fail.txt
+/artifacts/node-compat/
+/node-compat-*/
