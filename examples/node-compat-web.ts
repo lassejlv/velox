@@ -120,6 +120,7 @@ check("node:buffer re-exports Blob/File", async () => {
   if (new Blob(["x"]).size !== 1) throw new Error("Blob");
   const f = new File(["ab"], "a.txt"); if (f.name !== "a.txt" || f.size !== 2) throw new Error("File");
 });
+check("EventTarget addEventListener signal/once", () => { const et = new EventTarget(); let n = 0; const ac = new AbortController(); et.addEventListener("x", () => n++, { signal: ac.signal }); ac.abort(); et.dispatchEvent(new Event("x")); if (n !== 0) throw new Error("signal n=" + n); let m = 0; et.addEventListener("y", () => m++, { once: true }); et.dispatchEvent(new Event("y")); et.dispatchEvent(new Event("y")); if (m !== 1) throw new Error("once m=" + m); });
 check("Request always has a signal", () => { const r = new Request("http://x", { method: "POST", body: "y" }); if (!r.signal || typeof r.signal.aborted !== "boolean" || r.signal.aborted) throw new Error("signal"); });
 check("MessageChannel ports", async () => {
   const mc = new MessageChannel();

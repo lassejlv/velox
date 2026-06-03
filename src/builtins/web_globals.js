@@ -537,8 +537,10 @@
         }
         if (listener == null) return;
         type = String(type);
-        var once = false;
-        if (typeof opts === "object" && opts !== null) once = !!opts.once;
+        var once = false, signal = null;
+        if (typeof opts === "object" && opts !== null) { once = !!opts.once; signal = opts.signal || null; }
+        // An already-aborted signal means the listener is never added.
+        if (signal && signal.aborted) return;
         var list = this._listeners.get(type);
         if (!list) {
           list = [];
@@ -549,6 +551,11 @@
           if (list[i].listener === listener) return;
         }
         list.push({ listener: listener, once: once });
+        // opts.signal: remove the listener when the signal aborts.
+        if (signal && typeof signal.addEventListener === "function") {
+          var self = this;
+          signal.addEventListener("abort", function () { self.removeEventListener(type, listener); }, { once: true });
+        }
       }
       removeEventListener(type, listener) {
         type = String(type);

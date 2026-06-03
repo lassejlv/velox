@@ -1101,11 +1101,52 @@ MIMEType.prototype.toString = function () {
   return str;
 };
 
+// System error codes (macOS errno values) — getSystemErrorName maps a negative
+// libuv-style errno to its symbolic name; getSystemErrorMap returns errno ->
+// [name, message].
+var ERRNO_NAMES = {
+  1: ["EPERM", "operation not permitted"], 2: ["ENOENT", "no such file or directory"],
+  3: ["ESRCH", "no such process"], 4: ["EINTR", "interrupted system call"],
+  5: ["EIO", "i/o error"], 6: ["ENXIO", "no such device or address"],
+  9: ["EBADF", "bad file descriptor"], 11: ["EDEADLK", "resource deadlock avoided"],
+  12: ["ENOMEM", "not enough memory"], 13: ["EACCES", "permission denied"],
+  14: ["EFAULT", "bad address"], 16: ["EBUSY", "resource busy or locked"],
+  17: ["EEXIST", "file already exists"], 18: ["EXDEV", "cross-device link not permitted"],
+  19: ["ENODEV", "no such device"], 20: ["ENOTDIR", "not a directory"],
+  21: ["EISDIR", "illegal operation on a directory"], 22: ["EINVAL", "invalid argument"],
+  23: ["ENFILE", "too many open files in system"], 24: ["EMFILE", "too many open files"],
+  25: ["ENOTTY", "inappropriate ioctl for device"], 27: ["EFBIG", "file too large"],
+  28: ["ENOSPC", "no space left on device"], 29: ["ESPIPE", "invalid seek"],
+  30: ["EROFS", "read-only file system"], 31: ["EMLINK", "too many links"],
+  32: ["EPIPE", "broken pipe"], 34: ["ERANGE", "result too large"],
+  35: ["EAGAIN", "resource temporarily unavailable"], 36: ["EINPROGRESS", "operation in progress"],
+  40: ["EMSGSIZE", "message too long"], 41: ["EPROTOTYPE", "protocol wrong type for socket"],
+  48: ["EADDRINUSE", "address already in use"], 49: ["EADDRNOTAVAIL", "address not available"],
+  51: ["ENETUNREACH", "network is unreachable"], 53: ["ECONNABORTED", "software caused connection abort"],
+  54: ["ECONNRESET", "connection reset by peer"], 55: ["ENOBUFS", "no buffer space available"],
+  56: ["EISCONN", "socket is already connected"], 57: ["ENOTCONN", "socket is not connected"],
+  60: ["ETIMEDOUT", "connection timed out"], 61: ["ECONNREFUSED", "connection refused"],
+  62: ["ELOOP", "too many symbolic links encountered"], 63: ["ENAMETOOLONG", "name too long"],
+  64: ["EHOSTDOWN", "host is down"], 65: ["EHOSTUNREACH", "host is unreachable"],
+  66: ["ENOTEMPTY", "directory not empty"],
+};
+function getSystemErrorName(err) {
+  var e = ERRNO_NAMES[Math.abs(err | 0)];
+  return e ? e[0] : "Unknown system error " + err;
+}
+function getSystemErrorMap() {
+  var m = new Map();
+  for (var k in ERRNO_NAMES) m.set(-Number(k), ERRNO_NAMES[k]);
+  return m;
+}
+
 module.exports = {
   // Core
   inspect,
   MIMEType,
   MIMEParams,
+  getSystemErrorName,
+  getSystemErrorMap,
   format,
   formatWithOptions,
   inherits,

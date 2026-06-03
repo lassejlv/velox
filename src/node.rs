@@ -397,6 +397,17 @@ pub const GLOBALS_PRELUDE: &str = r#"
   // (callers use it for diagnostics, not control flow).
   process.getActiveResourcesInfo = function () { return []; };
 
+  // Uncaught-exception capture callback (Node's escape hatch that pre-empts the
+  // 'uncaughtException' event). Stored + queried here; the uncaught path checks
+  // process._uncaughtExceptionCapture.
+  process._uncaughtExceptionCapture = null;
+  process.setUncaughtExceptionCaptureCallback = function (fn) {
+    if (fn !== null && typeof fn !== 'function') throw new TypeError('The "fn" argument must be of type function or null');
+    if (fn && process._uncaughtExceptionCapture) throw new Error('`process.setUncaughtExceptionCaptureCallback()` was called while a capture callback was already active');
+    process._uncaughtExceptionCapture = fn;
+  };
+  process.hasUncaughtExceptionCaptureCallback = function () { return process._uncaughtExceptionCapture != null; };
+
   // loadEnvFile([path]) parses a .env file and assigns to process.env, mirroring
   // Node 20.12+. Minimal dotenv: KEY=VALUE per line, # comments, optional quotes.
   process.loadEnvFile = function (path) {
