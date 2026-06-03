@@ -663,6 +663,15 @@ ServerResponse.prototype.addTrailers = function (headers) {
   else for (var k in headers) this._trailers[k] = headers[k];
 };
 // 1xx informational responses sent ahead of the main response.
+// Destroy the response: tear the underlying connection down (the client sees
+// an abort). Node parity for `res.destroy([err])`.
+ServerResponse.prototype.destroy = function (err) {
+  if (this.destroyed) return this;
+  this.destroyed = true;
+  if (this.socket) this.socket.destroy(err);
+  return this;
+};
+
 ServerResponse.prototype.writeContinue = function (cb) {
   if (this.socket) this.socket.write('HTTP/1.1 100 Continue\r\n\r\n', 'latin1');
   if (typeof cb === 'function') nextTick(cb);
@@ -983,27 +992,6 @@ function ClientRequest(options, cb) {
   EventEmitter.call(this);
   options = normalizeClientOptions(options);
 
-  // AbortSignal: abort the request (AbortError 'error' + destroy) on signal.
-  if (options.signal) {
-    var sig = options.signal;
-    var reqSelf = this;
-    var onReqAbort = function () {
-      if (reqSelf.destroyed) return;
-      var err = sig.reason instanceof Error ? sig.reason : (function () {
-        try { return new DOMException('This operation was aborted', 'AbortError'); }
-        catch (e) { var a = new Error('This operation was aborted'); a.name = 'AbortError'; return a; }
-      })();
-      reqSelf.destroy(err);
-    };
-    if (sig.aborted) { nextTick(onReqAbort); }
-    else if (typeof sig.addEventListener === 'function') {
-      sig.addEventListener('abort', onReqAbort, { once: true });
-      this.once('close', function () {
-        if (typeof sig.removeEventListener === 'function') sig.removeEventListener('abort', onReqAbort);
-      });
-    }
-  }
-
   var useTls = options.protocol === 'https:' || options._tls === true;
   this._tls = useTls;
   this.method = (options.method || 'GET').toUpperCase();
@@ -1046,13 +1034,21 @@ function ClientRequest(options, cb) {
   this._key = (useTls ? 'https' : 'http') + ':' + this._host + ':' + this._port;
   this._agent = (options.agent !== undefined) ? options.agent : globalAgent;
 
-  // Reuse a pooled keep-alive socket if the agent has one; else open a new one.
+  // Reuse a pooled keep-alive socket if the agent has one; else open a new one
+  // (through the caller's `createConnection` factory when provided).
   var socket = (this._agent && this._agent.keepAlive) ? this._agent._acquire(this._key) : null;
   var reused = !!socket;
   if (!socket) {
-    socket = useTls
-      ? net.connect({ port: this._port, host: this._host, tls: true, servername: this._host })
-      : net.connect(this._port, this._host);
+    if (typeof options.createConnection === 'function') {
+      socket = options.createConnection(
+        { port: this._port, host: this._host, servername: useTls ? this._host : undefined },
+        function (err, s) { if (err && self.listenerCount('error')) self.emit('error', err); }
+      );
+    } else {
+      socket = useTls
+        ? net.connect({ port: this._port, host: this._host, tls: true, servername: this._host })
+        : net.connect(this._port, this._host);
+    }
     bindClientSocket(socket);
   }
   this.socket = socket;
@@ -1074,6 +1070,36 @@ function ClientRequest(options, cb) {
   // A fresh socket fires 'connect'; a reused one is already connected (end()
   // flushes immediately via the not-connecting path).
   if (!reused) socket.on('connect', function () { self._onSocketConnect(); });
+
+  // AbortSignal: abort the request (AbortError 'error' + destroy) on signal.
+  if (options.signal) {
+    var sig = options.signal;
+    var reqSelf = this;
+    var onReqAbort = function () {
+      if (reqSelf.destroyed) return;
+      // Node's http AbortError shape: name AbortError, code ABORT_ERR. A
+      // custom (non-default) abort reason passes through as-is.
+      var err;
+      if (sig.reason instanceof Error && sig.reason.name !== 'AbortError') {
+        err = sig.reason;
+      } else {
+        err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        err.code = 'ABORT_ERR';
+      }
+      reqSelf.destroy(err);
+    };
+    if (sig.aborted) {
+      // Destroyed synchronously (callers check req.destroyed right away);
+      // the 'error' itself still arrives on the next tick via destroy().
+      onReqAbort();
+    } else if (typeof sig.addEventListener === 'function') {
+      sig.addEventListener('abort', onReqAbort, { once: true });
+      this.once('close', function () {
+        if (typeof sig.removeEventListener === 'function') sig.removeEventListener('abort', onReqAbort);
+      });
+    }
+  }
 }
 
 // Persistent socket handlers that route I/O to the socket's current request.
@@ -1298,6 +1324,13 @@ ClientRequest.prototype.abort = function () {
 ClientRequest.prototype.destroy = function (err) {
   if (this.destroyed) return this;
   this.destroyed = true;
+  // Destroying a request that never got its response surfaces Node's
+  // 'socket hang up' / ECONNRESET (destroy after the response is flowing
+  // is silent).
+  if (!err && !this.res && !this.aborted) {
+    err = new Error('socket hang up');
+    err.code = 'ECONNRESET';
+  }
   // Destroy the socket plainly — the error surfaces on the REQUEST (a socket
   // 'error' with no listener would throw from a microtask).
   if (this.socket) this.socket.destroy();

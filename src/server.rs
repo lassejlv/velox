@@ -1074,7 +1074,13 @@ unsafe extern "C-unwind" fn socket_close(
         close_conn(ctx, token);
     } else if CONNECTS.with(|c| c.borrow_mut().remove(&token)).is_some() {
         // Cancelled before the socket opened; the DNS result will be ignored.
+        // JS still needs the 'close' event — listeners (and keep-alive
+        // bookkeeping) hang forever without it.
         end_io();
+        unsafe {
+            let args = [num(ctx, token)];
+            call_named(ctx, c"__velox_on_close", &args);
+        }
     }
     unsafe { JSValue::new_undefined(ctx) }
 }
