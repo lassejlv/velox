@@ -156,8 +156,13 @@ ChildProcess.prototype.constructor = ChildProcess;
 
 ChildProcess.prototype.kill = function (signal) {
   this.killed = true;
-  // No live handle to signal; mark killed and surface it on the next event.
   this.signalCode = signal || 'SIGTERM';
+  // Send the real signal to the process if we have its pid (process spawns on
+  // the main thread now, so pid is available synchronously).
+  if (this.pid && typeof process !== 'undefined' && typeof process.kill === 'function') {
+    try { process.kill(this.pid, signal || 'SIGTERM'); return true; }
+    catch (e) { return false; }
+  }
   return true;
 };
 
@@ -212,12 +217,14 @@ function startChild(child, file, args, options) {
 
   // Kick off the worker. If the native call itself throws, report async.
   try {
-    __velox_exec(
+    // __velox_exec spawns on the main thread and returns the pid synchronously.
+    var pid = __velox_exec(
       String(file),
       JSON.stringify(args || []),
       JSON.stringify(buildOpts(options, options.shell)),
       token
     );
+    if (pid) child.pid = pid;
   } catch (e) {
     delete _pending[token];
     queueMicrotask(function () { child.emit('error', e); });

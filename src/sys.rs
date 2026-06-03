@@ -893,15 +893,35 @@ unsafe extern "C-unwind" fn exec(
         .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
         .unwrap_or(0.0);
 
+    // Spawn on the main thread so the pid is known synchronously (Node exposes
+    // child.pid immediately); the blocking wait runs on a worker thread.
+    let input = opts
+        .get("input")
+        .and_then(Value::as_str)
+        .map(latin1_to_bytes);
     let tx = EXEC_CHANNEL.with(|(t, _)| t.clone());
     let waker = waker();
     begin_io();
-    std::thread::spawn(move || {
-        let result = run_command(&file, &cmd_args, &opts);
-        let _ = tx.send((token, result.to_string()));
-        let _ = waker.wake();
-    });
-    unsafe { JSValue::new_undefined(ctx) }
+    match spawn_command(&file, &cmd_args, &opts) {
+        Ok(child) => {
+            let pid = child.id();
+            std::thread::spawn(move || {
+                let result = finish_command(child, pid, input);
+                let _ = tx.send((token, result.to_string()));
+                let _ = waker.wake();
+            });
+            unsafe { JSValue::new_number(ctx, pid as f64) }
+        }
+        Err(e) => {
+            // Spawn failed (e.g. ENOENT): deliver the error result asynchronously.
+            let result = error_result(0, &e);
+            std::thread::spawn(move || {
+                let _ = tx.send((token, result.to_string()));
+                let _ = waker.wake();
+            });
+            unsafe { JSValue::new_number(ctx, 0.0) }
+        }
+    }
 }
 
 /// Read `(file, argsJson, optsJson)` from native args.
@@ -927,6 +947,68 @@ unsafe fn read_command_args(
 }
 
 /// Run a process to completion (blocking) and return a Node-shaped result.
+// Build + spawn the command, returning the live child (so the caller can read
+// its pid synchronously) or an error string. stdin/stdout/stderr are piped.
+fn spawn_command(file: &str, args: &[String], opts: &Value) -> Result<std::process::Child, String> {
+    use std::process::{Command, Stdio};
+    let shell = opts.get("shell").map(value_truthy).unwrap_or(false);
+    let mut command = if shell {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c");
+        if args.is_empty() {
+            c.arg(file);
+        } else {
+            c.arg(format!("{} {}", file, args.join(" ")));
+        }
+        c
+    } else {
+        let mut c = Command::new(file);
+        c.args(args);
+        c
+    };
+    if let Some(cwd) = opts.get("cwd").and_then(Value::as_str) {
+        command.current_dir(cwd);
+    }
+    if let Some(env) = opts.get("env").and_then(Value::as_object) {
+        command.env_clear();
+        for (key, value) in env {
+            if let Some(s) = value.as_str() {
+                command.env(key, s);
+            }
+        }
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.spawn().map_err(|e| e.to_string())
+}
+
+// Feed stdin (if any), wait for exit, and format the result. Runs on a worker
+// thread; the child was already spawned (and its pid read) by spawn_command.
+fn finish_command(mut child: std::process::Child, pid: u32, input: Option<Vec<u8>>) -> Value {
+    use std::io::Write;
+    if let Some(stdin) = child.stdin.take() {
+        let mut stdin = stdin;
+        if let Some(bytes) = &input {
+            let _ = stdin.write_all(bytes);
+        }
+    }
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(e) => return error_result(pid, &e.to_string()),
+    };
+    let signal = exit_signal(&output.status);
+    serde_json::json!({
+        "status": output.status.code(),
+        "signal": signal,
+        "stdout": bytes_to_latin1(&output.stdout),
+        "stderr": bytes_to_latin1(&output.stderr),
+        "pid": pid,
+        "error": Value::Null,
+    })
+}
+
 fn run_command(file: &str, args: &[String], opts: &Value) -> Value {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -1014,7 +1096,26 @@ fn exit_signal(status: &std::process::ExitStatus) -> Value {
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(sig) = status.signal() {
-            return Value::String(format!("SIG{sig}"));
+            // Map the numeric signal to its name (Node reports e.g. "SIGTERM").
+            let name = match sig {
+                1 => "SIGHUP",
+                2 => "SIGINT",
+                3 => "SIGQUIT",
+                4 => "SIGILL",
+                6 => "SIGABRT",
+                8 => "SIGFPE",
+                9 => "SIGKILL",
+                11 => "SIGSEGV",
+                13 => "SIGPIPE",
+                14 => "SIGALRM",
+                15 => "SIGTERM",
+                17 => "SIGSTOP",
+                19 => "SIGCONT",
+                30 => "SIGUSR1",
+                31 => "SIGUSR2",
+                _ => return Value::String(format!("SIG{sig}")),
+            };
+            return Value::String(name.to_string());
         }
     }
     let _ = status;
