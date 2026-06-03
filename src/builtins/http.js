@@ -553,6 +553,26 @@ ServerResponse.prototype.end = function (chunk, encoding, cb) {
 };
 
 ServerResponse.prototype.flushHeaders = function () { if (!this._headerSent) this._sendHeaders(null); };
+// 1xx informational responses sent ahead of the main response.
+ServerResponse.prototype.writeContinue = function (cb) {
+  if (this.socket) this.socket.write('HTTP/1.1 100 Continue\r\n\r\n', 'latin1');
+  if (typeof cb === 'function') nextTick(cb);
+};
+ServerResponse.prototype.writeProcessing = function (cb) {
+  if (this.socket) this.socket.write('HTTP/1.1 102 Processing\r\n\r\n', 'latin1');
+  if (typeof cb === 'function') nextTick(cb);
+};
+ServerResponse.prototype.writeEarlyHints = function (hints, cb) {
+  var lines = 'HTTP/1.1 103 Early Hints\r\n';
+  if (hints) for (var k in hints) {
+    var v = hints[k];
+    if (Array.isArray(v)) for (var i = 0; i < v.length; i++) lines += k + ': ' + v[i] + '\r\n';
+    else lines += k + ': ' + v + '\r\n';
+  }
+  lines += '\r\n';
+  if (this.socket) this.socket.write(lines, 'latin1');
+  if (typeof cb === 'function') nextTick(cb);
+};
 
 // ---------------------------------------------------------------------------
 // Server — wraps a net.Server; wires the parser to each connection.

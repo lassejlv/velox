@@ -370,6 +370,10 @@ pub const GLOBALS_PRELUDE: &str = r#"
     // Node exposes a small set of build-time feature flags; libraries probe
     // these (e.g. `process.features.tls`, `.inspector`) before using an API.
     features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: true, tls_sni: true, tls_ocsp: true, tls: true, cached_builtins: true, typescript: "transpile" },
+    // process.config — the build configuration object. velox isn't built like
+    // Node, but libraries read fields off it (e.g. variables.*); provide a
+    // plausible shape so property access doesn't throw.
+    config: { target_defaults: { default_configuration: "Release" }, variables: { host_arch: "arm64", target_arch: "arm64", v8_enable_i18n_support: 1, node_use_openssl: true } },
   };
   process.hrtime.bigint = function () { return BigInt(Math.round(__velox_hrtime_ns())); };
 
