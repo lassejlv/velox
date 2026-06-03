@@ -50,11 +50,23 @@ Domain.prototype.exit = function exit() {
 
 Domain.prototype._handleError = function _handleError(er) {
   if (er instanceof Error) {
-    er.domain = this;
+    tagErrorDomain(er, this);
     er.domainThrown = true;
   }
   this.emit('error', er);
 };
+
+// `error.domain` is non-enumerable in Node (it must not leak into JSON or
+// deepEqual comparisons of the error).
+function tagErrorDomain(er, d) {
+  try {
+    Object.defineProperty(er, 'domain', {
+      value: d, writable: true, enumerable: false, configurable: true,
+    });
+  } catch (e) {
+    er.domain = d;
+  }
+}
 
 Domain.prototype.run = function run(fn) {
   const args = Array.prototype.slice.call(arguments, 1);
@@ -115,7 +127,7 @@ Domain.prototype.intercept = function intercept(cb) {
     if (er) {
       // A callback-style error is "bound", not "thrown" (Node tags it so).
       if (er instanceof Error) {
-        er.domain = self;
+        tagErrorDomain(er, self);
         er.domainBound = cb;
         er.domainThrown = false;
       }

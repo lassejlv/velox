@@ -1,10 +1,13 @@
 // node:events — a compact EventEmitter.
 
+// Same symbol shape as Node (tests locate it by description).
+var kCapture = Symbol('kCapture');
+
 function EventEmitter(opts) {
   if (!this._events) this._events = Object.create(null);
   if (opts !== undefined && opts !== null && opts.captureRejections !== undefined) {
     validateCaptureRejections(opts.captureRejections, 'options.captureRejections');
-    this._captureRejections = opts.captureRejections;
+    this[kCapture] = opts.captureRejections;
   }
   // Domain integration (mirrors Node's EE constructor): an emitter created
   // while a domain is active is owned by it. `_getDomain` is installed by
@@ -107,7 +110,10 @@ EventEmitter.prototype.emit = function (type) {
       if (this.domain && this !== this.domain && typeof this.domain.emit === 'function') {
         if (err instanceof Error) {
           err.domainEmitter = this;
-          err.domain = this.domain;
+          // Non-enumerable, as in Node (must not surface in JSON/deepEqual).
+          try {
+            Object.defineProperty(err, 'domain', { value: this.domain, writable: true, enumerable: false, configurable: true });
+          } catch (e) { err.domain = this.domain; }
           err.domainThrown = false;
         }
         this.domain.emit('error', err);
@@ -121,8 +127,8 @@ EventEmitter.prototype.emit = function (type) {
   // captureRejections (per-instance flag, falling back to the static default):
   // a listener returning a rejected promise routes the reason to the emitter's
   // [Symbol.for('nodejs.rejection')] method, or failing that its 'error' event.
-  var capture = this._captureRejections !== undefined
-    ? this._captureRejections
+  var capture = this[kCapture] !== undefined
+    ? this[kCapture]
     : EventEmitter._defaultCaptureRejections;
   for (var i = 0; i < copy.length; i++) {
     var result = copy[i].apply(this, args);
@@ -142,9 +148,9 @@ function addRejectionHandler(ee, promise, type, args) {
       } else {
         // Temporarily disable capture to avoid recursing on a rejecting
         // 'error' listener (Node does the same dance).
-        var prev = ee._captureRejections;
-        ee._captureRejections = false;
-        try { ee.emit('error', err); } finally { ee._captureRejections = prev; }
+        var prev = ee[kCapture];
+        ee[kCapture] = false;
+        try { ee.emit('error', err); } finally { ee[kCapture] = prev; }
       }
     });
   });
