@@ -134,6 +134,10 @@ fn dispatch_subcommand(raw: &[String]) -> Option<ExitCode> {
             println!("velox {}", env!("CARGO_PKG_VERSION"));
             Some(ExitCode::SUCCESS)
         }
+        // Node-compat interactive mode: tools spawn `node -i` and parse the
+        // banner/prompt, so emit Node's exact greeting and a `> ` REPL over
+        // stdin/stdout (velox's own branded REPL stays behind `velox repl`).
+        "-i" | "--interactive" if rest.is_empty() => Some(node_interactive_repl()),
         "init" => {
             if has_help {
                 println!(
@@ -443,6 +447,21 @@ fn run_source(code: &str, _label: &str) -> ExitCode {
     let result = run_file(&path);
     let _ = std::fs::remove_file(&path);
     result
+}
+
+/// Node-compat `velox -i`: Node's exact greeting + a `> ` REPL on stdin/stdout
+/// (the node:repl builtin drives evaluation). Tools that spawn `node -i` and
+/// parse the banner/prompt — including Node's own test suite — depend on the
+/// precise bytes, so keep the version in sync with `process.version` (node.rs).
+fn node_interactive_repl() -> ExitCode {
+    use std::io::Write;
+    print!("Welcome to Node.js v22.12.0.\nType \".help\" for more information.\n> ");
+    let _ = std::io::stdout().flush();
+    run_source(
+        "const repl = require('node:repl');\n\
+         repl.start({ prompt: '> ', terminal: false, useColors: false });\n",
+        "interactive",
+    )
 }
 
 /// The primary subcommand names, used to offer a "did you mean" hint when a

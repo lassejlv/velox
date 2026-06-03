@@ -13,11 +13,87 @@
   // drizzle-kit reading `drizzle.config.ts` at runtime). Bundles the file (TS
   // stripped, ESM→CJS, its own deps resolved) via the native, evals the result,
   // and returns the entry's exports. Cached by path.
+  var DEFAULT_EXTS = { '.js': 1, '.json': 1, '.node': 1 };
+
+  // Node's findLongestRegisteredExtension: scan the basename's dots left to
+  // right (skipping a leading dot — dotfiles have no extension) and return the
+  // first suffix with a registered loader, defaulting to '.js'.
+  function longestRegisteredExtension(extMap, filename) {
+    var name = filename.slice(filename.lastIndexOf('/') + 1);
+    var startIndex = 0, index;
+    while ((index = name.indexOf('.', startIndex)) !== -1) {
+      startIndex = index + 1;
+      if (index === 0) continue;
+      var ext = name.slice(index);
+      if (extMap[ext]) return ext;
+    }
+    return '.js';
+  }
+
+  function isFile(fs, p) {
+    try { var s = fs.statSync(p, { throwIfNoEntry: false }); return !!(s && s.isFile()); }
+    catch (e) { return false; }
+  }
+
+  // Custom require.extensions loaders (the deprecated-but-real Node API): when
+  // any non-default extension is registered, resolve the filename Node-style
+  // (exact path, then spec+ext trials over the registry in key order) and, if
+  // the winning loader is user-registered, hand it a module object. Returns
+  // undefined to fall through to the native bundler.
+  function tryCustomExtensions(spec) {
+    var Mod;
+    try { Mod = builtinRequire('node:module'); } catch (e) { return undefined; }
+    var extMap = Mod && Mod._extensions;
+    if (!extMap) return undefined;
+    var hasCustom = false;
+    for (var k in extMap) { if (!DEFAULT_EXTS[k]) { hasCustom = true; break; } }
+    if (!hasCustom) return undefined;
+
+    var fs = builtinRequire('node:fs');
+    var filename = null;
+    if (isFile(fs, spec)) filename = spec;
+    else {
+      for (var ext in extMap) {
+        if (isFile(fs, spec + ext)) { filename = spec + ext; break; }
+      }
+    }
+    if (filename === null) return undefined;
+    var lext = longestRegisteredExtension(extMap, filename);
+    if (DEFAULT_EXTS[lext]) return { filename: filename }; // native path, resolved name
+    if (Mod._cache[filename]) return { exports: Mod._cache[filename].exports };
+    var mod = {
+      id: filename, exports: {}, filename: filename,
+      loaded: false, children: [], paths: [],
+    };
+    Mod._cache[filename] = mod;
+    try {
+      extMap[lext](mod, filename);
+    } catch (e) {
+      delete Mod._cache[filename];
+      throw e;
+    }
+    mod.loaded = true;
+    return { exports: mod.exports };
+  }
+
   function loadFileModule(spec) {
     if (spec in cache) return cache[spec];
+    var custom = tryCustomExtensions(spec);
+    if (custom && 'exports' in custom) return custom.exports;
+    var target = custom && custom.filename ? custom.filename : spec;
     var prev = globalThis.__velox_require_result;
     globalThis.__velox_require_result = undefined;
-    var bundle = __velox_bundle_module(spec);
+    var bundle;
+    try {
+      bundle = __velox_bundle_module(target);
+    } catch (e) {
+      globalThis.__velox_require_result = prev;
+      // Node's exact not-found shape (callers match on the message prefix).
+      var nf = new Error("Cannot find module '" + spec + "'");
+      nf.code = 'MODULE_NOT_FOUND';
+      nf.cause = e;
+      throw nf;
+    }
     // eslint-disable-next-line no-new-func
     (new Function(bundle))();
     var exp = globalThis.__velox_require_result;
@@ -64,6 +140,116 @@
   // that wasn't import-bundled, plus vm/eval contexts.
   globalThis.__velox_builtin_require = builtinRequire;
   if (typeof globalThis.require === 'undefined') globalThis.require = builtinRequire;
+
+  // --- data: URL dynamic import (with Node's import-attribute validation) -----
+  // import('data:application/json,...', { with: { type: 'json' } }) etc. The
+  // error codes and their precedence mirror Node's ESM loader:
+  //   1. a `type` attribute is validated against the URL's format (an unknown
+  //      format wins), 2. a json module without `type: 'json'` is MISSING,
+  //   3. any non-`type` key is UNSUPPORTED, 4. unknown formats are rejected.
+  function attrError(code, message) {
+    var e = new TypeError(message);
+    e.code = code;
+    return e;
+  }
+  function parseDataUrl(url) {
+    var m = /^data:([^,]*),([\s\S]*)$/.exec(url);
+    if (!m) return null;
+    var meta = m[1] || '';
+    var base64 = /;base64$/i.test(meta);
+    var mime = meta.replace(/;base64$/i, '').split(';')[0].trim().toLowerCase();
+    var body;
+    try { body = base64 ? atob(m[2]) : decodeURIComponent(m[2]); }
+    catch (e) { body = m[2]; }
+    return { mime: mime, body: body };
+  }
+  function dataFormat(mime) {
+    if (mime === 'text/javascript' || mime === 'application/javascript') return 'module';
+    if (mime === 'application/json') return 'json';
+    return undefined;
+  }
+  function validateImportAttributes(url, format, attrs) {
+    if ('type' in attrs) {
+      if (format === undefined) {
+        throw attrError('ERR_UNKNOWN_MODULE_FORMAT', 'Unknown module format for ' + url);
+      }
+      var t = attrs.type;
+      if (format === 'module' || (format === 'json' && t !== 'json')) {
+        // A known type value on the wrong format is "incompatible"; an
+        // unknown value is "unsupported" (Node's handleInvalidType).
+        if (t === 'json' && format !== 'json') {
+          throw attrError('ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE',
+            'Module "' + url + '" is not of type "json"');
+        }
+        if (!(format === 'module' && t === undefined)) {
+          throw attrError('ERR_IMPORT_ATTRIBUTE_UNSUPPORTED',
+            'Import attribute type "' + t + '" is unsupported');
+        }
+      }
+    } else if (format === 'json') {
+      throw attrError('ERR_IMPORT_ATTRIBUTE_MISSING',
+        'Module "' + url + '" needs an import attribute of "type: json"');
+    }
+    for (var k in attrs) {
+      if (k !== 'type') {
+        throw attrError('ERR_IMPORT_ATTRIBUTE_UNSUPPORTED',
+          'Import attribute "' + k + '" with value "' + attrs[k] + '" is not supported');
+      }
+    }
+    if (format === undefined) {
+      throw attrError('ERR_UNKNOWN_MODULE_FORMAT', 'Unknown module format for ' + url);
+    }
+  }
+  function evalDataModule(body, url) {
+    // Process static imports (data: URL modules are tiny by nature; this
+    // handles side-effect imports incl. their `with { … }` attributes).
+    if (/\bassert\s*\{/.test(body)) {
+      throw new SyntaxError('Import assert syntax was removed; use `with` instead');
+    }
+    var deps = [];
+    var re = /import\s*(?:[\w$*{},\s]*?from\s*)?["']([^"']+)["']\s*(?:with\s*\{([^}]*)\})?\s*;?/g;
+    var stripped = body.replace(re, function (m, spec, withBody) {
+      var attrs = {};
+      if (withBody) {
+        withBody.replace(/["']?([\w$-]+)["']?\s*:\s*["']([^"']*)["']/g, function (m2, k2, v2) {
+          attrs[k2] = v2;
+          return m2;
+        });
+      }
+      deps.push({ spec: spec, attrs: attrs });
+      return '';
+    });
+    return deps.reduce(function (p, dep) {
+      return p.then(function () { return globalThis.__velox_data_import(dep.spec, { with: dep.attrs }); });
+    }, Promise.resolve()).then(function () {
+      // Evaluate the remainder with export syntax stripped (best-effort: a
+      // default export becomes the namespace default; named bare exports drop).
+      var ns = { __proto__: null };
+      var code = stripped
+        .replace(/\bexport\s*\{[^}]*\}\s*;?/g, '')
+        .replace(/\bexport\s+default\s+/, '__velox_data_default = ');
+      var fn = new Function('__velox_data_ns', '"use strict"; var __velox_data_default;' + code + '\n;return __velox_data_default;');
+      ns.default = fn(ns);
+      return ns;
+    });
+  }
+  Object.defineProperty(globalThis, '__velox_data_import', {
+    value: function (url, opts) {
+      return Promise.resolve().then(function () {
+        var attrs = (opts && opts.with) || {};
+        var parsed = parseDataUrl(url);
+        if (!parsed) throw attrError('ERR_INVALID_URL', 'Invalid URL: ' + url);
+        var format = dataFormat(parsed.mime);
+        validateImportAttributes(url, format, attrs);
+        if (format === 'json') {
+          var value = JSON.parse(parsed.body);
+          return { __proto__: null, default: value };
+        }
+        return evalDataModule(parsed.body, url);
+      });
+    },
+    writable: true, enumerable: false, configurable: true,
+  });
 
   // --- web-style serve() helpers (Bun/Deno-flavored) ---------------------------
   function collectBody(req, cb) {

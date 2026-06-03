@@ -150,6 +150,48 @@ Script.prototype.runInNewContext = function (sandbox, o) { return runInNewContex
 Script.prototype.runInContext = function (ctx, o) { return runInContext(this.code, ctx, o); };
 Script.prototype.runInThisContext = function (o) { return runInThisContext(this.code, this._options || o); };
 
+// --- vm.SyntheticModule (the --experimental-vm-modules surface) -------------
+// A module whose exports are set programmatically via setExport. Pure JS — no
+// native retention, so instances are ordinarily garbage-collectable.
+var syntheticModuleCounter = 0;
+function SyntheticModule(exportNames, evaluateCallback, options) {
+  if (!(this instanceof SyntheticModule)) {
+    throw new TypeError("Class constructor SyntheticModule cannot be invoked without 'new'");
+  }
+  this._exportNames = (exportNames || []).slice();
+  this._evaluateCallback = evaluateCallback;
+  this._namespace = { __proto__: null };
+  this.status = 'unlinked';
+  this.identifier = (options && options.identifier) ||
+    'vm:module(' + syntheticModuleCounter++ + ')';
+  this.context = (options && options.context) || undefined;
+  this.error = undefined;
+}
+Object.defineProperty(SyntheticModule.prototype, 'namespace', {
+  configurable: true,
+  get: function () { return this._namespace; },
+});
+SyntheticModule.prototype.link = function (_linker) {
+  this.status = 'linked';
+  return Promise.resolve();
+};
+SyntheticModule.prototype.evaluate = function () {
+  var self = this;
+  return Promise.resolve().then(function () {
+    self.status = 'evaluating';
+    if (typeof self._evaluateCallback === 'function') self._evaluateCallback.call(self);
+    self.status = 'evaluated';
+  });
+};
+SyntheticModule.prototype.setExport = function (name, value) {
+  if (this._exportNames.indexOf(name) === -1) {
+    var e = new ReferenceError('Module did not declare an export named "' + name + '"');
+    e.code = 'ERR_VM_MODULE_SYMBOL_NOT_DEFINED';
+    throw e;
+  }
+  this._namespace[name] = value;
+};
+
 module.exports = {
   runInNewContext: runInNewContext,
   runInThisContext: runInThisContext,
@@ -159,5 +201,6 @@ module.exports = {
   compileFunction: compileFunction,
   measureMemory: measureMemory,
   Script: Script,
+  SyntheticModule: SyntheticModule,
 };
 module.exports.default = module.exports;

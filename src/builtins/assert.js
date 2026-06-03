@@ -370,8 +370,9 @@ function expectedMatches(error, expected) {
 
   // A constructor (class/function): instanceof check.
   if (typeof expected === 'function') {
-    // Could be a subclass of Error, or any constructor.
-    if (error instanceof expected) return true;
+    // Arrow functions have no .prototype — `instanceof` would throw on them;
+    // they can only be predicate validators (Node guards the same way).
+    if (expected.prototype !== undefined && error instanceof expected) return true;
     // Predicate function fallback: call it, truthy = pass.
     if (!(expected.prototype instanceof Error) && expected !== Error) {
       try {

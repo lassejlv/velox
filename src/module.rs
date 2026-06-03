@@ -113,7 +113,7 @@ struct RequireCollector {
     /// `require('x')` — span of the string-literal *argument* + its value.
     calls: Vec<(Span, String)>,
     /// `import('x')` — span of the *whole* expression + the specifier value.
-    dynamic_imports: Vec<(Span, String)>,
+    dynamic_imports: Vec<(Span, Span, String)>,
     /// Non-literal `import(expr)` — start offset of the `import` keyword, so it
     /// can be rewritten to `__velox_import(` and routed through the bundle's
     /// loader (JSC's native dynamic import can't see node_modules). `expr` is
@@ -153,11 +153,11 @@ impl<'a> Visit<'a> for RequireCollector {
         match &import.source {
             Expression::StringLiteral(lit) => {
                 self.dynamic_imports
-                    .push((import.span, lit.value.to_string()));
+                    .push((import.span, lit.span, lit.value.to_string()));
             }
             Expression::TemplateLiteral(tpl) if no_subst_template(tpl).is_some() => {
                 self.dynamic_imports
-                    .push((import.span, no_subst_template(tpl).unwrap()));
+                    .push((import.span, tpl.span, no_subst_template(tpl).unwrap()));
             }
             // A computed specifier (`import(it)`, `import(`x/${y}`)`) — route the
             // runtime value through the bundle loader instead of JSC's native one.
@@ -670,28 +670,27 @@ impl Graph {
         // Dynamic `import('x')` → a promise of the module's namespace (so it
         // resolves through the bundle's registry instead of JSC's module loader,
         // which can't see `node_modules`).
-        for (span, specifier) in collector.dynamic_imports {
+        for (span, src_span, specifier) in collector.dynamic_imports {
+            // Rewrite only the `import` keyword and (when bundled) the source
+            // literal — any second (options/attributes) argument survives, so
+            // `import(url, { with: { type: 'json' } })` reaches the loader.
+            edits.push(Edit {
+                start: span.start,
+                end: span.start + 6, // the `import` keyword
+                text: "__velox_import".to_string(),
+            });
             match self.resolve_and_load(&specifier, dir, path) {
                 Ok(id) => edits.push(Edit {
-                    start: span.start,
-                    end: span.end,
-                    text: format!("__velox_import('{id}')"),
+                    start: src_span.start,
+                    end: src_span.end,
+                    text: format!("'{id}'"),
                 }),
                 // A *literal* `import('x')` we couldn't resolve at bundle time
                 // (e.g. drizzle-kit's bin bundled from a cache dir dynamically
-                // importing the *project's* drizzle-orm) is left to the runtime
-                // loader, which Node-resolves the specifier against cwd and bundles
-                // it on demand. Pass the raw specifier (not a bundle id) so the
-                // bundle `require`'s fallback routes it to `__velox_builtin_require`
-                // → the on-disk file loader.
-                Err(_) => {
-                    let esc = specifier.replace('\\', "\\\\").replace('\'', "\\'");
-                    edits.push(Edit {
-                        start: span.start,
-                        end: span.end,
-                        text: format!("__velox_import('{esc}')"),
-                    });
-                }
+                // importing the *project's* drizzle-orm, or a data: URL) keeps
+                // its original specifier: the runtime loader Node-resolves it
+                // against cwd (or parses the data URL) on demand.
+                Err(_) => {}
             }
         }
 
@@ -972,8 +971,8 @@ fn module_preamble(path: Option<&PathBuf>, body: &str) -> String {
                if (id.startsWith('.') || id.startsWith('/')) { \
                  try { return __velox_require('node:path').resolve(__velox_pdir, id); } catch (e) { return id; } \
                } return id; };\n\
-             require.extensions = { '.js': function () {}, '.json': function () {}, '.node': function () {} };\n\
-             require.cache = {};\n\
+             try { var __velox_mm = __velox_require('node:module'); require.extensions = __velox_mm._extensions; require.cache = __velox_mm._cache; } \
+             catch (e) { require.extensions = { '.js': function () {}, '.json': function () {}, '.node': function () {} }; require.cache = {}; }\n\
              require.main = globalThis.__velox_main_module;\n",
         );
     }
@@ -1060,7 +1059,13 @@ const __velox_ns = function (m) {
 };
 // Dynamic import: a promise of the resolved module's namespace, going through
 // the bundle registry (JSC's own module loader can't see node_modules).
-const __velox_import = function (id) {
+// data: URLs (with their import attributes) route to the runtime data-module
+// loader installed by the Velox prelude.
+const __velox_import = function (id, opts) {
+  if (typeof id === 'string' && id.indexOf('data:') === 0 &&
+      typeof globalThis.__velox_data_import === 'function') {
+    return globalThis.__velox_data_import(id, opts);
+  }
   return Promise.resolve().then(function () { return __velox_ns(require(id)); });
 };
 // Bun-style auto-serve: if the entry module's `export default` is a server
