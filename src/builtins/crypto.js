@@ -512,7 +512,100 @@ function getCiphers() {
   ];
 }
 
+// X509Certificate — parses a PEM/DER certificate via the native __velox_x509_parse
+// (x509-cert crate) and exposes Node's read-only certificate surface. Binary
+// fields (raw DER, SPKI) cross from the native as hex.
+function x509DerToPem(der, label) {
+  var b64 = Buffer.from(der).toString("base64");
+  var lines = b64.replace(/(.{64})/g, "$1\n");
+  if (lines[lines.length - 1] !== "\n") lines += "\n";
+  return "-----BEGIN " + label + "-----\n" + lines + "-----END " + label + "-----\n";
+}
+function x509MatchHost(pattern, host) {
+  if (pattern === host) return true;
+  if (pattern.indexOf("*.") === 0) {
+    var rest = pattern.slice(1); // ".example.com"
+    var dot = host.indexOf(".");
+    return dot > 0 && host.slice(dot) === rest;
+  }
+  return false;
+}
+function X509Certificate(input) {
+  if (!(this instanceof X509Certificate)) return new X509Certificate(input);
+  var latin1;
+  if (typeof input === "string") latin1 = Buffer.from(input, "utf8").toString("latin1");
+  else if (Buffer.isBuffer(input)) latin1 = input.toString("latin1");
+  else if (ArrayBuffer.isView(input)) latin1 = Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString("latin1");
+  else if (input instanceof ArrayBuffer) latin1 = Buffer.from(input).toString("latin1");
+  else throw new TypeError("The \"buffer\" argument must be a string, Buffer, TypedArray, or DataView");
+  var info = JSON.parse(__velox_x509_parse(latin1));
+  this.subject = info.subject;
+  this.issuer = info.issuer;
+  this.serialNumber = info.serialNumber;
+  this.validFrom = info.validFrom;
+  this.validTo = info.validTo;
+  this.validFromDate = new Date(info.validFromMs);
+  this.validToDate = new Date(info.validToMs);
+  this.fingerprint = info.fingerprint;
+  this.fingerprint256 = info.fingerprint256;
+  this.fingerprint512 = info.fingerprint512;
+  this.subjectAltName = info.subjectAltName == null ? undefined : info.subjectAltName;
+  this.keyUsage = info.keyUsage == null ? undefined : info.keyUsage;
+  this.ca = info.ca;
+  this.raw = Buffer.from(info.rawHex, "hex");
+  this._spkiDer = Buffer.from(info.publicKeyDerHex, "hex");
+}
+X509Certificate.prototype._sanHosts = function () {
+  var names = [];
+  if (this.subjectAltName) {
+    this.subjectAltName.split(",").forEach(function (e) {
+      e = e.trim();
+      if (e.indexOf("DNS:") === 0) names.push(e.slice(4).toLowerCase());
+    });
+  }
+  if (!names.length) {
+    var cn = /CN=([^\n]+)/.exec(this.subject || "");
+    if (cn) names.push(cn[1].trim().toLowerCase());
+  }
+  return names;
+};
+X509Certificate.prototype.checkHost = function (name) {
+  if (name == null) return undefined;
+  var host = String(name).toLowerCase();
+  var hosts = this._sanHosts();
+  for (var i = 0; i < hosts.length; i++) if (x509MatchHost(hosts[i], host)) return String(name);
+  return undefined;
+};
+X509Certificate.prototype.checkEmail = function (email) {
+  if (email == null || !this.subjectAltName) return undefined;
+  var want = String(email).toLowerCase(), found;
+  this.subjectAltName.split(",").forEach(function (e) {
+    e = e.trim();
+    if (e.indexOf("email:") === 0 && e.slice(6).toLowerCase() === want) found = String(email);
+  });
+  return found;
+};
+X509Certificate.prototype.checkIP = function (ip) {
+  if (ip == null || !this.subjectAltName) return undefined;
+  var want = String(ip), found;
+  this.subjectAltName.split(",").forEach(function (e) {
+    e = e.trim();
+    if (e.indexOf("IP Address:") === 0 && e.slice(11) === want) found = String(ip);
+  });
+  return found;
+};
+X509Certificate.prototype.toString = function () { return this.raw.toString("latin1"); };
+X509Certificate.prototype.toJSON = function () { return this.toString(); };
+Object.defineProperty(X509Certificate.prototype, "publicKey", {
+  configurable: true,
+  get: function () {
+    if (!this._publicKey) this._publicKey = createPublicKey(x509DerToPem(this._spkiDer, "PUBLIC KEY"));
+    return this._publicKey;
+  },
+});
+
 module.exports = {
+  X509Certificate: X509Certificate,
   createHash: createHash,
   hash: hash,
   createHmac: createHmac,

@@ -75,6 +75,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_ecdh_compute", ecdh_compute_fn);
         register(ctx, c"__velox_gen_x25519", gen_x25519_fn);
         register(ctx, c"__velox_x25519_dh", x25519_dh_fn);
+        register(ctx, c"__velox_x509_parse", x509_parse_fn);
     }
 }
 
@@ -847,6 +848,173 @@ fn normalize(algo: &str) -> String {
 }
 
 /// Throw an `Error` (with a `.code`) by setting the callback's exception slot.
+/// `__velox_x509_parse(latin1)` → JSON of an X.509 certificate's fields. The
+/// argument is the cert as latin1-encoded bytes (PEM text or raw DER). Binary
+/// outputs (`rawHex`, `publicKeyDerHex`) are hex so they survive the JSON hop.
+/// Backs the `crypto.X509Certificate` shim in `builtins/crypto.js`.
+unsafe extern "C-unwind" fn x509_parse_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let bytes = match args.first() {
+        Some(v) => unsafe { js_value_to_latin1(ctx, *v) },
+        None => return unsafe { throw(ctx, exception, "X509Certificate: missing input") },
+    };
+    match x509_parse(&bytes) {
+        Ok(json) => unsafe { js_string(ctx, &json) },
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+fn x509_hex_upper(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02X}"));
+    }
+    s
+}
+
+fn x509_fingerprint<D: digest::Digest>(der: &[u8]) -> String {
+    D::digest(der)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// RFC 4514 names are most-specific-first and comma-joined; Node's `.subject`/
+/// `.issuer` are least-specific-first and newline-joined.
+fn x509_node_name(rfc4514: &str) -> String {
+    rfc4514
+        .split(',')
+        .map(|s| s.trim())
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn x509_fmt_time(t: &x509_cert::time::Time) -> (String, i128) {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let dt = t.to_date_time();
+    let mon = MONTHS[(dt.month() as usize).clamp(1, 12) - 1];
+    let s = format!(
+        "{mon} {:>2} {:02}:{:02}:{:02} {} GMT",
+        dt.day(),
+        dt.hour(),
+        dt.minutes(),
+        dt.seconds(),
+        dt.year()
+    );
+    (s, t.to_unix_duration().as_millis() as i128)
+}
+
+fn x509_parse_san(der: &[u8]) -> Option<String> {
+    use x509_cert::der::Decode;
+    use x509_cert::ext::pkix::name::GeneralName;
+    let san = x509_cert::ext::pkix::SubjectAltName::from_der(der).ok()?;
+    let parts: Vec<String> = san
+        .0
+        .iter()
+        .filter_map(|gn| match gn {
+            GeneralName::DnsName(d) => Some(format!("DNS:{}", d.as_str())),
+            GeneralName::Rfc822Name(e) => Some(format!("email:{}", e.as_str())),
+            GeneralName::UniformResourceIdentifier(u) => Some(format!("URI:{}", u.as_str())),
+            GeneralName::IpAddress(ip) => {
+                let b = ip.as_bytes();
+                match b.len() {
+                    4 => Some(format!("IP Address:{}.{}.{}.{}", b[0], b[1], b[2], b[3])),
+                    16 => {
+                        let segs: Vec<String> = b
+                            .chunks(2)
+                            .map(|c| format!("{:x}", ((c[0] as u16) << 8) | c[1] as u16))
+                            .collect();
+                        Some(format!("IP Address:{}", segs.join(":")))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+fn x509_parse(input: &[u8]) -> Result<String, String> {
+    use x509_cert::Certificate;
+    use x509_cert::der::{Decode, DecodePem, Encode};
+
+    let cert = if input.starts_with(b"-----BEGIN") {
+        Certificate::from_pem(input).map_err(|e| format!("X509 PEM parse: {e}"))?
+    } else {
+        Certificate::from_der(input).map_err(|e| format!("X509 DER parse: {e}"))?
+    };
+    let der = cert.to_der().map_err(|e| format!("X509 re-encode: {e}"))?;
+    let tbs = &cert.tbs_certificate;
+
+    let (valid_from, valid_from_ms) = x509_fmt_time(&tbs.validity.not_before);
+    let (valid_to, valid_to_ms) = x509_fmt_time(&tbs.validity.not_after);
+    let spki_der = tbs
+        .subject_public_key_info
+        .to_der()
+        .map_err(|e| format!("X509 spki: {e}"))?;
+
+    let mut san: Option<String> = None;
+    let mut ext_key_usage: Option<Vec<String>> = None;
+    let mut ca = false;
+    if let Some(exts) = &tbs.extensions {
+        for ext in exts {
+            match ext.extn_id.to_string().as_str() {
+                "2.5.29.17" => san = x509_parse_san(ext.extn_value.as_bytes()),
+                "2.5.29.19" => {
+                    if let Ok(bc) =
+                        x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes())
+                    {
+                        ca = bc.ca;
+                    }
+                }
+                "2.5.29.37" => {
+                    if let Ok(eku) =
+                        x509_cert::ext::pkix::ExtendedKeyUsage::from_der(ext.extn_value.as_bytes())
+                    {
+                        ext_key_usage = Some(eku.0.iter().map(|o| o.to_string()).collect());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let json = serde_json::json!({
+        "subject": x509_node_name(&tbs.subject.to_string()),
+        "issuer": x509_node_name(&tbs.issuer.to_string()),
+        "serialNumber": x509_hex_upper(tbs.serial_number.as_bytes()),
+        "validFrom": valid_from,
+        "validTo": valid_to,
+        "validFromMs": valid_from_ms as f64,
+        "validToMs": valid_to_ms as f64,
+        "fingerprint": x509_fingerprint::<sha1::Sha1>(&der),
+        "fingerprint256": x509_fingerprint::<Sha256>(&der),
+        "fingerprint512": x509_fingerprint::<Sha512>(&der),
+        "subjectAltName": san,
+        "keyUsage": ext_key_usage,
+        "ca": ca,
+        "rawHex": x509_hex_upper(&der),
+        "publicKeyDerHex": x509_hex_upper(&spki_der),
+    });
+    Ok(json.to_string())
+}
+
 unsafe fn throw(ctx: JSContextRef, exception: *mut JSValueRef, message: &str) -> JSValueRef {
     unsafe {
         let args = [js_string(ctx, "ERR_CRYPTO"), js_string(ctx, message)];

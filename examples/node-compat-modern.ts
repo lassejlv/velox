@@ -208,6 +208,44 @@ check("timers/promises scheduler", async () => { const { scheduler } = require("
 check("fs.statfsSync", () => { const fs = require("node:fs"); const s = fs.statfsSync("."); if (!(s.bsize > 0) || !(s.blocks > 0)) throw new Error("statfs"); if (typeof fs.statfsSync(".", { bigint: true }).bsize !== "bigint") throw new Error("bigint"); });
 check("fs.readvSync/writevSync", () => { const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path"); const p = path.join(os.tmpdir(), "velox-rw-" + process.pid); const fd = fs.openSync(p, "w+"); try { if (fs.writevSync(fd, [Buffer.from("foo"), Buffer.from("bar")]) !== 6) throw new Error("writev"); const b1 = Buffer.alloc(3), b2 = Buffer.alloc(3); if (fs.readvSync(fd, [b1, b2], 0) !== 6 || b1 + "" + b2 !== "foobar") throw new Error("readv"); } finally { fs.closeSync(fd); fs.rmSync(p, { force: true }); } });
 check("fs.openAsBlob", async () => { const fs = require("node:fs"); const b = await fs.openAsBlob("examples/node-compat-modern.ts"); if (!(b instanceof Blob) || b.size !== fs.statSync("examples/node-compat-modern.ts").size) throw new Error("blob"); });
+check("crypto.X509Certificate", () => {
+  const { X509Certificate } = require("node:crypto");
+  const pem = [
+    "-----BEGIN CERTIFICATE-----",
+    "MIIDajCCAlKgAwIBAgIULDsc7RLBduukhwfpiKiJjZWkiW4wDQYJKoZIhvcNAQEL",
+    "BQAwMjELMAkGA1UEBhMCVVMxDjAMBgNVBAoMBVZlbG94MRMwEQYDVQQDDAp2ZWxv",
+    "eC50ZXN0MB4XDTI2MDYwMzEwMDMxNloXDTQ2MDUyOTEwMDMxNlowMjELMAkGA1UE",
+    "BhMCVVMxDjAMBgNVBAoMBVZlbG94MRMwEQYDVQQDDAp2ZWxveC50ZXN0MIIBIjAN",
+    "BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA912i7MTPfJfqGAJnGxW/3Ahf3How",
+    "fVOB2EHf+t7k125akYR73GCiZvH8P61IFjX5ISI278g/F0tkGaD5nKGBK2WleMBL",
+    "wXJStTvyM/52BkXVUPIzSonjvKDHup0epoHVV4kCS3q07CPZfh4pzrA7Fe9L9reg",
+    "CbJLHFuvRQ2nqvDiFjqyMw6yo6SN1gMOc2skqiaHLksqVbkWByedIl1b5SLswWIa",
+    "5/lNkzjIbIS9xEeQoLs0o56KeqHDghlxlIWXfwEZxMhiCtlD1OaPFmPveWnSX9X8",
+    "O7WrvJzXG2zqNMT16AgNTxzepVoGR4TEa7S0AUCHcy/UtXHEsm8cb0s5LwIDAQAB",
+    "o3gwdjAdBgNVHQ4EFgQU4pT/HrsNYozrj0uIe6o6Xcrqq1MwHwYDVR0jBBgwFoAU",
+    "4pT/HrsNYozrj0uIe6o6Xcrqq1MwDwYDVR0TAQH/BAUwAwEB/zAjBgNVHREEHDAa",
+    "ggp2ZWxveC50ZXN0ggwqLnZlbG94LnRlc3QwDQYJKoZIhvcNAQELBQADggEBACSn",
+    "yJFXdZVJkr8Vks9btwTsdg6Hdo4NqWN34vVuzP58EQRc3sraEOqMhgNOx0v3xGEy",
+    "dpmZ/8dE2KyYAPxnu56aRzlL4veVyco4nvpqig6Dik6ezm2Wl7zqktdWDTDepLki",
+    "besW0srEUWyrXAAsQiwNAZno5RLk4Yku2MGSI+BJuFP5k+WlJ+HcaxeruKn8fLIy",
+    "Npk6mWWZf8Au/YlLVnlvx7kS4ggcsikWYMxkRfdIqFHitznX63RCp6q7ZyXs+GTE",
+    "QdYPnUM/ib6wMn4D/gOrm6KfW0mbwoAtSo7U9mUEyEfFq75xbTY50AHvR1Wnq2kc",
+    "AAc05ggQ0jIDOeIBtwg=",
+    "-----END CERTIFICATE-----",
+  ].join("\n");
+  const c = new X509Certificate(pem);
+  if (!/CN=velox\.test/.test(c.subject)) throw new Error("subject: " + c.subject);
+  if (c.fingerprint256.split(":").length !== 32) throw new Error("fp256");
+  if (!c.subjectAltName || !c.subjectAltName.includes("DNS:velox.test")) throw new Error("san: " + c.subjectAltName);
+  if (c.checkHost("velox.test") !== "velox.test") throw new Error("checkHost");
+  if (c.checkHost("foo.velox.test") !== "foo.velox.test") throw new Error("wildcard");
+  if (c.checkHost("evil.com") !== undefined) throw new Error("checkHost negative");
+  if (!Buffer.isBuffer(c.raw)) throw new Error("raw");
+  if (c.publicKey.type !== "public") throw new Error("publicKey");
+  if (!(c.validToDate instanceof Date)) throw new Error("validToDate");
+  // DER round-trips too
+  if (new X509Certificate(c.raw).subject !== c.subject) throw new Error("DER input");
+});
 check("net.BlockList", () => { const net = require("node:net"); const bl = new net.BlockList(); bl.addAddress("1.2.3.4"); bl.addSubnet("10.0.0.0", 8); bl.addRange("192.168.1.1", "192.168.1.10"); if (!bl.check("1.2.3.4") || bl.check("1.2.3.5") || !bl.check("10.5.6.7") || bl.check("11.0.0.1") || !bl.check("192.168.1.5") || bl.check("192.168.1.20")) throw new Error("check"); if (!net.BlockList.isBlockList(bl)) throw new Error("isBlockList"); });
 
 await new Promise((r) => setTimeout(r, 300));

@@ -56,3 +56,4 @@ serde_json = "1.0.150"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
 webpki-roots = "1.0.7"
+x509-cert = { version = "0.2", features = ["pem"] }
