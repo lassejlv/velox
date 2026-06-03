@@ -373,9 +373,32 @@ function hkdf(digest, ikm, salt, info, keylen, cb) {
 
 // --- KeyObjects (thin PEM wrappers) -----------------------------------------
 
+// --- JWK <-> PEM (EC P-256 and OKP ed25519/x25519 public keys) -------------
+function b64uEnc(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function b64uDec(s) { s = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Buffer.from(s, "base64"); }
+function derOfPem(pem) { return Buffer.from(String(pem).replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""), "base64"); }
+function derLenBytes(n) { if (n < 128) return Buffer.from([n]); var b = []; while (n > 0) { b.unshift(n & 0xff); n = Math.floor(n / 256); } return Buffer.from([0x80 | b.length].concat(b)); }
+function derSeqWrap(c) { return Buffer.concat([Buffer.from([0x30]), derLenBytes(c.length), c]); }
+function derBitStrWrap(c) { var x = Buffer.concat([Buffer.from([0x00]), c]); return Buffer.concat([Buffer.from([0x03]), derLenBytes(x.length), x]); }
+function pemWrap(label, der) { var b64 = Buffer.from(der).toString("base64").replace(/(.{64})/g, "$1\n"); if (b64[b64.length - 1] !== "\n") b64 += "\n"; return "-----BEGIN " + label + "-----\n" + b64 + "-----END " + label + "-----\n"; }
+var EC_ALGID_P256 = "301306072a8648ce3d020106082a8648ce3d030107";
+var OKP_ALGID = { Ed25519: "300506032b6570", X25519: "300506032b656e" };
+function keyToJwk(ko) {
+  var type = ko.asymmetricKeyType, der = derOfPem(ko._pem);
+  if (type === "ec") { var point = der.slice(der.length - 65); return { kty: "EC", crv: "P-256", x: b64uEnc(point.slice(1, 33)), y: b64uEnc(point.slice(33, 65)) }; }
+  if (type === "ed25519" || type === "x25519") { var raw = der.slice(der.length - 32); return { kty: "OKP", crv: type === "ed25519" ? "Ed25519" : "X25519", x: b64uEnc(raw) }; }
+  throw new Error("JWK export not supported for key type " + type);
+}
+function jwkToPem(jwk) {
+  if (jwk.kty === "EC") { var point = Buffer.concat([Buffer.from([0x04]), b64uDec(jwk.x), b64uDec(jwk.y)]); return pemWrap("PUBLIC KEY", derSeqWrap(Buffer.concat([Buffer.from(EC_ALGID_P256, "hex"), derBitStrWrap(point)]))); }
+  if (jwk.kty === "OKP") { return pemWrap("PUBLIC KEY", derSeqWrap(Buffer.concat([Buffer.from(OKP_ALGID[jwk.crv] || OKP_ALGID.Ed25519, "hex"), derBitStrWrap(b64uDec(jwk.x))]))); }
+  throw new Error("JWK import not supported for kty " + jwk.kty);
+}
+
 function pemOf(input) {
   if (typeof input === "string") return input;
   if (Buffer.isBuffer(input) || input instanceof Uint8Array) return Buffer.from(input).toString();
+  if (input && input.format === "jwk" && input.key && typeof input.key === "object") return jwkToPem(input.key);
   if (input && typeof input.export === "function") return String(input.export({ type: "pkcs8", format: "pem" }));
   if (input && input.key != null) return pemOf(input.key);
   return String(input);
@@ -422,6 +445,7 @@ KeyObject.prototype.export = function (options) {
   if (this.type === "secret") {
     return options.format === "buffer" || !options.format ? this._secret : this._secret.toString(options.format || "buffer");
   }
+  if (options.format === "jwk") return keyToJwk(this);
   if (options.format === "der") return Buffer.from(this._pem); // best-effort
   return this._pem;
 };
@@ -431,6 +455,8 @@ KeyObject.prototype.export = function (options) {
 // to distinguish an HMAC secret from a real private key.
 function assertAsymmetricKey(input) {
   if (input instanceof KeyObject || Buffer.isBuffer(input) || input instanceof Uint8Array) return;
+  if (input && input.format === "jwk" && input.key && typeof input.key === "object") return; // JWK input
+  if (input && input.kty) return; // a bare JWK object
   var pem = (input && input.key != null) ? input.key : input;
   if (typeof pem === "string") {
     if (pem.indexOf("-----BEGIN") === -1) {
