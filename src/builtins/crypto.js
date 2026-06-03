@@ -9,17 +9,29 @@ function toLatin1(data, enc) {
   return Buffer.from(String(data), enc || "utf8").toString("latin1");
 }
 
+// node:crypto's Hash/Hmac are stream.Transform subclasses: you can write/pipe
+// data in and read the digest out (`createHash('sha256').setEncoding('hex')`,
+// then consume 'data' — prisma's hash-of-a-file-stream helper does exactly this).
+// We keep the fast update()/digest() path and layer the stream API on top.
+var Transform = require("node:stream").Transform;
+
 function Hash(algo, options) {
+  if (!(this instanceof Hash)) return new Hash(algo, options);
+  Transform.call(this, options);
   this._algo = String(algo).toLowerCase();
   this._parts = [];
   // outputLength (bytes) for XOF hashes (shake128/shake256); 0 = algo default.
   this._outputLength = options && options.outputLength ? options.outputLength | 0 : 0;
+  this._finalized = false;
 }
+Object.setPrototypeOf(Hash.prototype, Transform.prototype);
+Object.setPrototypeOf(Hash, Transform);
 Hash.prototype.update = function (data, enc) {
   this._parts.push(toLatin1(data, enc));
   return this;
 };
 Hash.prototype.digest = function (enc) {
+  this._finalized = true;
   var out = Buffer.from(__velox_hash(this._algo, this._parts.join(""), this._outputLength), "latin1");
   return enc ? out.toString(enc) : out;
 };
@@ -28,6 +40,15 @@ Hash.prototype.copy = function () {
   h._parts = this._parts.slice();
   h._outputLength = this._outputLength;
   return h;
+};
+// Transform hooks: writing/piping feeds update(); end() pushes the raw digest,
+// which the readable side encodes via any setEncoding() the caller set.
+Hash.prototype._transform = function (chunk, enc, cb) {
+  this.update(chunk, enc === "buffer" || enc === undefined ? undefined : enc);
+  cb();
+};
+Hash.prototype._flush = function (cb) {
+  try { this.push(this.digest()); cb(); } catch (e) { cb(e); }
 };
 
 // Extract raw key bytes from a secret KeyObject (createSecretKey), so callers
@@ -42,11 +63,15 @@ function keyMaterial(key) {
   return key;
 }
 
-function Hmac(algo, key) {
+function Hmac(algo, key, options) {
+  if (!(this instanceof Hmac)) return new Hmac(algo, key, options);
+  Transform.call(this, options);
   this._algo = String(algo).toLowerCase();
   this._key = toLatin1(keyMaterial(key));
   this._parts = [];
 }
+Object.setPrototypeOf(Hmac.prototype, Transform.prototype);
+Object.setPrototypeOf(Hmac, Transform);
 Hmac.prototype.update = function (data, enc) {
   this._parts.push(toLatin1(data, enc));
   return this;
@@ -54,6 +79,13 @@ Hmac.prototype.update = function (data, enc) {
 Hmac.prototype.digest = function (enc) {
   var out = Buffer.from(__velox_hmac(this._algo, this._key, this._parts.join("")), "latin1");
   return enc ? out.toString(enc) : out;
+};
+Hmac.prototype._transform = function (chunk, enc, cb) {
+  this.update(chunk, enc === "buffer" || enc === undefined ? undefined : enc);
+  cb();
+};
+Hmac.prototype._flush = function (cb) {
+  try { this.push(this.digest()); cb(); } catch (e) { cb(e); }
 };
 
 function createHash(algo, options) { return new Hash(algo, options); }

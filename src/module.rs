@@ -876,8 +876,15 @@ impl Graph {
 
         // Run the entry module, surfacing any rejection from a top-level
         // `await` (which settles later, on the event loop) as an uncaught error.
+        // The entry's `module` object is created *first* and published as
+        // `globalThis.__velox_main_module` so every module's `require.main`
+        // points at it — CLIs gate their startup on `require.main === module`
+        // (prisma, many bin scripts), which is only true for the real entry.
         out.push_str(&format!(
             "(function () {{\n  \
+               const module = {{ exports: {{}} }};\n  \
+               __cache['{0}'] = module;\n  \
+               globalThis.__velox_main_module = module;\n  \
                function __ensure(id) {{\n    \
                  if (__cache[id]) return __cache[id].__init || Promise.resolve();\n    \
                  const m = {{ exports: {{}} }};\n    \
@@ -887,8 +894,6 @@ impl Graph {
                  return p;\n  \
                }}\n  \
                Promise.all([{1}].map(__ensure)).then(function () {{\n    \
-                 const module = {{ exports: {{}} }};\n    \
-                 __cache['{0}'] = module;\n    \
                  return Promise.resolve(__modules['{0}'](module, module.exports, require))\n      \
                    .then(function () {{ __velox_maybe_serve(module.exports); }});\n  \
                }}).then(undefined, function (e) {{ __velox_uncaught(String(e) + (e && e.stack ? '\\n' + String(e.stack) : '')); }});\n\
@@ -942,17 +947,26 @@ fn module_preamble(path: Option<&PathBuf>, body: &str) -> String {
         out.push_str("const module = __velox_module;\n");
     }
     // Re-bind the renamed `require` param — unless the module brings its own.
+    // A bare relative specifier (`./x`, `../x`) only reaches this wrapper when it
+    // was NOT bundled — i.e. a dynamic or `eval`'d `require` (prisma does
+    // `eval("require('../package.json')")`). Node resolves those against the
+    // calling module's directory, so join against `__velox_pdir` before handing
+    // off to the runtime loader (bundled relative requires are already rewritten
+    // to numeric ids, so they never hit this branch).
     if !declares_binding(body, "require") {
         out.push_str(
-            "const require = __velox_require;\n\
+            "const require = function (id) { \
+               if (typeof id === 'string' && id.charCodeAt(0) === 46 && (id.charCodeAt(1) === 47 || (id.charCodeAt(1) === 46 && id.charCodeAt(2) === 47))) { \
+                 try { id = __velox_require('node:path').resolve(__velox_pdir, id); } catch (e) {} \
+               } return __velox_require(id); };\n\
              require.resolve = function (id) { \
                if (typeof id !== 'string' || id.startsWith('node:')) return id; \
                if (id.startsWith('.') || id.startsWith('/')) { \
-                 try { return require('node:path').resolve(__velox_pdir, id); } catch (e) { return id; } \
+                 try { return __velox_require('node:path').resolve(__velox_pdir, id); } catch (e) { return id; } \
                } return id; };\n\
-             require.extensions = require.extensions || { '.js': function () {}, '.json': function () {}, '.node': function () {} };\n\
-             require.cache = require.cache || {};\n\
-             if (!('main' in require)) require.main = undefined;\n",
+             require.extensions = { '.js': function () {}, '.json': function () {}, '.node': function () {} };\n\
+             require.cache = {};\n\
+             require.main = globalThis.__velox_main_module;\n",
         );
     }
     if !declares_binding(body, "__filename") {

@@ -438,6 +438,25 @@ pub const GLOBALS_PRELUDE: &str = r#"
       if (process.env[m[1]] === undefined) process.env[m[1]] = v;
     });
   };
+  // process.binding(name) — a legacy *internal* Node accessor some bundled tools
+  // still call (prisma's tmp-file helper does `process.binding("constants")`).
+  // We expose the handful that real code reaches for: "constants" (fs/os/crypto
+  // flags, offered BOTH nested — `b.fs.O_CREAT` — and flattened — `b.O_CREAT` —
+  // since callers probe both) and "buffer" (size limits). Unknown bindings return
+  // an empty object rather than throwing, which is the more compat-friendly choice.
+  process.binding = function (name) {
+    if (name === "constants") {
+      var c = require("node:constants");
+      var flat = Object.assign({}, c);
+      return Object.assign(flat, { os: require("node:os").constants, fs: c, crypto: c, zlib: c, trace: {} });
+    }
+    if (name === "buffer") {
+      var b = require("node:buffer");
+      return { kMaxLength: b.kMaxLength, kStringMaxLength: b.kStringMaxLength };
+    }
+    return {};
+  };
+
   // Node tags `process` so `Object.prototype.toString.call(process)` is
   // `[object process]`; libraries (e.g. axios's adapter detection) rely on it.
   try { Object.defineProperty(process, Symbol.toStringTag, { value: "process", configurable: true }); } catch (e) {}
@@ -450,9 +469,17 @@ pub const GLOBALS_PRELUDE: &str = r#"
   // Node (print + non-zero exit) instead of the loop silently draining.
   globalThis.__velox_report_unhandled_rejection = function (reason, promise) {
     if (process.emit('unhandledRejection', reason, promise)) return;
-    var msg = reason && reason.stack
-      ? reason.stack
-      : (reason && reason.message ? reason.message : String(reason));
+    var msg;
+    if (reason && reason.stack) {
+      msg = reason.stack;
+    } else if (reason && reason.message) {
+      msg = reason.message;
+    } else {
+      // A non-Error rejection (plain object, string, etc.) — String() can be ""
+      // or "[object Object]", hiding the cause. Inspect it like Node does.
+      try { msg = require('node:util').inspect(reason, { depth: 4 }); }
+      catch (e) { msg = String(reason); }
+    }
     __velox_uncaught('Unhandled promise rejection: ' + msg);
   };
 

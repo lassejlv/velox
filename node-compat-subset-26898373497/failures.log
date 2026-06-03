@@ -1,0 +1,59 @@
+# velox vs Node.js test/parallel — failure log
+# Wed Jun  3 16:30:16 UTC 2026 | node=v22.12.0 | velox=velox 0.1.0
+
+================================================================
+FAIL [unrunnable] test-event-emitter-add-listeners  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-event-emitter-add-listeners.js:23)
+
+================================================================
+FAIL [unrunnable] test-event-emitter-error-monitor  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-event-emitter-error-monitor.js:2)
+
+================================================================
+FAIL [unrunnable] test-event-emitter-listener-count  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-event-emitter-listener-count.js:3)
+
+================================================================
+FAIL [unrunnable] test-event-emitter-once  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-event-emitter-once.js:23)
+
+================================================================
+FAIL [unrunnable] test-event-emitter-prepend  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-event-emitter-prepend.js:3)
+
+================================================================
+FAIL [unrunnable] test-stringbytes-external  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-stringbytes-external.js:23)
+
+================================================================
+FAIL [unrunnable] test-timers-immediate  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-timers-immediate.js:23)
+
+================================================================
+FAIL [unrunnable] test-timers-unref  (exit 1)
+----------------------------------------------------------------
+✖ Uncaught TypeError: net.getDefaultAutoSelectFamilyAttemptTimeout is not a function. (In 'net.getDefaultAutoSelectFamilyAttemptTimeout()', 'net.getDefaultAutoSelectFamilyAttemptTimeout' is undefined)
+    at <anonymous> (/Users/runner/work/velox/velox/artifacts/node-compat/node-src/test/common/index.js:165)
+    at <anonymous> (test-timers-unref.js:24)
+

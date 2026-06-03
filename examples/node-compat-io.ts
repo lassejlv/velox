@@ -9,6 +9,8 @@ check("__dirname", () => { if (typeof __dirname !== "string") throw new Error("n
 check("__filename", () => { if (typeof __filename !== "string") throw new Error("no __filename"); });
 check("require.resolve", () => { if (typeof require.resolve !== "function") throw new Error("no resolve"); });
 check("require.main", () => { /* may be undefined; just ensure no throw accessing */ const _ = require.main; });
+check("require.main === module (entry guard)", () => { if (require.main !== module) throw new Error("entry's require.main must equal module (CLIs gate startup on this)"); });
+check("eval'd relative require resolves vs module dir", () => { const pkg = eval("require('./package.json')"); if (!pkg || typeof pkg !== "object") throw new Error("relative eval-require failed: " + JSON.stringify(pkg)); });
 check("import.meta.url", () => { if (typeof import.meta.url !== "string") throw new Error("no meta.url"); });
 
 // assert
