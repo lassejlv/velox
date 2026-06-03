@@ -98,6 +98,17 @@
       });
       server._wss = wss;
     }
+    // Surface listen failures (e.g. EADDRINUSE from a port already in use)
+    // clearly, instead of letting them bubble up as a cryptic unhandled
+    // rejection. Defers to a user-registered 'error' handler if there is one.
+    server.on('error', function (e) {
+      if (server.listenerCount('error') > 1) return; // user handles it
+      var msg = e && e.code === 'EADDRINUSE'
+        ? 'Velox.serve: port ' + port + ' is already in use (EADDRINUSE) — is another server still running?'
+        : 'Velox.serve: ' + (e && e.message ? e.message : String(e));
+      try { console.error(msg); } catch (_) {}
+      if (globalThis.process) process.exit(1);
+    });
     server.listen(port, opts.hostname, function () {
       if (opts.onListen) opts.onListen({ port: port, hostname: opts.hostname || 'localhost' });
     });
