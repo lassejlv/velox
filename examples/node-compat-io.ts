@@ -168,6 +168,8 @@ check("fs async read/write + promisify", async () => {
 });
 // node:constants exposes O_*/S_* flags
 check("node:constants", () => { const C = require("node:constants"); if (C.O_CREAT !== 0x200 || C.S_IFREG !== 0x8000 || C.R_OK !== 4) throw new Error("constants"); });
+check("Buffer internal *Slice/*Write methods", () => { const b = Buffer.from("hello world"); if (b.utf8Slice(0, 5) !== "hello") throw new Error("utf8Slice"); if (b.hexSlice(0, 2) !== "6865") throw new Error("hexSlice"); if (b.latin1Slice(6, 11) !== "world") throw new Error("latin1Slice"); const w = Buffer.alloc(5); if (w.utf8Write("abcde", 0, 5) !== 5 || w.toString() !== "abcde") throw new Error("utf8Write"); });
+check("node:util/types subpath", () => { const t = require("node:util/types"); if (typeof t.isUint8Array !== "function" || !t.isUint8Array(new Uint8Array(1)) || t.isUint8Array([])) throw new Error("isUint8Array"); if (!t.isArrayBuffer(new ArrayBuffer(1)) || !t.isDate(new Date())) throw new Error("types"); });
 check("net socket paused-mode read() via 'readable'", async () => {
   const net = require("node:net");
   await new Promise<void>((resolve, reject) => {

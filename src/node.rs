@@ -29,6 +29,7 @@ use crate::runtime::js_value_to_string;
 /// bundle (all of them) whenever any builtin is imported.
 pub const BUILTINS: &[(&str, &str)] = &[
     ("util", include_str!("builtins/util.js")),
+    ("util/types", include_str!("builtins/util_types.js")),
     ("path", include_str!("builtins/path.js")),
     ("process", include_str!("builtins/process.js")),
     ("tty", include_str!("builtins/tty.js")),

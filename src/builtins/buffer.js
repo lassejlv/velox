@@ -1245,6 +1245,30 @@
   Buffer.prototype.writeUint16BE = Buffer.prototype.writeUInt16BE;
   Buffer.prototype.writeUint32LE = Buffer.prototype.writeUInt32LE;
   Buffer.prototype.writeUint32BE = Buffer.prototype.writeUInt32BE;
+
+  // Node's internal per-encoding slice/write fast-paths. Not in the public docs
+  // but real code reaches them: undici's chunksDecode calls buffer.utf8Slice()
+  // to decode response bodies. Delegate to toString()/write() for consistency.
+  function defineEncodingSlice(name, enc) {
+    Buffer.prototype[name] = function (start, end) { return this.toString(enc, start, end); };
+  }
+  function defineEncodingWrite(name, enc) {
+    Buffer.prototype[name] = function (string, offset, length) { return this.write(string, offset, length, enc); };
+  }
+  defineEncodingSlice('utf8Slice', 'utf8');
+  defineEncodingSlice('latin1Slice', 'latin1');
+  defineEncodingSlice('asciiSlice', 'ascii');
+  defineEncodingSlice('hexSlice', 'hex');
+  defineEncodingSlice('base64Slice', 'base64');
+  defineEncodingSlice('ucs2Slice', 'utf16le');
+  defineEncodingSlice('utf16leSlice', 'utf16le');
+  defineEncodingWrite('utf8Write', 'utf8');
+  defineEncodingWrite('latin1Write', 'latin1');
+  defineEncodingWrite('asciiWrite', 'ascii');
+  defineEncodingWrite('hexWrite', 'hex');
+  defineEncodingWrite('base64Write', 'base64');
+  defineEncodingWrite('ucs2Write', 'utf16le');
+  defineEncodingWrite('utf16leWrite', 'utf16le');
   Buffer.prototype.readBigUint64LE = Buffer.prototype.readBigUInt64LE;
   Buffer.prototype.readBigUint64BE = Buffer.prototype.readBigUInt64BE;
   Buffer.prototype.writeBigUint64LE = Buffer.prototype.writeBigUInt64LE;
