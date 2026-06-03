@@ -2,7 +2,7 @@
 # Run Node.js's OWN test suite against velox.
 #
 # Node's source tree is downloaded on demand (we don't vendor it), then selected
-# `test/parallel/*.js` files are run with the release binary. A test "passes" if
+# `test/**/test-*.js` files are run with the release binary. A test "passes" if
 # it exits 0 (its asserts held). Many Node tests can't run here — they `require`
 # Node internals (`internal/*`, `node:test`) or exercise exact Node CLI behavior
 # — so failures include genuinely-unrunnable tests; the summary separates those
@@ -10,7 +10,7 @@
 #
 # Usage:
 #   scripts/node-test.sh                 # curated fast set
-#   scripts/node-test.sh --all           # every test in test/parallel (~4100)
+#   scripts/node-test.sh --all           # every test/**/test-*.js in Node's tree
 #   scripts/node-test.sh --sample N      # every Nth test (spread across subsystems)
 #   scripts/node-test.sh --match PATTERN # tests whose name contains PATTERN (e.g. buffer)
 #   scripts/node-test.sh test-path-join test-querystring   # specific tests
@@ -28,10 +28,10 @@ TIMEOUT="${TIMEOUT:-8}"
 JOBS="${JOBS:-16}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-tests/node}"
 SRC="$ARTIFACT_DIR/node-src"
-DIR="$SRC/test/parallel"
+TEST_ROOT="$SRC/test"
 mkdir -p "$ARTIFACT_DIR"
 
-if [ ! -d "$SRC/test/parallel" ]; then
+if [ ! -d "$TEST_ROOT" ]; then
   echo "Downloading Node.js source tree ($NODE_VERSION)..."
   rm -rf "$SRC"
   mkdir -p "$SRC"
@@ -39,27 +39,47 @@ if [ ! -d "$SRC/test/parallel" ]; then
     | tar -xz --strip-components=1 -C "$SRC"
 fi
 
-CURATED="test-event-emitter-add-listeners test-event-emitter-error-monitor \
-test-event-emitter-listener-count test-event-emitter-once test-event-emitter-prepend \
-test-stringbytes-external test-timers-immediate test-timers-unref"
+CURATED="parallel/test-event-emitter-add-listeners parallel/test-event-emitter-error-monitor \
+parallel/test-event-emitter-listener-count parallel/test-event-emitter-once parallel/test-event-emitter-prepend \
+parallel/test-stringbytes-external parallel/test-timers-immediate parallel/test-timers-unref"
 
 # --- decide which tests to run --------------------------------------------
+all_tests() {
+  (
+    cd "$TEST_ROOT" || exit 1
+    find . \
+      \( -path './fixtures/*' -o -path './*/fixtures/*' \
+      -o -path './tmp/*' -o -path './*/tmp/*' \
+      -o -path './node_modules/*' -o -path './*/node_modules/*' \) -prune \
+      -o -name 'test-*.js' -print
+  ) | sed 's|^\./||;s|\.js$||' | sort -u
+}
+
 gating=0
 case "$1" in
   --all)
-    echo "Listing all test/parallel files ($NODE_VERSION)..."
-    LIST=$(find "$DIR" -maxdepth 1 -name 'test-*.js' -print | sed 's|.*/||;s|\.js$||' | sort -u) ;;
+    echo "Listing all Node.js test/**/test-*.js files ($NODE_VERSION)..."
+    LIST=$(all_tests) ;;
   --sample)
     N="${2:-8}"
-    echo "Listing test/parallel files, taking every ${N}th..."
-    LIST=$(find "$DIR" -maxdepth 1 -name 'test-*.js' -print | sed 's|.*/||;s|\.js$||' | sort -u | awk "NR % $N == 1") ;;
+    echo "Listing all Node.js test files, taking every ${N}th..."
+    LIST=$(all_tests | awk "NR % $N == 1") ;;
   --match)
-    echo "Listing test/parallel files matching '$2'..."
-    LIST=$(find "$DIR" -maxdepth 1 -name 'test-*.js' -print | sed 's|.*/||;s|\.js$||' | sort -u | grep -- "$2") ;;
+    echo "Listing all Node.js test files matching '$2'..."
+    LIST=$(all_tests | grep -- "$2") ;;
   "" )
     LIST="$CURATED"; gating=1 ;;
   * )
-    LIST="$*" ;;
+    LIST=""
+    for test_name in "$@"; do
+      test_name=${test_name%.js}
+      case "$test_name" in
+        */*) ;;
+        *) test_name="parallel/$test_name" ;;
+      esac
+      LIST="$LIST
+$test_name"
+    done ;;
 esac
 
 count=$(printf '%s\n' $LIST | grep -c . || true)
@@ -101,16 +121,19 @@ PY
 RUN_ONE=$(mktemp)
 cat > "$RUN_ONE" <<'SH'
 t="$1"
-f="$DIR/$t.js"
-out="$RESULTS/$t.out"
-status="$RESULTS/$t.status"
+f="$TEST_ROOT/$t.js"
+key=$(printf '%s' "$t" | tr '/ ' '__')
+out="$RESULTS/$key.out"
+status="$RESULTS/$key.status"
 
 if [ ! -f "$f" ]; then
   echo "missing missing 0" > "$status"
   exit 0
 fi
 
-python3 "$RUNNER" "$TIMEOUT" "$DIR" "$VELOX" "$t.js" > "$out" 2>&1
+test_cwd=$(dirname "$f")
+test_file=$(basename "$f")
+python3 "$RUNNER" "$TIMEOUT" "$test_cwd" "$VELOX" "$test_file" > "$out" 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then
   echo "pass pass 0" > "$status"
@@ -141,18 +164,19 @@ pass=0; fail=0; unrunnable=0; real_fail=0
 rm -rf "$RESULTS"
 mkdir -p "$RESULTS"
 {
-  echo "# velox vs Node.js test/parallel — failure log"
+  echo "# velox vs Node.js test suite — failure log"
   echo "# $(date) | node=$NODE_VERSION | velox=$($VELOX --version 2>/dev/null)"
   echo ""
 } > "$LOG"
 
-export TIMEOUT DIR VELOX RUNNER RESULTS
+export TIMEOUT TEST_ROOT VELOX RUNNER RESULTS
 if [ "$count" -gt 0 ]; then
   printf '%s\n' $LIST | xargs -P "$JOBS" -n1 sh "$RUN_ONE"
 fi
 
 for t in $LIST; do
-  status="$RESULTS/$t.status"
+  key=$(printf '%s' "$t" | tr '/ ' '__')
+  status="$RESULTS/$key.status"
   [ -f "$status" ] || { echo "  (missing result $t)"; continue; }
   read state kind rc < "$status"
   if [ "$state" = "pass" ]; then
@@ -174,7 +198,7 @@ for t in $LIST; do
       echo "================================================================"
       echo "FAIL [$kind] $t  (exit $rc)"
       echo "----------------------------------------------------------------"
-      sed 's/\x1b\[[0-9;]*m//g' "$RESULTS/$t.out" | head -30
+      sed 's/\x1b\[[0-9;]*m//g' "$RESULTS/$key.out" | head -30
       echo ""
     } >> "$LOG"
     [ "$gating" -eq 1 ] && printf '  \033[31mFAIL\033[0m %s\n' "$t"
@@ -185,7 +209,7 @@ rm -f "$RUNNER" "$RUN_ONE"
 total=$((pass + fail))
 runnable=$((pass + real_fail))
 {
-  echo "Node.js test/parallel — velox results:"
+  echo "Node.js test suite — velox results:"
   echo "  node ref:               $NODE_VERSION"
   echo "  tests selected:         $count"
   echo "  passed:                 $pass / $total"

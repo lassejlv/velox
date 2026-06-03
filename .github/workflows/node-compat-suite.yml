@@ -12,11 +12,11 @@ on:
       mode:
         description: Test selection mode
         required: true
-        default: subset
+        default: full
         type: choice
         options:
-          - subset
           - full
+          - subset
           - sample
           - match
       sample_every:
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$ARTIFACT_DIR"
 
-          mode="${{ github.event.inputs.mode || 'subset' }}"
+          mode="${{ github.event.inputs.mode || 'full' }}"
           case "$mode" in
             subset)
               ./scripts/node-test.sh
@@ -89,7 +89,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: node-compat-${{ github.event.inputs.mode || 'subset' }}-${{ github.run_id }}
+          name: node-compat-${{ github.event.inputs.mode || 'full' }}-${{ github.run_id }}
           path: |
             artifacts/node-compat/summary.txt
             artifacts/node-compat/last-pass.txt
