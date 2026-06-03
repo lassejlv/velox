@@ -34,6 +34,7 @@ pub fn install(ctx: JSContextRef) {
     unsafe {
         register(ctx, c"__velox_zlib", zlib_fn);
         register(ctx, c"__velox_dns_lookup", dns_lookup);
+        register(ctx, c"__velox_dns_resolve", dns_resolve);
         register(ctx, c"__velox_spawn_sync", spawn_sync);
         register(ctx, c"__velox_exec", exec);
         register(ctx, c"__velox_stdin_start", stdin_start);
@@ -574,6 +575,289 @@ fn resolve_host(host: &str, family: i32) -> Result<String, String> {
         return Err(format!("getaddrinfo ENOTFOUND {host}"));
     }
     Ok(Value::Array(list).to_string())
+}
+
+// ---------------------------------------------------------------------------
+// DNS record resolution (TXT/MX/SRV/NS/CNAME/SOA/PTR/CAA/A/AAAA)
+//
+// getaddrinfo only covers A/AAAA, so `dns.resolveTxt`/`resolveMx`/… need real
+// DNS queries. We build a query packet, send it over UDP to the system resolver
+// (first `nameserver` in /etc/resolv.conf, else 8.8.8.8), and parse the answer
+// records. Synchronous with a 5s timeout, matching `__velox_dns_lookup`.
+// ---------------------------------------------------------------------------
+
+fn rrtype_code(rrtype: &str) -> u16 {
+    match rrtype {
+        "A" => 1,
+        "NS" => 2,
+        "CNAME" => 5,
+        "SOA" => 6,
+        "PTR" => 12,
+        "MX" => 15,
+        "TXT" => 16,
+        "AAAA" => 28,
+        "SRV" => 33,
+        "CAA" => 257,
+        "ANY" => 255,
+        _ => 1,
+    }
+}
+
+fn system_nameserver() -> std::net::IpAddr {
+    use std::net::{IpAddr, Ipv4Addr};
+    if let Ok(content) = std::fs::read_to_string("/etc/resolv.conf") {
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("nameserver") {
+                if let Ok(ip) = rest.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+    }
+    IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
+}
+
+/// Read a (possibly compression-pointer-compressed) DNS name starting at `pos`.
+/// Returns the name and the position immediately after the name in the original
+/// sequence (following the first pointer, per RFC 1035 §4.1.4).
+fn dns_read_name(data: &[u8], start: usize) -> (String, usize) {
+    let mut name = String::new();
+    let mut pos = start;
+    let mut next_pos = start;
+    let mut jumped = false;
+    let mut guard = 0;
+    while pos < data.len() && guard < 128 {
+        guard += 1;
+        let len = data[pos];
+        if len & 0xC0 == 0xC0 {
+            if pos + 1 >= data.len() {
+                break;
+            }
+            let ptr = (((len & 0x3f) as usize) << 8) | data[pos + 1] as usize;
+            if !jumped {
+                next_pos = pos + 2;
+            }
+            jumped = true;
+            pos = ptr;
+            continue;
+        }
+        if len == 0 {
+            pos += 1;
+            if !jumped {
+                next_pos = pos;
+            }
+            break;
+        }
+        pos += 1;
+        if pos + len as usize > data.len() {
+            break;
+        }
+        if !name.is_empty() {
+            name.push('.');
+        }
+        name.push_str(&String::from_utf8_lossy(&data[pos..pos + len as usize]));
+        pos += len as usize;
+    }
+    (name, next_pos)
+}
+
+fn dns_query(hostname: &str, rrtype: &str) -> Result<String, String> {
+    let qtype = rrtype_code(rrtype);
+    let server = system_nameserver();
+
+    // Build the query packet.
+    let mut packet: Vec<u8> = Vec::with_capacity(64);
+    packet.extend_from_slice(&0x1234u16.to_be_bytes()); // ID
+    packet.extend_from_slice(&0x0100u16.to_be_bytes()); // flags: RD
+    packet.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // AN/NS/AR counts
+    for label in hostname.trim_end_matches('.').split('.') {
+        if label.is_empty() {
+            continue;
+        }
+        if label.len() > 63 {
+            return Err(format!("dns: label too long in {hostname}"));
+        }
+        packet.push(label.len() as u8);
+        packet.extend_from_slice(label.as_bytes());
+    }
+    packet.push(0);
+    packet.extend_from_slice(&qtype.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes()); // QCLASS IN
+
+    let sock = std::net::UdpSocket::bind(if server.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    })
+    .map_err(|e| e.to_string())?;
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+    sock.send_to(&packet, std::net::SocketAddr::new(server, 53))
+        .map_err(|e| format!("query{rrtype} EREFUSED {hostname}: {e}"))?;
+    let mut buf = [0u8; 4096];
+    let n = sock
+        .recv(&mut buf)
+        .map_err(|_| format!("query{rrtype} ETIMEOUT {hostname}"))?;
+    parse_dns_response(&buf[..n], qtype, hostname, rrtype)
+}
+
+fn parse_dns_response(
+    data: &[u8],
+    qtype: u16,
+    hostname: &str,
+    rrtype: &str,
+) -> Result<String, String> {
+    if data.len() < 12 {
+        return Err(format!("query{rrtype} EBADRESP {hostname}"));
+    }
+    let rcode = data[3] & 0x0f;
+    if rcode == 3 {
+        return Err(format!("query{rrtype} ENOTFOUND {hostname}"));
+    }
+    if rcode != 0 {
+        return Err(format!(
+            "query{rrtype} ESERVFAIL {hostname} (rcode {rcode})"
+        ));
+    }
+    let qdcount = u16::from_be_bytes([data[4], data[5]]);
+    let ancount = u16::from_be_bytes([data[6], data[7]]);
+    let mut pos = 12;
+    for _ in 0..qdcount {
+        let (_, p) = dns_read_name(data, pos);
+        pos = p + 4; // QTYPE + QCLASS
+    }
+
+    let mut results: Vec<Value> = Vec::new();
+    for _ in 0..ancount {
+        let (_, p) = dns_read_name(data, pos);
+        pos = p;
+        if pos + 10 > data.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([data[pos], data[pos + 1]]);
+        let rdlen = u16::from_be_bytes([data[pos + 8], data[pos + 9]]) as usize;
+        pos += 10;
+        let rstart = pos;
+        if rstart + rdlen > data.len() {
+            break;
+        }
+        if rtype == qtype || qtype == 255 {
+            match rtype {
+                1 if rdlen == 4 => results.push(Value::String(format!(
+                    "{}.{}.{}.{}",
+                    data[pos],
+                    data[pos + 1],
+                    data[pos + 2],
+                    data[pos + 3]
+                ))),
+                28 if rdlen == 16 => {
+                    let segs: Vec<String> = (0..8)
+                        .map(|i| {
+                            format!(
+                                "{:x}",
+                                u16::from_be_bytes([data[pos + i * 2], data[pos + i * 2 + 1]])
+                            )
+                        })
+                        .collect();
+                    results.push(Value::String(segs.join(":")));
+                }
+                5 | 2 | 12 => {
+                    let (name, _) = dns_read_name(data, pos);
+                    results.push(Value::String(name));
+                }
+                15 => {
+                    let pref = u16::from_be_bytes([data[pos], data[pos + 1]]);
+                    let (exchange, _) = dns_read_name(data, pos + 2);
+                    results.push(serde_json::json!({ "priority": pref, "exchange": exchange }));
+                }
+                16 => {
+                    // TXT: one or more length-prefixed chunks → array of strings
+                    // (Node's resolveTxt returns string[][], one array per record).
+                    let mut chunks: Vec<Value> = Vec::new();
+                    let mut tp = pos;
+                    while tp < rstart + rdlen {
+                        let l = data[tp] as usize;
+                        tp += 1;
+                        if tp + l > data.len() {
+                            break;
+                        }
+                        chunks.push(Value::String(
+                            String::from_utf8_lossy(&data[tp..tp + l]).into_owned(),
+                        ));
+                        tp += l;
+                    }
+                    results.push(Value::Array(chunks));
+                }
+                33 => {
+                    let prio = u16::from_be_bytes([data[pos], data[pos + 1]]);
+                    let weight = u16::from_be_bytes([data[pos + 2], data[pos + 3]]);
+                    let port = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+                    let (target, _) = dns_read_name(data, pos + 6);
+                    results.push(serde_json::json!({ "priority": prio, "weight": weight, "port": port, "name": target }));
+                }
+                6 => {
+                    let (mname, p1) = dns_read_name(data, pos);
+                    let (rname, p2) = dns_read_name(data, p1);
+                    let rd = |o: usize| {
+                        u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]])
+                    };
+                    if p2 + 20 <= data.len() {
+                        results.push(serde_json::json!({
+                            "nsname": mname, "hostmaster": rname, "serial": rd(p2),
+                            "refresh": rd(p2 + 4), "retry": rd(p2 + 8), "expire": rd(p2 + 12), "minttl": rd(p2 + 16)
+                        }));
+                    }
+                }
+                257 => {
+                    let flags = data[pos];
+                    let taglen = data[pos + 1] as usize;
+                    if pos + 2 + taglen <= rstart + rdlen {
+                        let tag =
+                            String::from_utf8_lossy(&data[pos + 2..pos + 2 + taglen]).into_owned();
+                        let val = String::from_utf8_lossy(&data[pos + 2 + taglen..rstart + rdlen])
+                            .into_owned();
+                        let mut obj = serde_json::Map::new();
+                        obj.insert("critical".to_string(), Value::from(flags));
+                        obj.insert(tag, Value::String(val));
+                        results.push(Value::Object(obj));
+                    }
+                }
+                _ => {}
+            }
+        }
+        pos = rstart + rdlen;
+    }
+
+    if results.is_empty() {
+        return Err(format!("query{rrtype} ENODATA {hostname}"));
+    }
+    Ok(Value::Array(results).to_string())
+}
+
+/// `__velox_dns_resolve(hostname, rrtype)` → JSON array of records, or throws.
+unsafe extern "C-unwind" fn dns_resolve(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let host = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let rrtype = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_else(|| "A".to_string());
+    match dns_query(&host, &rrtype) {
+        Ok(json) => unsafe { js_string(ctx, &json) },
+        Err(e) => unsafe { throw(ctx, exception, "ENOTFOUND", &e) },
+    }
 }
 
 // ---------------------------------------------------------------------------

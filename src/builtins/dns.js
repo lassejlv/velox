@@ -84,10 +84,45 @@ function resolve6(hostname, options, cb) {
   if (typeof options === 'function') { cb = options; }
   resolveFamily(hostname, 6, cb);
 }
+
+// --- real record queries (TXT/MX/SRV/NS/CNAME/SOA/CAA/PTR) via UDP DNS -------
+// A/AAAA stay getaddrinfo-backed (keeps the localhost fast-path); other rrtypes
+// issue an actual DNS query through __velox_dns_resolve.
+function resolveRecord(hostname, rrtype, cb) {
+  queueMicrotask(function () {
+    var out;
+    try { out = JSON.parse(__velox_dns_resolve(String(hostname), rrtype)); }
+    catch (e) {
+      if (!e.code) e = dnsError('ENOTFOUND', 'query' + rrtype, String(hostname));
+      cb(e);
+      return;
+    }
+    // resolveSoa yields a single object; the rest yield arrays.
+    cb(null, rrtype === 'SOA' ? out[0] : out);
+  });
+}
+
 function resolve(hostname, rrtype, cb) {
   if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
+  if (rrtype === 'A') { resolveFamily(hostname, 4, cb); return; }
   if (rrtype === 'AAAA') { resolveFamily(hostname, 6, cb); return; }
-  resolveFamily(hostname, 4, cb);
+  resolveRecord(hostname, rrtype, cb);
+}
+function resolveTxt(hostname, cb) { resolveRecord(hostname, 'TXT', cb); }
+function resolveMx(hostname, cb) { resolveRecord(hostname, 'MX', cb); }
+function resolveSrv(hostname, cb) { resolveRecord(hostname, 'SRV', cb); }
+function resolveNs(hostname, cb) { resolveRecord(hostname, 'NS', cb); }
+function resolveCname(hostname, cb) { resolveRecord(hostname, 'CNAME', cb); }
+function resolveSoa(hostname, cb) { resolveRecord(hostname, 'SOA', cb); }
+function resolveCaa(hostname, cb) { resolveRecord(hostname, 'CAA', cb); }
+function resolvePtr(hostname, cb) { resolveRecord(hostname, 'PTR', cb); }
+function resolveAny(hostname, cb) { resolveRecord(hostname, 'ANY', cb); }
+// reverse(ip) — PTR lookup of the reversed-nibble in-addr.arpa name (IPv4).
+function reverse(ip, cb) {
+  var name;
+  if (ip.indexOf(':') === -1) name = ip.split('.').reverse().join('.') + '.in-addr.arpa';
+  else { cb(dnsError('ENOTIMP', 'getHostByAddr', ip)); return; }
+  resolveRecord(name, 'PTR', cb);
 }
 
 // --- promises --------------------------------------------------------------
@@ -119,6 +154,22 @@ var promises = {
     });
   },
 };
+// Promisify the record-query functions onto the promises API.
+function promisify1(fn) {
+  return function (hostname) {
+    return new Promise(function (res, rej) { fn(hostname, function (err, r) { err ? rej(err) : res(r); }); });
+  };
+}
+promises.resolveTxt = promisify1(resolveTxt);
+promises.resolveMx = promisify1(resolveMx);
+promises.resolveSrv = promisify1(resolveSrv);
+promises.resolveNs = promisify1(resolveNs);
+promises.resolveCname = promisify1(resolveCname);
+promises.resolveSoa = promisify1(resolveSoa);
+promises.resolveCaa = promisify1(resolveCaa);
+promises.resolvePtr = promisify1(resolvePtr);
+promises.resolveAny = promisify1(resolveAny);
+promises.reverse = promisify1(reverse);
 
 // --- Resolver --------------------------------------------------------------
 
@@ -127,6 +178,16 @@ function Resolver() {}
 Resolver.prototype.resolve = function (hostname, rrtype, cb) { return resolve(hostname, rrtype, cb); };
 Resolver.prototype.resolve4 = function (hostname, options, cb) { return resolve4(hostname, options, cb); };
 Resolver.prototype.resolve6 = function (hostname, options, cb) { return resolve6(hostname, options, cb); };
+Resolver.prototype.resolveTxt = function (h, cb) { return resolveTxt(h, cb); };
+Resolver.prototype.resolveMx = function (h, cb) { return resolveMx(h, cb); };
+Resolver.prototype.resolveSrv = function (h, cb) { return resolveSrv(h, cb); };
+Resolver.prototype.resolveNs = function (h, cb) { return resolveNs(h, cb); };
+Resolver.prototype.resolveCname = function (h, cb) { return resolveCname(h, cb); };
+Resolver.prototype.resolveSoa = function (h, cb) { return resolveSoa(h, cb); };
+Resolver.prototype.resolveCaa = function (h, cb) { return resolveCaa(h, cb); };
+Resolver.prototype.resolvePtr = function (h, cb) { return resolvePtr(h, cb); };
+Resolver.prototype.resolveAny = function (h, cb) { return resolveAny(h, cb); };
+Resolver.prototype.reverse = function (ip, cb) { return reverse(ip, cb); };
 Resolver.prototype.getServers = function () { return []; };
 Resolver.prototype.setServers = function () {};
 Resolver.prototype.cancel = function () {};
@@ -146,6 +207,16 @@ module.exports = {
   resolve: resolve,
   resolve4: resolve4,
   resolve6: resolve6,
+  resolveTxt: resolveTxt,
+  resolveMx: resolveMx,
+  resolveSrv: resolveSrv,
+  resolveNs: resolveNs,
+  resolveCname: resolveCname,
+  resolveSoa: resolveSoa,
+  resolveCaa: resolveCaa,
+  resolvePtr: resolvePtr,
+  resolveAny: resolveAny,
+  reverse: reverse,
   Resolver: Resolver,
   promises: promises,
 
