@@ -383,13 +383,16 @@ function expectedMatches(error, expected) {
     return false;
   }
 
-  // A validation object: each property must deep-equal the error's.
+  // A validation object: each property must match the error's. A RegExp value
+  // is tested against the error's (stringified) property; otherwise deep-equal.
   if (typeof expected === 'object') {
     for (const key of Object.keys(expected)) {
       if (!(key in Object(error))) return false;
-      if (!deepEqualInternal(error[key], expected[key], false, new Map())) {
-        // Allow loose match for message strings too.
-        if (error[key] !== expected[key]) return false;
+      const ev = expected[key], av = error[key];
+      if (ev instanceof RegExp) {
+        if (!ev.test(String(av))) return false;
+      } else if (!deepEqualInternal(av, ev, false, new Map())) {
+        if (av !== ev) return false; // loose match for primitives
       }
     }
     return true;

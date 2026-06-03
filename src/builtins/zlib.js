@@ -237,8 +237,26 @@ var codes = {
 
 // --- exports ---------------------------------------------------------------
 
+// crc32(data[, value]) — IEEE 802.3 CRC-32 (Node 22.2+). Lazily-built table.
+var CRC_TABLE = null;
+function crc32(data, value) {
+  if (!CRC_TABLE) {
+    CRC_TABLE = new Int32Array(256);
+    for (var n = 0; n < 256; n++) {
+      var c = n;
+      for (var k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      CRC_TABLE[n] = c;
+    }
+  }
+  var buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  var crc = (value === undefined ? 0 : value) ^ -1;
+  for (var i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ buf[i]) & 0xff];
+  return (crc ^ -1) >>> 0;
+}
+
 module.exports = {
   gzipSync: gzipSync,
+  crc32: crc32,
   gunzipSync: gunzipSync,
   deflateSync: deflateSync,
   inflateSync: inflateSync,

@@ -170,6 +170,17 @@ check("fs async read/write + promisify", async () => {
 check("node:constants", () => { const C = require("node:constants"); if (C.O_CREAT !== 0x200 || C.S_IFREG !== 0x8000 || C.R_OK !== 4) throw new Error("constants"); });
 check("Buffer internal *Slice/*Write methods", () => { const b = Buffer.from("hello world"); if (b.utf8Slice(0, 5) !== "hello") throw new Error("utf8Slice"); if (b.hexSlice(0, 2) !== "6865") throw new Error("hexSlice"); if (b.latin1Slice(6, 11) !== "world") throw new Error("latin1Slice"); const w = Buffer.alloc(5); if (w.utf8Write("abcde", 0, 5) !== 5 || w.toString() !== "abcde") throw new Error("utf8Write"); });
 check("node:util/types subpath", () => { const t = require("node:util/types"); if (typeof t.isUint8Array !== "function" || !t.isUint8Array(new Uint8Array(1)) || t.isUint8Array([])) throw new Error("isUint8Array"); if (!t.isArrayBuffer(new ArrayBuffer(1)) || !t.isDate(new Date())) throw new Error("types"); });
+check("fs createReadStream/createWriteStream + ReadStream class", async () => {
+  const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "velox-rwstream-"));
+  try {
+    if (typeof fs.ReadStream !== "function" || typeof fs.WriteStream !== "function") throw new Error("classes");
+    const f = path.join(dir, "f.txt");
+    await new Promise<void>((res, rej) => { const ws = fs.createWriteStream(f); ws.write("a"); ws.write("b"); ws.end("c"); ws.on("finish", res); ws.on("error", rej); });
+    let data = ""; await new Promise<void>((res, rej) => { const rs = fs.createReadStream(f, { start: 0, end: 1, encoding: "utf8" }); rs.on("data", (c: any) => (data += c)); rs.on("end", res); rs.on("error", rej); });
+    if (data !== "ab") throw new Error("read: " + data);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 check("fs symlink/readlink/link + lstat", () => {
   const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "velox-sym-"));

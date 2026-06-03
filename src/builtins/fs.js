@@ -969,6 +969,12 @@ module.exports = {
   lutimes: callbackify(lutimesSync, false),
   createReadStream: createReadStream,
   createWriteStream: createWriteStream,
+  // Node exposes the stream classes; `new fs.ReadStream(path, opts)` is
+  // equivalent to createReadStream (velox returns a stream.Readable/Writable).
+  ReadStream: function ReadStream(p, options) { return createReadStream(p, options); },
+  WriteStream: function WriteStream(p, options) { return createWriteStream(p, options); },
+  FileReadStream: function FileReadStream(p, options) { return createReadStream(p, options); },
+  FileWriteStream: function FileWriteStream(p, options) { return createWriteStream(p, options); },
   watch: watch,
   watchFile: watchFile,
   unwatchFile: unwatchFile,
