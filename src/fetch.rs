@@ -113,45 +113,86 @@ pub const FETCH_PRELUDE: &str = r#"
     catch (e) { var err = new Error("The operation was aborted."); err.name = "AbortError"; return err; }
   }
 
+  // Issue (or re-issue, on redirect) a request for a tracked context. The ctx
+  // carries everything needed to follow a redirect: url/method/body/headers plus
+  // the redirect mode and hop count.
+  function startFetch(ctx) {
+    if (ctx.signal && ctx.signal.aborted) { ctx.reject(abortReason(ctx.signal)); return; }
+    const token = nextToken++;
+    ctx._token = token;
+    pending[token] = ctx;
+    if (ctx.signal && typeof ctx.signal.addEventListener === "function" && !ctx._abortWired) {
+      ctx._abortWired = true;
+      ctx.signal.addEventListener("abort", function () {
+        if (pending[ctx._token]) { delete pending[ctx._token]; ctx.reject(abortReason(ctx.signal)); }
+      }, { once: true });
+    }
+    let headersJson = "[]";
+    try { headersJson = JSON.stringify(headerPairs(ctx.headers)); } catch (e) {}
+    __velox_fetch_start(String(ctx.url), token, ctx.method, ctx.body || "", headersJson);
+  }
+
   globalThis.fetch = function (url, options) {
     options = options || {};
     let signal = options.signal;
+    let redirect = options.redirect;
     // Accept a Request instance as the first argument.
     if (typeof globalThis.Request !== "undefined" && url instanceof globalThis.Request) {
       const req = url;
       if (signal === undefined) signal = req.signal;
+      if (redirect === undefined) redirect = req.redirect;
       options = Object.assign({ method: req.method, headers: req.headers, body: req._bodyText }, options);
       url = req.url;
     }
     return new Promise(function (resolve, reject) {
-      // An already-aborted signal rejects before any socket work.
-      if (signal && signal.aborted) { reject(abortReason(signal)); return; }
-      const token = nextToken++;
-      pending[token] = { resolve: resolve, reject: reject };
-      // Aborting mid-flight rejects the promise; the lingering native request's
-      // later settle is dropped (the token is gone from `pending`).
-      if (signal && typeof signal.addEventListener === "function") {
-        signal.addEventListener("abort", function () {
-          if (pending[token]) { delete pending[token]; reject(abortReason(signal)); }
-        }, { once: true });
-      }
-      const method = options.method ? String(options.method) : "GET";
-      const body = options.body != null ? String(options.body) : "";
-      let headersJson = "[]";
-      try { headersJson = JSON.stringify(headerPairs(options.headers)); } catch (e) {}
-      __velox_fetch_start(String(url), token, method, body, headersJson);
+      startFetch({
+        url: String(url),
+        method: options.method ? String(options.method) : "GET",
+        body: options.body != null ? String(options.body) : "",
+        headers: options.headers,
+        redirect: redirect || "follow",
+        count: 0,
+        signal: signal,
+        resolve: resolve,
+        reject: reject,
+      });
     });
   };
 
+  function locationOf(headersJson) {
+    try {
+      const pairs = JSON.parse(headersJson);
+      for (let i = 0; i < pairs.length; i++) if (String(pairs[i][0]).toLowerCase() === "location") return pairs[i][1];
+    } catch (e) {}
+    return null;
+  }
+
   globalThis.__velox_fetch_settle = function (token, ok, status, statusText, headersJson, body) {
-    const p = pending[token];
-    if (!p) return;
+    const ctx = pending[token];
+    if (!ctx) return;
     delete pending[token];
-    if (ok) {
-      p.resolve(makeResponse(status, statusText, headersJson, body));
-    } else {
-      p.reject(new Error(body || "fetch failed"));
+    if (!ok) { ctx.reject(new Error(body || "fetch failed")); return; }
+
+    // Follow 3xx redirects (default mode). 'manual' returns the response as-is.
+    if (ctx.redirect === "follow" && (status === 301 || status === 302 || status === 303 || status === 307 || status === 308)) {
+      const location = locationOf(headersJson);
+      if (location) {
+        if (ctx.count >= 20) { ctx.reject(new TypeError("fetch failed: too many redirects")); return; }
+        try { ctx.url = new URL(location, ctx.url).href; } catch (e) { ctx.url = location; }
+        ctx.count++;
+        ctx.redirected = true;
+        // 303 (and 301/302 on an unsafe method) become GET with no body, per spec.
+        if (status === 303 || ((status === 301 || status === 302) && ctx.method !== "GET" && ctx.method !== "HEAD")) {
+          ctx.method = "GET";
+          ctx.body = "";
+        }
+        startFetch(ctx);
+        return;
+      }
     }
+    const resp = makeResponse(status, statusText, headersJson, body);
+    try { resp.url = ctx.url; if (ctx.redirected) resp.redirected = true; } catch (e) {}
+    ctx.resolve(resp);
   };
 })();
 "#;

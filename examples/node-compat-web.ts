@@ -68,6 +68,19 @@ check("Blob.stream() + slice", async () => { const b = new Blob(["hello world"])
 check("ReadableStream pipeThrough/pipeTo", async () => { const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const ts = new TransformStream({ transform(ch, ctrl) { ctrl.enqueue(String(ch).toUpperCase()); } }); let out = ""; const ws = new WritableStream({ write(ch) { out += ch; } }); await rs.pipeThrough(ts).pipeTo(ws); if (out !== "AB") throw new Error("pipe: " + out); });
 check("FormData", () => { const fd = new FormData(); fd.append("a", "1"); fd.append("a", "2"); if (fd.getAll("a").join(",") !== "1,2") throw new Error("fd"); });
 
+check("fetch follows redirects (+ manual mode)", async () => {
+  const http = require("node:http");
+  const s = http.createServer((q: any, r: any) => { if (q.url === "/from") { r.writeHead(302, { location: "/to" }); r.end(); } else { r.end("arrived"); } });
+  await new Promise<void>((res) => s.listen(0, res));
+  const port = s.address().port;
+  try {
+    const f = await fetch("http://localhost:" + port + "/from");
+    if ((await f.text()) !== "arrived" || !f.redirected) throw new Error("follow: redirected=" + f.redirected);
+    const m = await fetch("http://localhost:" + port + "/from", { redirect: "manual" });
+    if (m.status !== 302) throw new Error("manual status=" + m.status);
+  } finally { s.close(); }
+});
+
 // AbortController + fetch cancellation
 check("fetch abort", async () => {
   const http = require("node:http");
