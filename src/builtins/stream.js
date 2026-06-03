@@ -1657,6 +1657,31 @@ function getDefaultHighWaterMark(objectMode) { return objectMode ? defaultHWMObj
 function setDefaultHighWaterMark(objectMode, value) { if (objectMode) defaultHWMObject = value; else defaultHWM = value; }
 module.exports.getDefaultHighWaterMark = getDefaultHighWaterMark;
 module.exports.setDefaultHighWaterMark = setDefaultHighWaterMark;
+
+// stream.duplexPair([options]) — two cross-wired Duplexes: whatever is written
+// to one side becomes readable on the other (an in-process socket pair).
+module.exports.duplexPair = function duplexPair(options) {
+  var sideB;
+  function makeSide() {
+    var opts = Object.assign({}, options, {
+      read: function () {},
+      write: function (chunk, enc, cb) {
+        var other = this === sideA ? sideB : sideA;
+        if (other && !other.destroyed) other.push(chunk);
+        cb();
+      },
+      final: function (cb) {
+        var other = this === sideA ? sideB : sideA;
+        if (other && !other.destroyed) other.push(null);
+        cb();
+      },
+    });
+    return new Duplex(opts);
+  }
+  var sideA = makeSide();
+  sideB = makeSide();
+  return [sideA, sideB];
+};
 exports.getDefaultHighWaterMark = getDefaultHighWaterMark;
 exports.setDefaultHighWaterMark = setDefaultHighWaterMark;
 
