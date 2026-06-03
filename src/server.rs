@@ -533,7 +533,13 @@ unsafe extern "C-unwind" fn listen_tls(
     let args = arg_slice(argc, argv);
     let cert_pem = args.get(2).map(|v| unsafe { js_value_to_string(ctx, *v) });
     let key_pem = args.get(3).map(|v| unsafe { js_value_to_string(ctx, *v) });
-    let config = match build_server_config(cert_pem.as_deref(), key_pem.as_deref()) {
+    // args[4] (optional): non-zero advertises ALPN h2/http1.1 (createSecureServer).
+    let alpn = args
+        .get(4)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0)
+        != 0.0;
+    let config = match build_server_config(cert_pem.as_deref(), key_pem.as_deref(), alpn) {
         Ok(config) => config,
         Err(message) => return unsafe { throw(ctx, exception, "ERR_TLS", &message) },
     };
@@ -632,6 +638,7 @@ unsafe extern "C-unwind" fn server_port(
 fn build_server_config(
     cert_pem: Option<&str>,
     key_pem: Option<&str>,
+    alpn: bool,
 ) -> Result<ServerConfig, String> {
     let (certs, key) = match (cert_pem, key_pem) {
         (Some(c), Some(k)) if !c.trim().is_empty() && !k.trim().is_empty() => {
@@ -653,12 +660,17 @@ fn build_server_config(
         }
     };
 
-    ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| e.to_string())
+    let mut config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| e.to_string())?;
+    if alpn {
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    }
+    Ok(config)
 }
 
 /// `__velox_connect(host, port)` → numeric socket id (connects asynchronously).

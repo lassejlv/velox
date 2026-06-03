@@ -334,7 +334,7 @@ Server.prototype.listen = function () {
   // __velox_listen throws synchronously on bind error (e.g. EADDRINUSE).
   try {
     this._serverId = this._tlsOptions
-      ? __velox_listen_tls(this._port, this._host, this._tlsOptions.cert || "", this._tlsOptions.key || "")
+      ? __velox_listen_tls(this._port, this._host, this._tlsOptions.cert || "", this._tlsOptions.key || "", this._tlsOptions.alpn ? 1 : 0)
       : __velox_listen(this._port, this._host);
   } catch (e) {
     nextTick(function () {

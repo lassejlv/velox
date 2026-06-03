@@ -463,8 +463,49 @@ function createServer(options, onRequest) {
   if (onRequest) server.on('request', onRequest);
   return server;
 }
-function createSecureServer() {
-  throw new Error('http2.createSecureServer (h2 over TLS/ALPN) is not implemented in velox; use createServer for h2c');
+// createSecureServer — h2 over TLS. The net server terminates TLS (advertising
+// ALPN h2/http1.1); we inspect the negotiated protocol on the first decrypted
+// chunk (handshake is done by then) and run an Http2Session over it. Empty
+// cert/key uses velox's self-signed dev cert.
+function Http2SecureServer(options) {
+  EventEmitter.call(this);
+  var self = this;
+  this._net = net.createServer(function (socket) {
+    var onFirst = function (chunk) {
+      socket.removeListener('data', onFirst);
+      var alpn = socket.alpnProtocol;
+      if (alpn === 'http/1.1' && options.allowHTTP1) {
+        self.emit('unknownProtocol', socket); // HTTP/1.1 fallback is the caller's problem
+        return;
+      }
+      // Default to h2 (createSecureServer is HTTP/2; ALPN is 'h2' or absent).
+      var session = new Http2Session(socket, true);
+      session._server = self;
+      session.on('stream', function (st, headers, flags) { self.emit('stream', st, headers, flags); });
+      session.on('error', function (e) { self.emit('clientError', e, socket); });
+      self.emit('session', session);
+      session._onData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'latin1'));
+    };
+    socket.on('data', onFirst);
+  });
+  this._net._tlsOptions = {
+    cert: options.cert ? String(options.cert) : '',
+    key: options.key ? String(options.key) : '',
+    alpn: true,
+  };
+  this._net.on('error', function (e) { self.emit('error', e); });
+  this._net.on('listening', function () { self.emit('listening'); });
+}
+inherits(Http2SecureServer, EventEmitter);
+Http2SecureServer.prototype.listen = function () { this._net.listen.apply(this._net, arguments); return this; };
+Http2SecureServer.prototype.close = function (cb) { this._net.close(cb); return this; };
+Http2SecureServer.prototype.address = function () { return this._net.address(); };
+
+function createSecureServer(options, onRequest) {
+  if (typeof options === 'function') { onRequest = options; options = {}; }
+  var server = new Http2SecureServer(options || {});
+  if (onRequest) server.on('request', onRequest);
+  return server;
 }
 
 // Client session over a fresh TCP connection — h2c (http:) or h2 over TLS with
