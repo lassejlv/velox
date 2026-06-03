@@ -53,6 +53,14 @@ check("WebAssembly instantiate with imports", async () => {
   if (got !== 42) throw new Error("import callback not invoked: " + got);
 });
 
+// Modern URL / Headers / Intl / JS surface
+check("URL.parse + canParse", () => { if ((URL as any).parse("not a url") !== null) throw new Error("parse null"); const u = (URL as any).parse("http://a.com/p"); if (!u || u.pathname !== "/p") throw new Error("parse"); if (!(URL as any).canParse("http://a.com") || (URL as any).canParse("nope")) throw new Error("canParse"); });
+check("URLSearchParams.size", () => { if (new URLSearchParams("a=1&b=2").size !== 2) throw new Error("size"); });
+check("Headers.getSetCookie", () => { const h = new Headers(); h.append("set-cookie", "a=1"); h.append("set-cookie", "b=2"); if (h.getSetCookie().length !== 2) throw new Error("cookies"); });
+check("Object.groupBy / Map.groupBy", () => { const g: any = (Object as any).groupBy([1, 2, 3, 4], (x: number) => x % 2 ? "odd" : "even"); if (g.odd.length !== 2 || g.even.length !== 2) throw new Error("groupBy"); if (typeof (Map as any).groupBy !== "function") throw new Error("Map.groupBy"); });
+check("Array toSorted/toReversed/with", () => { const a = [3, 1, 2]; if (a.toSorted().join("") !== "123" || a.toReversed().join("") !== "213" || a.with(0, 9).join("") !== "912") throw new Error("array"); });
+check("Intl breadth (PluralRules/DisplayNames/RTF)", () => { if (new Intl.PluralRules("en").select(1) !== "one") throw new Error("plural"); if (new (Intl as any).DisplayNames(["en"], { type: "language" }).of("fr") !== "French") throw new Error("display"); if (typeof new (Intl as any).RelativeTimeFormat("en").format(-1, "day") !== "string") throw new Error("rtf"); });
+
 // Blob / FormData
 check("Blob", async () => { const b = new Blob(["a", "b"], { type: "text/plain" }); if (b.size !== 2) throw new Error("size"); if (await b.text() !== "ab") throw new Error("text"); });
 check("FormData", () => { const fd = new FormData(); fd.append("a", "1"); fd.append("a", "2"); if (fd.getAll("a").join(",") !== "1,2") throw new Error("fd"); });

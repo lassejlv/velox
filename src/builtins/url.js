@@ -349,6 +349,11 @@
   URL.canParse = function (input, base) {
     try { new URL(input, base); return true; } catch (e) { return false; }
   };
+  // URL.parse (Node 22.1+ / WHATWG) — like `new URL` but returns null instead of
+  // throwing on an invalid input.
+  URL.parse = function (input, base) {
+    try { return new URL(input, base); } catch (e) { return null; }
+  };
 
   globalThis.URL = URL;
   globalThis.URLSearchParams = URLSearchParams;
