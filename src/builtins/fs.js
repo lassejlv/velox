@@ -179,6 +179,32 @@ function mkdtempSync(prefix, options) {
 function realpathSyncNative(p) { return __velox_realpath(fsPath(p)); }
 realpathSync.native = realpathSyncNative;
 
+// node:fs statfs (Node 19): filesystem statistics. The native returns numeric
+// fields as JSON; with `{ bigint: true }` Node returns them as BigInts.
+function statfsSync(p, options) {
+  var o = JSON.parse(__velox_statfs(fsPath(p)));
+  if (options && options.bigint) {
+    return {
+      type: BigInt(o.type), bsize: BigInt(o.bsize), blocks: BigInt(o.blocks),
+      bfree: BigInt(o.bfree), bavail: BigInt(o.bavail), files: BigInt(o.files),
+      ffree: BigInt(o.ffree),
+    };
+  }
+  return {
+    type: o.type, bsize: o.bsize, blocks: o.blocks, bfree: o.bfree,
+    bavail: o.bavail, files: o.files, ffree: o.ffree,
+  };
+}
+function statfsAsync(p, options, cb) {
+  if (typeof options === 'function') { cb = options; options = undefined; }
+  Promise.resolve().then(function () {
+    var value;
+    try { value = statfsSync(p, options); }
+    catch (e) { if (cb) cb(e); return; }
+    if (cb) cb(null, value);
+  });
+}
+
 // --- file descriptors (synthetic table, read-modify-write backed) ----------
 // velox has no real fd table, so openSync hands out synthetic descriptors (>=100
 // to avoid clashing with stdio 0/1/2) and read/write operate on the path.
@@ -299,6 +325,51 @@ function write() {
     try {
       var bytesWritten = writeSync.apply(null, args);
       if (cb) cb(null, bytesWritten, buffer);
+    } catch (e) { if (cb) cb(e); }
+  });
+}
+
+// --- vectored read/write (in terms of the single-buffer fd primitives) -----
+// readv/writev operate on an array of ArrayBufferViews; we drive the existing
+// readSync/writeSync for each buffer in turn, advancing `position` when given.
+function writevSync(fd, buffers, position) {
+  var total = 0;
+  var pos = typeof position === 'number' ? position : null;
+  for (var i = 0; i < buffers.length; i++) {
+    var buf = buffers[i];
+    var n = writeSync(fd, buf, 0, buf.length, pos);
+    total += n;
+    if (pos !== null) pos += n;
+  }
+  return total;
+}
+function readvSync(fd, buffers, position) {
+  var total = 0;
+  var pos = typeof position === 'number' ? position : null;
+  for (var i = 0; i < buffers.length; i++) {
+    var buf = buffers[i];
+    var n = readSync(fd, buf, 0, buf.length, pos);
+    total += n;
+    if (pos !== null) pos += n;
+    if (n < buf.length) break; // short read: end of file
+  }
+  return total;
+}
+function writev(fd, buffers, position, cb) {
+  if (typeof position === 'function') { cb = position; position = null; }
+  Promise.resolve().then(function () {
+    try {
+      var bytes = writevSync(fd, buffers, position);
+      if (cb) cb(null, bytes, buffers);
+    } catch (e) { if (cb) cb(e); }
+  });
+}
+function readv(fd, buffers, position, cb) {
+  if (typeof position === 'function') { cb = position; position = null; }
+  Promise.resolve().then(function () {
+    try {
+      var bytes = readvSync(fd, buffers, position);
+      if (cb) cb(null, bytes, buffers);
     } catch (e) { if (cb) cb(e); }
   });
 }
@@ -649,12 +720,23 @@ function glob(pattern, options, callback) {
   return globAsyncIterator(pattern, options);
 }
 
+// node:fs openAsBlob (Node 19): resolve to a Blob of the file's contents.
+function openAsBlob(p, options) {
+  return new Promise(function (res, rej) {
+    readFile(p, function (e, buf) {
+      if (e) return rej(e);
+      res(new globalThis.Blob([buf], { type: (options && options.type) || '' }));
+    });
+  });
+}
+
 var promises = {
   readFile: function (p, o) { return new Promise(function (res, rej) { readFile(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   writeFile: function (p, d, o) { return new Promise(function (res, rej) { writeFile(p, d, o, function (e) { e ? rej(e) : res(); }); }); },
   appendFile: promisify(appendFileSync),
   stat: function (p, o) { return new Promise(function (res, rej) { statAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   lstat: function (p, o) { return new Promise(function (res, rej) { lstatAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
+  statfs: function (p, o) { return new Promise(function (res, rej) { statfsAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   readdir: function (p, o) { return new Promise(function (res, rej) { readdirAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   // Mutation ops now run off-thread (see fsMutAsync) rather than sync-backed.
   mkdir: function (p, o) { return new Promise(function (res, rej) { mkdirAsync(p, o, function (e) { e ? rej(e) : res(undefined); }); }); },
@@ -678,6 +760,7 @@ module.exports = {
   existsSync: existsSync,
   statSync: statSync,
   lstatSync: lstatSync,
+  statfsSync: statfsSync,
   readdirSync: readdirSync,
   opendirSync: opendirSync,
   opendir: opendirAsync,
@@ -700,6 +783,8 @@ module.exports = {
   closeSync: closeSync,
   readSync: readSync,
   writeSync: writeSync,
+  readvSync: readvSync,
+  writevSync: writevSync,
   fstatSync: fstatSync,
   ftruncateSync: ftruncateSync,
   truncateSync: truncateSync,
@@ -718,6 +803,8 @@ module.exports = {
   close: callbackify(closeSync, false),
   read: read,
   write: write,
+  readv: readv,
+  writev: writev,
   fstat: callbackify(fstatSync, true),
   ftruncate: callbackify(ftruncateSync, false),
   truncate: callbackify(truncateSync, false),
@@ -744,6 +831,7 @@ module.exports = {
   exists: function (p, cb) { Promise.resolve().then(function () { cb(existsSync(p)); }); },
   stat: statAsync,
   lstat: lstatAsync,
+  statfs: statfsAsync,
   readdir: readdirAsync,
   mkdir: mkdirAsync,
   rm: rmAsync,
@@ -753,6 +841,7 @@ module.exports = {
   realpath: callbackify(realpathSync, true),
   access: callbackify(accessSync, false),
   copyFile: copyFileAsync,
+  openAsBlob: openAsBlob,
   Stats: Stats,
   Dirent: Dirent,
   constants: constants,

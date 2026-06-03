@@ -446,6 +446,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_write_file", fs_write_file);
         register(ctx, c"__velox_exists", fs_exists);
         register(ctx, c"__velox_stat", fs_stat);
+        register(ctx, c"__velox_statfs", fs_statfs);
         register(ctx, c"__velox_readdir", fs_readdir);
         register(ctx, c"__velox_mkdir", fs_mkdir);
         register(ctx, c"__velox_rm", fs_rm);
@@ -947,6 +948,42 @@ unsafe extern "C-unwind" fn fs_stat(
             unsafe { js_string(ctx, &json) }
         }
         Err(e) => unsafe { fs_throw(ctx, exception, &e, &path, "stat") },
+    }
+}
+
+/// `__velox_statfs(path)` → JSON of filesystem stats (via `statvfs`). Backs
+/// `fs.statfsSync`/`fs.statfs`. `type` is reported 0 (statvfs carries no fs-type
+/// magic on macOS); the block/inode counts are the values callers actually use.
+unsafe extern "C-unwind" fn fs_statfs(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let path = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let c_path = CString::new(path.replace('\0', "")).unwrap();
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut st) } == 0 {
+        // bsize is the fundamental block size (f_frsize), falling back to f_bsize.
+        let bsize = if st.f_frsize != 0 {
+            st.f_frsize
+        } else {
+            st.f_bsize
+        };
+        let json = format!(
+            r#"{{"type":0,"bsize":{},"blocks":{},"bfree":{},"bavail":{},"files":{},"ffree":{}}}"#,
+            bsize, st.f_blocks, st.f_bfree, st.f_bavail, st.f_files, st.f_ffree,
+        );
+        unsafe { js_string(ctx, &json) }
+    } else {
+        let e = std::io::Error::last_os_error();
+        unsafe { fs_throw(ctx, exception, &e, &path, "statfs") }
     }
 }
 

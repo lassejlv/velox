@@ -102,6 +102,7 @@ check("node:buffer re-exports Blob/File", async () => {
   if (new Blob(["x"]).size !== 1) throw new Error("Blob");
   const f = new File(["ab"], "a.txt"); if (f.name !== "a.txt" || f.size !== 2) throw new Error("File");
 });
+check("Request always has a signal", () => { const r = new Request("http://x", { method: "POST", body: "y" }); if (!r.signal || typeof r.signal.aborted !== "boolean" || r.signal.aborted) throw new Error("signal"); });
 check("MessageChannel ports", async () => {
   const mc = new MessageChannel();
   const v = await new Promise<any>((res) => { mc.port1.onmessage = (e: any) => res(e.data); mc.port2.postMessage(7); mc.port1.start?.(); mc.port2.start?.(); });

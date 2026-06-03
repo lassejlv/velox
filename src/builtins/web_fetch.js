@@ -544,7 +544,9 @@
       this.method = method || "GET";
       this.headers = headers;
       this.redirect = redirect || "follow";
-      this.signal = signal || null;
+      // Per spec a Request always exposes a live AbortSignal; synthesize a fresh
+      // (never-aborted) one when the caller didn't pass a signal.
+      this.signal = signal || (g.AbortController ? new g.AbortController().signal : null);
       this.bodyUsed = false;
 
       // Normalize the body to bytes; keep the original for clone().

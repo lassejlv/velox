@@ -401,6 +401,164 @@ function isIP(s) {
 }
 
 // ---------------------------------------------------------------------------
+// BlockList — filter IP addresses by exact address, inclusive range, or CIDR
+// subnet. IPv4 addresses are held as 32-bit unsigned integers; IPv6 addresses
+// as 128-bit BigInts. check() parses the queried address and tests it against
+// every rule of the matching family.
+// ---------------------------------------------------------------------------
+var kBlockList = Symbol('isBlockList');
+
+// "a.b.c.d" -> unsigned 32-bit integer, or null if not a valid IPv4 literal.
+function ipv4ToInt(s) {
+  if (!isIPv4(s)) return null;
+  var p = s.split('.');
+  return (((Number(p[0]) << 24) | (Number(p[1]) << 16) | (Number(p[2]) << 8) | Number(p[3])) >>> 0);
+}
+
+// "….….…." (full or "::"-compressed, with optional trailing embedded IPv4)
+// -> 128-bit BigInt, or null if it can't be parsed.
+function ipv6ToBig(s) {
+  if (typeof s !== 'string' || s.indexOf(':') === -1) return null;
+  // Strip an optional zone id (fe80::1%en0) — not part of the address value.
+  var pct = s.indexOf('%');
+  if (pct !== -1) s = s.slice(0, pct);
+
+  // Split off a trailing embedded IPv4 (e.g. "::ffff:1.2.3.4") and convert it
+  // to two hextets so the rest is pure hex groups.
+  var tail = '';
+  var lastColon = s.lastIndexOf(':');
+  var maybeV4 = s.slice(lastColon + 1);
+  if (maybeV4.indexOf('.') !== -1) {
+    var v4 = ipv4ToInt(maybeV4);
+    if (v4 === null) return null;
+    var hi = (v4 >>> 16) & 0xffff, lo = v4 & 0xffff;
+    s = s.slice(0, lastColon + 1) + hi.toString(16) + ':' + lo.toString(16);
+  }
+
+  var halves = s.split('::');
+  if (halves.length > 2) return null;
+  var head = halves[0] ? halves[0].split(':') : [];
+  var rest = halves.length === 2 ? (halves[1] ? halves[1].split(':') : []) : null;
+
+  var groups;
+  if (rest === null) {
+    // No "::" — must be exactly 8 groups.
+    if (head.length !== 8) return null;
+    groups = head;
+  } else {
+    var fill = 8 - head.length - rest.length;
+    if (fill < 0) return null;
+    groups = head.slice();
+    for (var i = 0; i < fill; i++) groups.push('0');
+    groups = groups.concat(rest);
+  }
+  if (groups.length !== 8) return null;
+
+  var result = 0n;
+  for (var j = 0; j < 8; j++) {
+    var g = groups[j];
+    if (g === '') g = '0';
+    if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null;
+    result = (result << 16n) | BigInt(parseInt(g, 16));
+  }
+  return result;
+}
+
+// Parse an address to the numeric form for `type` ('ipv4' int | 'ipv6' BigInt).
+function parseAddr(address, type) {
+  if (type === 'ipv6') return ipv6ToBig(address);
+  return ipv4ToInt(address);
+}
+
+function BlockList() {
+  if (!(this instanceof BlockList)) return new BlockList();
+  this[kBlockList] = true;
+  this._rules = []; // { family: 'ipv4'|'ipv6', test(value), text }
+}
+
+Object.defineProperty(BlockList.prototype, 'rules', {
+  configurable: true,
+  enumerable: true,
+  get: function () {
+    return this._rules.map(function (r) { return r.text; });
+  },
+});
+
+BlockList.prototype.addAddress = function (address, type) {
+  type = (type || 'ipv4').toLowerCase();
+  var fam = type === 'ipv6' ? 'IPv6' : 'IPv4';
+  var v = parseAddr(address, type);
+  if (v === null) throw new TypeError('Invalid address: ' + address);
+  this._rules.push({
+    family: type,
+    test: function (value) { return value === v; },
+    text: 'Address: ' + fam + ' ' + address,
+  });
+  return this;
+};
+
+BlockList.prototype.addRange = function (start, end, type) {
+  type = (type || 'ipv4').toLowerCase();
+  var fam = type === 'ipv6' ? 'IPv6' : 'IPv4';
+  var lo = parseAddr(start, type);
+  var hi = parseAddr(end, type);
+  if (lo === null) throw new TypeError('Invalid address: ' + start);
+  if (hi === null) throw new TypeError('Invalid address: ' + end);
+  if (lo > hi) throw new RangeError('The start address is greater than the end address');
+  this._rules.push({
+    family: type,
+    test: function (value) { return value >= lo && value <= hi; },
+    text: 'Range: ' + fam + ' ' + start + '-' + end,
+  });
+  return this;
+};
+
+BlockList.prototype.addSubnet = function (network, prefix, type) {
+  type = (type || 'ipv4').toLowerCase();
+  var fam = type === 'ipv6' ? 'IPv6' : 'IPv4';
+  prefix = Number(prefix);
+  var bits = type === 'ipv6' ? 128 : 32;
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > bits) {
+    throw new RangeError('Invalid prefix: ' + prefix);
+  }
+  var net = parseAddr(network, type);
+  if (net === null) throw new TypeError('Invalid address: ' + network);
+
+  var test;
+  if (type === 'ipv6') {
+    var maskBig = prefix === 0 ? 0n : (((1n << BigInt(prefix)) - 1n) << BigInt(128 - prefix));
+    var netMaskedBig = net & maskBig;
+    test = function (value) { return (value & maskBig) === netMaskedBig; };
+  } else {
+    var mask = prefix === 0 ? 0 : ((~0 << (32 - prefix)) >>> 0);
+    var netMasked = (net & mask) >>> 0;
+    test = function (value) { return ((value & mask) >>> 0) === netMasked; };
+  }
+  this._rules.push({
+    family: type,
+    test: test,
+    text: 'Subnet: ' + fam + ' ' + network + '/' + prefix,
+  });
+  return this;
+};
+
+BlockList.prototype.check = function (address, type) {
+  type = (type || 'ipv4').toLowerCase();
+  var v = parseAddr(address, type);
+  if (v === null) return false;
+  for (var i = 0; i < this._rules.length; i++) {
+    var rule = this._rules[i];
+    if (rule.family !== type) continue;
+    if (rule.test(v)) return true;
+  }
+  return false;
+};
+
+BlockList.isBlockList = function (value) {
+  return value != null && value[kBlockList] === true;
+};
+
+// ---------------------------------------------------------------------------
 // Client sockets — create a Socket and dial out.
 //
 // Arg forms (mirrors Node): connect(port[, host][, cb]),
@@ -437,5 +595,6 @@ module.exports = {
   isIP: isIP,
   isIPv4: isIPv4,
   isIPv6: isIPv6,
+  BlockList: BlockList,
 };
 module.exports.default = module.exports;
