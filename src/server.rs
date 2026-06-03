@@ -60,6 +60,8 @@ struct PendingConnect {
     ended: bool,
     /// `Some(host)` for a TLS connection (the SNI name); `None` for plain TCP.
     tls_host: Option<String>,
+    /// Advertise ALPN `h2`/`http/1.1` on the TLS handshake (for http2.connect).
+    alpn: bool,
 }
 
 type DnsResult = (Token, Result<SocketAddr, String>);
@@ -72,6 +74,10 @@ thread_local! {
     static DNS_CHANNEL: (Sender<DnsResult>, Receiver<DnsResult>) = mpsc::channel();
     /// Shared TLS client config (roots + ring provider), built once.
     static TLS_CONFIG: Arc<ClientConfig> = Arc::new(build_tls_config());
+    /// Variant that advertises ALPN `h2`/`http/1.1` — for `http2.connect`/TLS
+    /// sockets that request ALPN. Kept separate so ordinary TLS clients don't
+    /// negotiate h2 and surprise callers expecting HTTP/1.1.
+    static TLS_CONFIG_H2: Arc<ClientConfig> = Arc::new(build_tls_config_alpn());
 }
 
 fn build_tls_config() -> ClientConfig {
@@ -84,10 +90,20 @@ fn build_tls_config() -> ClientConfig {
         .with_no_client_auth()
 }
 
-fn make_tls(host: &str) -> Result<Box<TlsConnection>, String> {
+fn build_tls_config_alpn() -> ClientConfig {
+    let mut config = build_tls_config();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    config
+}
+
+fn make_tls(host: &str, alpn: bool) -> Result<Box<TlsConnection>, String> {
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|_| format!("invalid TLS server name: {host}"))?;
-    let config = TLS_CONFIG.with(Arc::clone);
+    let config = if alpn {
+        TLS_CONFIG_H2.with(Arc::clone)
+    } else {
+        TLS_CONFIG.with(Arc::clone)
+    };
     let conn = ClientConnection::new(config, server_name).map_err(|e| e.to_string())?;
     Ok(Box::new(TlsConnection::Client(conn)))
 }
@@ -256,6 +272,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_server_port", server_port);
         register(ctx, c"__velox_connect", connect);
         register(ctx, c"__velox_connect_tls", connect_tls);
+        register(ctx, c"__velox_socket_alpn", socket_alpn);
         register(ctx, c"__velox_socket_write", socket_write);
         register(ctx, c"__velox_socket_write_bytes", socket_write_bytes);
         register(ctx, c"__velox_socket_end", socket_end);
@@ -680,6 +697,12 @@ unsafe fn start_connect(ctx: JSContextRef, args: &[JSValueRef], tls: bool) -> JS
         .get(1)
         .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
         .unwrap_or(0.0) as u16;
+    // args[2] (optional): non-zero requests ALPN h2/http1.1 on the handshake.
+    let alpn = args
+        .get(2)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0)
+        != 0.0;
 
     let token = next_token();
     CONNECTS.with(|c| {
@@ -689,6 +712,7 @@ unsafe fn start_connect(ctx: JSContextRef, args: &[JSValueRef], tls: bool) -> JS
                 write_buf: Vec::new(),
                 ended: false,
                 tls_host: tls.then(|| host.clone()),
+                alpn,
             },
         )
     });
@@ -744,7 +768,7 @@ pub fn on_dns_ready(ctx: JSContextRef) {
         };
         // Build the TLS client connection up front (if requested).
         let tls = match &pending.tls_host {
-            Some(host) => match make_tls(host) {
+            Some(host) => match make_tls(host, pending.alpn) {
                 Ok(conn) => Some(conn),
                 Err(message) => {
                     fail_connect(ctx, token, &message);
@@ -788,6 +812,31 @@ fn fail_connect(ctx: JSContextRef, token: Token, message: &str) {
         call_named(ctx, c"__velox_on_close", &args);
     }
     end_io();
+}
+
+/// `__velox_socket_alpn(socketId)` → the negotiated ALPN protocol (e.g. "h2"),
+/// or "" if none / not a TLS connection. Valid after the connection is ready
+/// (velox emits `on_connect` only after the TLS handshake completes).
+unsafe extern "C-unwind" fn socket_alpn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let token = socket_token(ctx, args.first());
+    let proto = CONNS.with(|c| {
+        c.borrow()
+            .get(&token)
+            .and_then(|conn| conn.tls.as_ref())
+            .and_then(|tls| {
+                tls.alpn_protocol()
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+            })
+    });
+    unsafe { js_string(ctx, &proto.unwrap_or_default()) }
 }
 
 /// `__velox_socket_write(socketId, latin1)` — queue bytes and try to flush.

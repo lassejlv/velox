@@ -207,6 +207,17 @@ Socket.prototype.address = function () {
   return { port: this.localPort, address: this.localAddress, family: 'IPv4' };
 };
 
+// TLS ALPN: the negotiated protocol (e.g. 'h2'), or null. Meaningful once the
+// socket has connected (the TLS handshake completes before 'connect' fires).
+Object.defineProperty(Socket.prototype, 'alpnProtocol', {
+  configurable: true,
+  get: function () {
+    if (this._socketId == null || typeof __velox_socket_alpn !== 'function') return false;
+    var p = __velox_socket_alpn(this._socketId);
+    return p ? p : false;
+  },
+});
+
 // Minimal pipe(): forward our 'data'/'end' into a writable destination.
 Socket.prototype.pipe = function (dest, opts) {
   var self = this;
@@ -230,6 +241,9 @@ Socket.prototype.connect = function (port, host, connectListener) {
     host = opts.host;
     port = opts.port;
     if (opts.tls) this._useTls = true;
+    // ALPN: request h2/http1.1 negotiation when the caller lists 'h2' (used by
+    // http2.connect over https). socket.alpnProtocol reports the result.
+    if (opts.ALPNProtocols && opts.ALPNProtocols.indexOf && opts.ALPNProtocols.indexOf('h2') !== -1) this._alpn = true;
   } else if (typeof port === 'string' && !/^\d+$/.test(port)) {
     // connect(path) — a non-numeric string is a unix socket path.
     throw new Error('unix domain sockets are not supported');
@@ -252,7 +266,7 @@ Socket.prototype.connect = function (port, host, connectListener) {
   // The host returns a socketId synchronously and connects asynchronously,
   // buffering any writes we issue before the connection is established.
   this._socketId = this._useTls
-    ? __velox_connect_tls(host, port)
+    ? __velox_connect_tls(host, port, this._alpn ? 1 : 0)
     : __velox_connect(host, port);
   sockets.set(this._socketId, this);
   return this;

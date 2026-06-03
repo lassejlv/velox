@@ -467,24 +467,36 @@ function createSecureServer() {
   throw new Error('http2.createSecureServer (h2 over TLS/ALPN) is not implemented in velox; use createServer for h2c');
 }
 
-// Client session over a fresh TCP connection (h2c).
+// Client session over a fresh TCP connection — h2c (http:) or h2 over TLS with
+// ALPN (https:). For TLS, the connection preface is buffered until the handshake
+// completes (velox flushes pre-connect writes after on_connect), so it lands as
+// the first application data after ALPN negotiates 'h2'.
 function connect(authority, options, listener) {
   if (typeof options === 'function') { listener = options; options = {}; }
   options = options || {};
   var url = typeof authority === 'string' ? new URL(authority) : authority;
-  if (url.protocol === 'https:') throw new Error('http2.connect over https (ALPN) is not implemented in velox; use http:// for h2c');
-  var port = url.port ? Number(url.port) : 80;
+  var isHttps = url.protocol === 'https:';
+  var scheme = isHttps ? 'https' : 'http';
+  var port = url.port ? Number(url.port) : (isHttps ? 443 : 80);
   var host = url.hostname || 'localhost';
-  var socket = net.connect(port, host);
+  var socket = isHttps
+    ? net.connect({ host: host, port: port, tls: true, ALPNProtocols: ['h2'] })
+    : net.connect(port, host);
   var session = new Http2Session(socket, false);
   session._authority = url.host || (host + (url.port ? ':' + url.port : ''));
-  session.socket.on('connect', function () { session.emit('connect', session, socket); });
+  session.socket.on('connect', function () {
+    if (isHttps && socket.alpnProtocol !== 'h2') {
+      session.destroy(new Error('HTTP/2 ALPN negotiation failed (server offered ' + (socket.alpnProtocol || 'none') + ')'));
+      return;
+    }
+    session.emit('connect', session, socket);
+  });
   if (listener) session.once('connect', listener);
   var origRequest = session.request;
   session.request = function (headers, opts) {
     headers = Object.assign({}, headers);
     if (headers[':authority'] === undefined && headers.host === undefined) headers[':authority'] = session._authority;
-    if (headers[':scheme'] === undefined) headers[':scheme'] = 'http';
+    if (headers[':scheme'] === undefined) headers[':scheme'] = scheme;
     if (headers[':method'] === undefined) headers[':method'] = 'GET';
     if (headers[':path'] === undefined) headers[':path'] = '/';
     return origRequest.call(session, headers, opts);
