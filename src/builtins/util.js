@@ -879,6 +879,30 @@ function styleText(format, text) {
   return open + text + close;
 }
 
+// util.parseEnv(content) — parse a .env-format string into an object (Node
+// 20.12+). KEY=VALUE per line, # comments, optional single/double quotes (with
+// \n expansion inside double quotes), `export ` prefix tolerated.
+function parseEnv(content) {
+  var out = {};
+  if (content == null) return out;
+  String(content).split(/\r?\n/).forEach(function (line) {
+    var m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!m) return;
+    var v = m[2];
+    if (v.length >= 2 && v[0] === '"' && v[v.length - 1] === '"') {
+      v = v.slice(1, -1).replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t').replace(/\\"/g, '"');
+    } else if (v.length >= 2 && v[0] === "'" && v[v.length - 1] === "'") {
+      v = v.slice(1, -1);
+    } else {
+      var h = v.indexOf(' #');
+      if (h !== -1) v = v.slice(0, h);
+      v = v.trim();
+    }
+    out[m[1]] = v;
+  });
+  return out;
+}
+
 // util.aborted(signal[, resource]) — a promise that resolves when `signal`
 // aborts (Node 19+). The `resource` arg is accepted for API parity.
 function aborted(signal, resource) {
@@ -1069,6 +1093,7 @@ module.exports = {
   types,
   isDeepStrictEqual,
   parseArgs,
+  parseEnv,
   stripVTControlCharacters,
   styleText,
   aborted,

@@ -31,28 +31,52 @@ function deliver(entry) {
   });
 }
 
-// Augment the global performance with mark()/measure() if absent.
-if (performance && typeof performance.mark !== 'function') {
+// Install the real mark()/measure() on the global performance. The web_globals
+// prelude only provides no-op stubs (it has no observer machinery), so requiring
+// node:perf_hooks upgrades them to entries-buffered versions that notify
+// PerformanceObserver — this is the module libraries pull in for that to work.
+if (performance) {
   var marks = {};
+  var entries = [];
   performance.mark = function (name, options) {
     var entry = { name: String(name), entryType: 'mark', startTime: performance.now(), duration: 0, detail: options && options.detail };
     marks[entry.name] = entry;
+    entries.push(entry);
     deliver(entry);
     return entry;
   };
   performance.measure = function (name, startOrOptions, endMark) {
     var start = 0, end = performance.now();
+    if (startOrOptions && typeof startOrOptions === 'object') {
+      // measure(name, { start, end, duration, detail })
+      var o = startOrOptions;
+      if (typeof o.start === 'string' && marks[o.start]) start = marks[o.start].startTime;
+      else if (typeof o.start === 'number') start = o.start;
+      if (typeof o.end === 'string' && marks[o.end]) end = marks[o.end].startTime;
+      else if (typeof o.end === 'number') end = o.end;
+      else if (typeof o.duration === 'number') end = start + o.duration;
+      var mentry = { name: String(name), entryType: 'measure', startTime: start, duration: end - start, detail: o.detail };
+      entries.push(mentry);
+      deliver(mentry);
+      return mentry;
+    }
     if (typeof startOrOptions === 'string' && marks[startOrOptions]) start = marks[startOrOptions].startTime;
     if (typeof endMark === 'string' && marks[endMark]) end = marks[endMark].startTime;
     var entry = { name: String(name), entryType: 'measure', startTime: start, duration: end - start };
+    entries.push(entry);
     deliver(entry);
     return entry;
   };
-  performance.clearMarks = function (name) { if (name) delete marks[name]; else marks = {}; };
-  performance.clearMeasures = function () {};
-  performance.getEntriesByName = function () { return []; };
-  performance.getEntriesByType = function () { return []; };
-  performance.getEntries = function () { return []; };
+  performance.clearMarks = function (name) {
+    if (name) { delete marks[name]; entries = entries.filter(function (e) { return !(e.entryType === 'mark' && e.name === name); }); }
+    else { marks = {}; entries = entries.filter(function (e) { return e.entryType !== 'mark'; }); }
+  };
+  performance.clearMeasures = function (name) {
+    entries = entries.filter(function (e) { return e.entryType !== 'measure' || (name && e.name !== name); });
+  };
+  performance.getEntries = function () { return entries.slice(); };
+  performance.getEntriesByName = function (n, type) { return entries.filter(function (e) { return e.name === n && (!type || e.entryType === type); }); };
+  performance.getEntriesByType = function (t) { return entries.filter(function (e) { return e.entryType === t; }); };
 }
 
 // performance.timeOrigin — fall back if the global lacks it.

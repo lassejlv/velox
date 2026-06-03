@@ -13,6 +13,18 @@
   var g = globalThis;
 
   // ---------------------------------------------------------------------------
+  // Symbol.dispose / Symbol.asyncDispose — the explicit-resource-management
+  // well-known symbols (TC39 `using`/`await using`). Some JSC builds lack them;
+  // oxc lowers `using` to `[Symbol.dispose]()` calls, so they must exist.
+  // ---------------------------------------------------------------------------
+  if (!Symbol.dispose) {
+    try { Object.defineProperty(Symbol, "dispose", { value: Symbol("Symbol.dispose"), configurable: false, writable: false }); } catch (e) {}
+  }
+  if (!Symbol.asyncDispose) {
+    try { Object.defineProperty(Symbol, "asyncDispose", { value: Symbol("Symbol.asyncDispose"), configurable: false, writable: false }); } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------------------
   // Timeout/Timer handles — wrap the native numeric setTimeout/setInterval so
   // they return a Node-style object with .ref()/.unref()/.hasRef()/.refresh(),
   // while clearTimeout/clearInterval still accept either the handle or a raw id.
@@ -701,6 +713,17 @@
 
         // Cycle / shared-reference guard.
         if (seen.has(val)) return seen.get(val);
+
+        // Error — clone name/message/stack/cause (per the HTML clone steps).
+        if (val instanceof Error) {
+          var Ctor = g[val.name] && g[val.name].prototype instanceof Error ? g[val.name] : Error;
+          var errClone = new Ctor(val.message);
+          if (val.name !== errClone.name) try { errClone.name = val.name; } catch (e) {}
+          if ("stack" in val) try { errClone.stack = val.stack; } catch (e) {}
+          if ("cause" in val) try { errClone.cause = clone(val.cause); } catch (e) {}
+          seen.set(val, errClone);
+          return errClone;
+        }
 
         // Date.
         if (val instanceof Date) {
