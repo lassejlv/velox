@@ -414,6 +414,14 @@ pub const GLOBALS_PRELUDE: &str = r#"
   };
   process.hasUncaughtExceptionCaptureCallback = function () { return process._uncaughtExceptionCapture != null; };
 
+  // Source-maps toggle (velox always source-maps stack traces natively, so the
+  // setter is effectively advisory; the flag is tracked for the getter).
+  process._sourceMapsEnabled = true;
+  process.setSourceMapsEnabled = function (v) { process._sourceMapsEnabled = !!v; };
+  process.sourceMapsEnabled = true;
+  process.getSourceMapsSupport = function () { return { enabled: process._sourceMapsEnabled, nodeModules: false, generatedCode: false }; };
+  process.setSourceMapsSupport = function (opts) { process._sourceMapsEnabled = !!(opts && opts.enabled); };
+
   // loadEnvFile([path]) parses a .env file and assigns to process.env, mirroring
   // Node 20.12+. Minimal dotenv: KEY=VALUE per line, # comments, optional quotes.
   process.loadEnvFile = function (path) {

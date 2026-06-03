@@ -30,9 +30,21 @@ Hash.prototype.copy = function () {
   return h;
 };
 
+// Extract raw key bytes from a secret KeyObject (createSecretKey), so callers
+// that wrap a secret in a KeyObject — e.g. jsonwebtoken/jws — key correctly.
+// Strings/Buffers pass through unchanged. Without this, toLatin1(keyObject)
+// stringified to a CONSTANT ("[object Object]"), making HMAC ignore the key.
+function keyMaterial(key) {
+  if (key && typeof key === "object" && key.type === "secret") {
+    if (Buffer.isBuffer(key._secret)) return key._secret;
+    if (typeof key.export === "function") { try { return key.export(); } catch (e) {} }
+  }
+  return key;
+}
+
 function Hmac(algo, key) {
   this._algo = String(algo).toLowerCase();
-  this._key = toLatin1(key);
+  this._key = toLatin1(keyMaterial(key));
   this._parts = [];
 }
 Hmac.prototype.update = function (data, enc) {
@@ -240,7 +252,7 @@ function scrypt(password, salt, keylen, options, cb) {
 
 function Cipheriv(algo, key, iv, op) {
   this._algo = String(algo).toLowerCase();
-  this._key = toLatin1(key);
+  this._key = toLatin1(keyMaterial(key));
   this._iv = iv == null ? "" : toLatin1(iv);
   this._op = op;
   this._chunks = [];
