@@ -40,6 +40,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ),
     ("os", include_str!("builtins/os.js")),
     ("domain", include_str!("builtins/domain.js")),
+    ("repl", include_str!("builtins/repl.js")),
     ("events", include_str!("builtins/events.js")),
     ("fs", include_str!("builtins/fs.js")),
     ("buffer", include_str!("builtins/buffer_module.js")),
