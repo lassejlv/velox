@@ -449,6 +449,72 @@ function createSecretKey(key, enc) {
   return ko;
 }
 
+// generateKeySync(type, { length }) — a random symmetric secret KeyObject.
+// `length` is in BITS for 'hmac' (any byte-multiple) and 'aes' (128/192/256).
+function generateKeySync(type, options) {
+  var t = String(type).toLowerCase();
+  if (t !== "hmac" && t !== "aes") throw new Error("Unsupported key type: " + type);
+  var bits = options && options.length;
+  if (typeof bits !== "number") throw new TypeError("options.length must be a number of bits");
+  if (t === "aes" && bits !== 128 && bits !== 192 && bits !== 256) throw new RangeError("AES key length must be 128, 192, or 256 bits");
+  return createSecretKey(randomBytes(Math.ceil(bits / 8)));
+}
+function generateKey(type, options, callback) {
+  if (typeof options === "function") { callback = options; options = {}; }
+  try { var key = generateKeySync(type, options); process.nextTick(function () { callback(null, key); }); }
+  catch (e) { process.nextTick(function () { callback(e); }); }
+}
+
+// --- classic finite-field Diffie-Hellman (BigInt modexp) -------------------
+function dhBufToBig(buf) { var h = Buffer.isBuffer(buf) ? buf.toString("hex") : Buffer.from(buf).toString("hex"); return h === "" ? 0n : BigInt("0x" + h); }
+function dhBigToBuf(n) { var h = n.toString(16); if (h.length % 2) h = "0" + h; return Buffer.from(h, "hex"); }
+function dhModPow(base, exp, mod) { var r = 1n; base %= mod; while (exp > 0n) { if (exp & 1n) r = (r * base) % mod; exp >>= 1n; base = (base * base) % mod; } return r; }
+function dhEncode(buf, enc) { return enc && enc !== "buffer" ? buf.toString(enc) : buf; }
+function dhToBig(v, enc) { return dhBufToBig(typeof v === "string" ? Buffer.from(v, enc || "utf8") : v); }
+
+// RFC 3526 MODP group 14 (2048-bit), generator 2 — for getDiffieHellman('modp14').
+var MODP14 = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF";
+var MODP_GROUPS = { modp14: { p: MODP14, g: 2 } };
+
+function DiffieHellman(prime, generator, genEnc, primeEnc) {
+  this._prime = typeof prime === "bigint" ? prime : dhToBig(prime, primeEnc);
+  this._gen = generator == null ? 2n : typeof generator === "number" ? BigInt(generator) : typeof generator === "bigint" ? generator : dhToBig(generator, genEnc);
+  this._priv = null;
+  this._pub = null;
+}
+DiffieHellman.prototype.generateKeys = function (enc) {
+  var bytes = dhBigToBuf(this._prime).length;
+  this._priv = (dhBufToBig(randomBytes(bytes)) % (this._prime - 2n)) + 1n;
+  this._pub = dhModPow(this._gen, this._priv, this._prime);
+  return dhEncode(dhBigToBuf(this._pub), enc);
+};
+DiffieHellman.prototype.computeSecret = function (other, inEnc, outEnc) {
+  var o = dhToBig(other, inEnc);
+  return dhEncode(dhBigToBuf(dhModPow(o, this._priv, this._prime)), outEnc);
+};
+DiffieHellman.prototype.getPrime = function (enc) { return dhEncode(dhBigToBuf(this._prime), enc); };
+DiffieHellman.prototype.getGenerator = function (enc) { return dhEncode(dhBigToBuf(this._gen), enc); };
+DiffieHellman.prototype.getPublicKey = function (enc) { return dhEncode(dhBigToBuf(this._pub), enc); };
+DiffieHellman.prototype.getPrivateKey = function (enc) { return dhEncode(dhBigToBuf(this._priv), enc); };
+DiffieHellman.prototype.setPublicKey = function (k, enc) { this._pub = dhToBig(k, enc); return this; };
+DiffieHellman.prototype.setPrivateKey = function (k, enc) { this._priv = dhToBig(k, enc); return this; };
+
+function createDiffieHellman(sizeOrPrime, primeEnc, generator, genEnc) {
+  if (typeof sizeOrPrime === "number") {
+    // createDiffieHellman(primeLength[, generator]) — generate a safe prime.
+    var gen = typeof primeEnc === "number" ? primeEnc : 2;
+    return new DiffieHellman(generatePrimeSync(sizeOrPrime, { safe: true, bigint: true }), gen);
+  }
+  // createDiffieHellman(prime[, primeEncoding][, generator][, generatorEncoding])
+  var pEnc = typeof primeEnc === "string" && primeEnc !== "buffer" ? primeEnc : undefined;
+  return new DiffieHellman(sizeOrPrime, generator, genEnc, pEnc);
+}
+function getDiffieHellman(groupName) {
+  var grp = MODP_GROUPS[groupName];
+  if (!grp) throw new Error("Unknown DH group: " + groupName);
+  return new DiffieHellman(Buffer.from(grp.p, "hex"), grp.g);
+}
+
 // --- ECDH key agreement (P-256) --------------------------------------------
 
 function normalizeCurve(curve) {
@@ -637,6 +703,11 @@ module.exports = {
   createPublicKey: createPublicKey,
   createPrivateKey: createPrivateKey,
   createSecretKey: createSecretKey,
+  generateKey: generateKey,
+  generateKeySync: generateKeySync,
+  createDiffieHellman: createDiffieHellman,
+  getDiffieHellman: getDiffieHellman,
+  DiffieHellman: DiffieHellman,
   KeyObject: KeyObject,
   Cipheriv: Cipheriv,
   Decipheriv: Cipheriv,
