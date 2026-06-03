@@ -54,15 +54,76 @@ class AsyncLocalStorage {
   static snapshot() { var frame = currentFrame; return function (cb) { var a = Array.prototype.slice.call(arguments, 1); return withFrame(frame, cb, undefined, a); }; }
 }
 
+// --- createHook: init/destroy events for explicit AsyncResources -----------
+// velox can't observe JSC-internal resources (promises, timers at the engine
+// level), but user-created AsyncResources — the API surface packages actually
+// hook — fire init at construction and destroy via emitDestroy().
+var activeHooks = [];
+
+function emitInit(asyncId, type, triggerAsyncId, resource) {
+  for (var i = 0; i < activeHooks.length; i++) {
+    var cb = activeHooks[i].init;
+    if (typeof cb === 'function') {
+      try { cb.call(activeHooks[i], asyncId, type, triggerAsyncId, resource); } catch (e) {}
+    }
+  }
+}
+
+// Destroys are queued and drained at lower priority than nextTick/microtasks
+// (Node fires them from a later loop turn). A chained-microtask fallback also
+// drains them after sustained microtask-only execution (long await chains),
+// which is how Node behaves once a lot of queued items build up.
+var destroyQueue = [];
+var destroyScheduled = false;
+function drainDestroys() {
+  destroyScheduled = false;
+  var q = destroyQueue;
+  destroyQueue = [];
+  for (var i = 0; i < q.length; i++) {
+    for (var j = 0; j < activeHooks.length; j++) {
+      var cb = activeHooks[j].destroy;
+      if (typeof cb === 'function') {
+        try { cb.call(activeHooks[j], q[i]); } catch (e) {}
+      }
+    }
+  }
+}
+function scheduleDestroyDrain() {
+  if (destroyScheduled) return;
+  destroyScheduled = true;
+  if (typeof setImmediate === 'function') setImmediate(function () { if (destroyScheduled) drainDestroys(); });
+  else setTimeout(function () { if (destroyScheduled) drainDestroys(); }, 0);
+  // Microtask-chain fallback: tick along the microtask queue and drain once
+  // enough turns have passed without reaching a macrotask boundary.
+  var ticks = 0;
+  function tickDrain() {
+    if (!destroyScheduled) return;
+    if (++ticks >= 8192) { drainDestroys(); return; }
+    queueMicrotask(tickDrain);
+  }
+  queueMicrotask(tickDrain);
+}
+
 // AsyncResource — runInAsyncScope replays the frame captured at construction.
 class AsyncResource {
-  constructor(type, opts) { this.type = type; this._frame = currentFrame; this._asyncId = nextAsyncId++; }
+  constructor(type, opts) {
+    this.type = type;
+    this._frame = currentFrame;
+    this._asyncId = nextAsyncId++;
+    if (activeHooks.length) emitInit(this._asyncId, String(type), 0, this);
+  }
   runInAsyncScope(fn, thisArg) {
     var args = Array.prototype.slice.call(arguments, 2);
     return withFrame(this._frame, fn, thisArg, args);
   }
   bind(fn) { var bound = bindFrame(fn); return bound; }
-  emitDestroy() { return this; }
+  emitDestroy() {
+    if (activeHooks.length) {
+      destroyQueue.push(this._asyncId);
+      scheduleDestroyDrain();
+    }
+    return this;
+  }
   asyncId() { return this._asyncId; }
   triggerAsyncId() { return 0; }
   static bind(fn) { return bindFrame(fn); }
@@ -71,10 +132,25 @@ class AsyncResource {
 function executionAsyncId() { return 0; }
 function triggerAsyncId() { return 0; }
 function executionAsyncResource() { return {}; }
-// createHook is a no-op shim (we don't surface init/before/after/destroy), but
-// the API exists for feature detection.
-function createHook() {
-  var hook = { enable: function () { return hook; }, disable: function () { return hook; } };
+// createHook surfaces init/destroy for explicit AsyncResources (see above).
+// before/after/promiseResolve need engine-level hooks JSC doesn't expose.
+function createHook(callbacks) {
+  callbacks = callbacks || {};
+  var hook = {
+    init: callbacks.init,
+    destroy: callbacks.destroy,
+    before: callbacks.before,
+    after: callbacks.after,
+    enable: function () {
+      if (activeHooks.indexOf(hook) === -1) activeHooks.push(hook);
+      return hook;
+    },
+    disable: function () {
+      var i = activeHooks.indexOf(hook);
+      if (i !== -1) activeHooks.splice(i, 1);
+      return hook;
+    },
+  };
   return hook;
 }
 
