@@ -170,6 +170,16 @@ check("fs async read/write + promisify", async () => {
 check("node:constants", () => { const C = require("node:constants"); if (C.O_CREAT !== 0x200 || C.S_IFREG !== 0x8000 || C.R_OK !== 4) throw new Error("constants"); });
 check("Buffer internal *Slice/*Write methods", () => { const b = Buffer.from("hello world"); if (b.utf8Slice(0, 5) !== "hello") throw new Error("utf8Slice"); if (b.hexSlice(0, 2) !== "6865") throw new Error("hexSlice"); if (b.latin1Slice(6, 11) !== "world") throw new Error("latin1Slice"); const w = Buffer.alloc(5); if (w.utf8Write("abcde", 0, 5) !== 5 || w.toString() !== "abcde") throw new Error("utf8Write"); });
 check("node:util/types subpath", () => { const t = require("node:util/types"); if (typeof t.isUint8Array !== "function" || !t.isUint8Array(new Uint8Array(1)) || t.isUint8Array([])) throw new Error("isUint8Array"); if (!t.isArrayBuffer(new ArrayBuffer(1)) || !t.isDate(new Date())) throw new Error("types"); });
+check("fs.statSync throwIfNoEntry + existsSync + fsync/ftruncate", () => {
+  const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "velox-stat-"));
+  try {
+    if (fs.statSync(path.join(dir, "nope"), { throwIfNoEntry: false }) !== undefined) throw new Error("throwIfNoEntry");
+    if (!fs.existsSync(dir) || fs.existsSync(path.join(dir, "nope"))) throw new Error("existsSync");
+    const f = path.join(dir, "f"); const fd = fs.openSync(f, "w+"); fs.writeSync(fd, "hello"); fs.fsyncSync(fd); fs.ftruncateSync(fd, 2); fs.closeSync(fd);
+    if (fs.readFileSync(f, "utf8") !== "he") throw new Error("ftruncate");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 check("child_process spawn pid + kill", async () => {
   const { spawn } = require("node:child_process");
   const c = spawn("sleep", ["5"]);

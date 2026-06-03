@@ -159,8 +159,16 @@ function appendFileSync(p, data, options) {
 function existsSync(p) {
   try { return __velox_exists(fsPath(p)); } catch (e) { return false; }
 }
-function statSync(p, options) { return new Stats(JSON.parse(__velox_stat(fsPath(p), true)), !!(options && options.bigint)); }
-function lstatSync(p, options) { return new Stats(JSON.parse(__velox_stat(fsPath(p), false)), !!(options && options.bigint)); }
+// throwIfNoEntry:false makes a missing path return undefined instead of throwing.
+function statImpl(p, follow, options) {
+  try { return new Stats(JSON.parse(__velox_stat(fsPath(p), follow)), !!(options && options.bigint)); }
+  catch (e) {
+    if (options && options.throwIfNoEntry === false && e && e.code === 'ENOENT') return undefined;
+    throw e;
+  }
+}
+function statSync(p, options) { return statImpl(p, true, options); }
+function lstatSync(p, options) { return statImpl(p, false, options); }
 function readdirSync(p, options) {
   var names = JSON.parse(__velox_readdir(fsPath(p)));
   if (options && options.withFileTypes) {
