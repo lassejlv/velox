@@ -398,6 +398,12 @@ function ServerResponse(req) {
 }
 inherits(ServerResponse, EventEmitter);
 
+// events.captureRejections integration: a listener on the response rejecting
+// routes here — Node tears the connection down with that error.
+ServerResponse.prototype[Symbol.for('nodejs.rejection')] = function (err) {
+  if (this.socket) this.socket.emit('error', err);
+};
+
 // assignSocket/detachSocket — Node attaches the underlying socket to the
 // response here; HTTP-injection libraries (light-my-request, supertest) build a
 // ServerResponse over a synthetic null socket and call these, then read back
@@ -560,6 +566,22 @@ ServerResponse.prototype.write = function (chunk, encoding, cb) {
     this.socket.write(buf); // raw bytes — no latin1 round-trip
   }
   if (typeof cb === 'function') nextTick(cb);
+  // Backpressure: the reactor buffers writes natively, but `while (res.write())`
+  // loops need an eventual false + a later 'drain' to terminate (Node returns
+  // false past the socket high-water mark). Track bytes per synchronous burst.
+  this._outPending = (this._outPending || 0) + buf.length;
+  if (this._outPending >= 16384) {
+    var self = this;
+    if (!this._drainScheduled) {
+      this._drainScheduled = true;
+      setTimeout(function () {
+        self._drainScheduled = false;
+        self._outPending = 0;
+        if (!self.finished) self.emit('drain');
+      }, 0);
+    }
+    return false;
+  }
   return true;
 };
 
@@ -927,6 +949,7 @@ function ClientRequest(options, cb) {
   this._parser = parser;
   parser.onHeaders = function () {
     self.res = res;
+    res.req = self; // Node's back-reference (handlers use `this.req` on the res)
     self.emit('response', res);
   };
   res.on('end', function () { self._releaseOrClose(res); });
@@ -1093,7 +1116,28 @@ ClientRequest.prototype.write = function (chunk, encoding, cb) {
     this._bodyChunks.push(buf);
   }
   if (typeof cb === 'function') nextTick(cb);
+  // Backpressure: report false past the high-water mark within a synchronous
+  // burst and emit 'drain' on the next tick (see ServerResponse.write).
+  this._outPending = (this._outPending || 0) + buf.length;
+  if (this._outPending >= 16384) {
+    var self = this;
+    if (!this._drainScheduled) {
+      this._drainScheduled = true;
+      setTimeout(function () {
+        self._drainScheduled = false;
+        self._outPending = 0;
+        if (!self.finished && !self.destroyed) self.emit('drain');
+      }, 0);
+    }
+    return false;
+  }
   return true;
+};
+
+// events.captureRejections integration (Node destroys the request with the
+// listener's rejection reason, surfacing it as the request 'error').
+ClientRequest.prototype[Symbol.for('nodejs.rejection')] = function (err) {
+  this.destroy(err);
 };
 
 ClientRequest.prototype.end = function (chunk, encoding, cb) {
@@ -1142,7 +1186,27 @@ ClientRequest.prototype.destroy = function (err) {
   if (err) this.emit('error', err);
   return this;
 };
-ClientRequest.prototype.setTimeout = function (ms, cb) { if (cb) this.once('timeout', cb); return this; };
+ClientRequest.prototype.setTimeout = function (ms, cb) {
+  if (cb) this.once('timeout', cb);
+  var self = this;
+  if (this._timeoutTimer) clearTimeout(this._timeoutTimer);
+  if (ms > 0) {
+    // Fire 'timeout' if no response arrives in time (the listener decides
+    // whether to abort — Node never aborts on its own).
+    this._timeoutTimer = setTimeout(function () {
+      self._timeoutTimer = null;
+      if (!self.res && !self.destroyed && !self.aborted) self.emit('timeout');
+    }, ms);
+    if (this._timeoutTimer && this._timeoutTimer.unref) this._timeoutTimer.unref();
+    function clearIt() {
+      if (self._timeoutTimer) { clearTimeout(self._timeoutTimer); self._timeoutTimer = null; }
+    }
+    this.once('response', clearIt);
+    this.once('close', clearIt);
+    this.once('error', clearIt);
+  }
+  return this;
+};
 ClientRequest.prototype.setNoDelay = function () { return this; };
 ClientRequest.prototype.setSocketKeepAlive = function () { return this; };
 ClientRequest.prototype.flushHeaders = function () {

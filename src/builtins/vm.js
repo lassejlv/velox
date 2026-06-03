@@ -67,9 +67,45 @@ function runInNewContext(code, sandbox, options) {
   // Fallback: the `with(proxy)` sandbox (isolates host globals; no var write-back).
   return SANDBOX_RUNNER(makeScope(sandbox), String(code));
 }
+// --- dynamic import() inside vm code ----------------------------------------
+// JSC's own loader can't resolve here, so `import(spec)` in vm-compiled code is
+// rewritten to a hook: it calls the script's `importModuleDynamically` when
+// given, and otherwise rejects with Node's ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING.
+var dynImportHooks = { nextId: 1, map: {} };
+Object.defineProperty(globalThis, '__velox_vm_dyn_import', {
+  value: function (id, spec) {
+    var hook = id && dynImportHooks.map[id];
+    if (hook) {
+      return Promise.resolve().then(function () {
+        var ns = hook(String(spec));
+        return ns && ns.namespace ? ns.namespace : ns;
+      });
+    }
+    var e = new TypeError(
+      'A dynamic import callback was not specified.');
+    e.code = 'ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING';
+    return Promise.reject(e);
+  },
+  writable: true, enumerable: false, configurable: true,
+});
+function instrumentDynamicImport(code, options) {
+  code = String(code);
+  if (code.indexOf('import') === -1 || !/import\s*\(/.test(code)) return code;
+  var id = 0;
+  if (options && typeof options.importModuleDynamically === 'function') {
+    id = dynImportHooks.nextId++;
+    dynImportHooks.map[id] = options.importModuleDynamically;
+  }
+  // `import(` not preceded by an identifier char or `.` (so `obj.import()`
+  // and `Ximport(` stay untouched).
+  return code.replace(/([^.\w$]|^)import\s*\(/g, function (m, pre) {
+    return pre + '__velox_vm_dyn_import(' + id + ', ';
+  });
+}
+
 function runInThisContext(code, options) {
   var indirectEval = eval;
-  return indirectEval(String(code));
+  return indirectEval(instrumentDynamicImport(code, options));
 }
 function createContext(sandbox) {
   sandbox = sandbox || {};
@@ -90,6 +126,7 @@ function isContext(sandbox) {
 }
 function compileFunction(code, params, options) {
   params = params || [];
+  code = instrumentDynamicImport(code, options);
   var ctx = options && options.parsingContext;
   if (ctx) {
     // Compile with the contextified sandbox in scope.
@@ -107,10 +144,11 @@ function measureMemory() {
 
 function Script(code, options) {
   this.code = String(code);
+  this._options = options;
 }
 Script.prototype.runInNewContext = function (sandbox, o) { return runInNewContext(this.code, sandbox, o); };
 Script.prototype.runInContext = function (ctx, o) { return runInContext(this.code, ctx, o); };
-Script.prototype.runInThisContext = function (o) { return runInThisContext(this.code, o); };
+Script.prototype.runInThisContext = function (o) { return runInThisContext(this.code, this._options || o); };
 
 module.exports = {
   runInNewContext: runInNewContext,
