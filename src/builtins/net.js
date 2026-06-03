@@ -96,13 +96,29 @@ Socket.prototype.write = function (data, encoding, cb) {
   }
   var buf = toBytes(data, encoding);
   this.bytesWritten += buf.length;
+  var flushed = true;
   if (this._corked > 0) {
     this._corkBuf.push(buf);
   } else {
-    __velox_socket_write_bytes(this._socketId, buf);
+    // The native reports whether the bytes flushed synchronously; when they
+    // didn't, a `__velox_on_drain` follows once the reactor pushes them out.
+    flushed = __velox_socket_write_bytes(this._socketId, buf) !== false;
   }
-  if (typeof cb === 'function') nextTick(cb);
-  return true;
+  if (flushed) {
+    if (typeof cb === 'function') nextTick(cb);
+    return true;
+  }
+  // Async completion: the callback waits for the drain, and (matching Node)
+  // an async_hooks WRITEWRAP resource tracks the in-flight write when hooks
+  // are active (sync-completed writes never allocate one).
+  if (typeof globalThis.__velox_write_wrap_init === 'function') {
+    try { globalThis.__velox_write_wrap_init(); } catch (e) {}
+  }
+  if (typeof cb === 'function') {
+    (this._pendingWriteCbs = this._pendingWriteCbs || []).push(cb);
+  }
+  this._needDrain = true;
+  return false;
 };
 
 Socket.prototype.end = function (data, encoding, cb) {
@@ -402,6 +418,20 @@ function createServer(options, connectionListener) {
 // ---------------------------------------------------------------------------
 // Native -> JS dispatchers (installed on globalThis; the host calls these).
 // ---------------------------------------------------------------------------
+// A previously-pending write buffer fully flushed: run queued write callbacks
+// and emit 'drain' (real backpressure — pipes paused on a false write resume).
+globalThis.__velox_on_drain = function (socketId) {
+  var socket = sockets.get(socketId);
+  if (!socket) return;
+  var q = socket._pendingWriteCbs;
+  socket._pendingWriteCbs = null;
+  if (q) for (var i = 0; i < q.length; i++) { try { q[i](); } catch (e) {} }
+  if (socket._needDrain) {
+    socket._needDrain = false;
+    socket.emit('drain');
+  }
+};
+
 globalThis.__velox_on_connection = function (serverId, socketId) {
   var server = servers.get(serverId);
   var socket = new Socket({ socketId: socketId, server: server });

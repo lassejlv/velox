@@ -154,6 +154,20 @@ function createHook(callbacks) {
   return hook;
 }
 
+// net.js calls this when a socket write goes asynchronous (bytes queued in the
+// reactor): with hooks active it allocates a WRITEWRAP resource, firing init —
+// and destroy once it drains. Installed here so programs that never touch
+// async_hooks pay nothing.
+Object.defineProperty(globalThis, '__velox_write_wrap_init', {
+  value: function () {
+    if (!activeHooks.length) return null;
+    var res = new AsyncResource('WRITEWRAP');
+    res.emitDestroy();
+    return res;
+  },
+  writable: true, enumerable: false, configurable: true,
+});
+
 // --- one-time global patching of the async primitives ----------------------
 (function patchAsyncPrimitives() {
   var g = globalThis;

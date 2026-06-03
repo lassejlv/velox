@@ -50,6 +50,8 @@ struct Conn {
     closing: bool,
     /// An outbound socket still completing its connect (and TLS handshake).
     connecting: bool,
+    /// A JS write left bytes pending — fire `__velox_on_drain` once they flush.
+    notify_drain: bool,
 }
 
 /// An outbound `net.connect`/`tls.connect` awaiting DNS before its socket opens.
@@ -403,6 +405,7 @@ fn accept_all(ctx: JSContextRef, server_token: Token) {
                             want_write: true,
                             closing: false,
                             connecting: false,
+                            notify_drain: false,
                         },
                     )
                 });
@@ -480,7 +483,32 @@ fn flush_conn(ctx: JSContextRef, token: Token) {
             emit_error(ctx, token, &message);
             close_conn(ctx, token);
         }
-        Flush::Idle | Flush::Pending => {}
+        Flush::Idle | Flush::Pending => {
+            // A JS write previously left bytes pending: once everything has
+            // flushed, tell JS so queued write callbacks / 'drain' fire.
+            // (Read the flag under the borrow, drop it, THEN call into JS.)
+            let drained = CONNS.with(|c| {
+                let mut map = c.borrow_mut();
+                match map.get_mut(&token) {
+                    Some(conn)
+                        if conn.notify_drain
+                            && !conn.connecting
+                            && conn.write_buf.is_empty()
+                            && conn.tls.as_ref().is_none_or(|t| !t.wants_write()) =>
+                    {
+                        conn.notify_drain = false;
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            if drained {
+                unsafe {
+                    let args = [num(ctx, token)];
+                    call_named(ctx, c"__velox_on_drain", &args);
+                }
+            }
+        }
     }
 }
 
@@ -863,6 +891,7 @@ pub fn on_dns_ready(ctx: JSContextRef) {
                             want_write: true,
                             closing: pending.ended,
                             connecting: true,
+                            notify_drain: false,
                         },
                     )
                 });
@@ -922,8 +951,8 @@ unsafe extern "C-unwind" fn socket_write(
         .get(1)
         .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
         .unwrap_or_default();
-    queue_socket_write(ctx, token, data);
-    unsafe { JSValue::new_undefined(ctx) }
+    let drained = queue_socket_write(ctx, token, data);
+    unsafe { JSValue::new_boolean(ctx, drained) }
 }
 
 /// `__velox_socket_write_bytes(socketId, uint8array)` — like `socket_write` but
@@ -942,12 +971,14 @@ unsafe extern "C-unwind" fn socket_write_bytes(
         .get(1)
         .map(|v| unsafe { js_value_to_bytes(ctx, *v) })
         .unwrap_or_default();
-    queue_socket_write(ctx, token, data);
-    unsafe { JSValue::new_undefined(ctx) }
+    let drained = queue_socket_write(ctx, token, data);
+    unsafe { JSValue::new_boolean(ctx, drained) }
 }
 
 /// Buffer `data` for the socket and flush (unless still connecting/resolving).
-fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) {
+/// Returns true when the bytes were fully flushed synchronously; false when
+/// they remain queued (a `__velox_on_drain` will follow once they flush).
+fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) -> bool {
     let state = CONNS.with(|c| {
         c.borrow_mut().get_mut(&token).map(|conn| {
             conn.write_buf.extend_from_slice(&data);
@@ -955,15 +986,44 @@ fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) {
         })
     });
     match state {
-        Some(false) => flush_conn(ctx, token),
-        Some(true) => {}
+        Some(false) => {
+            flush_conn(ctx, token);
+            let drained = CONNS.with(|c| {
+                let mut map = c.borrow_mut();
+                match map.get_mut(&token) {
+                    Some(conn) => {
+                        let empty = conn.write_buf.is_empty()
+                            && conn.tls.as_ref().is_none_or(|t| !t.wants_write());
+                        if !empty {
+                            conn.notify_drain = true;
+                        }
+                        empty
+                    }
+                    // Closed during the flush — nothing left to wait for.
+                    None => true,
+                }
+            });
+            return drained;
+        }
+        Some(true) => {
+            // Still connecting: queued until the handshake completes.
+            CONNS.with(|c| {
+                if let Some(conn) = c.borrow_mut().get_mut(&token) {
+                    conn.notify_drain = true;
+                }
+            });
+            return false;
+        }
         None => {
             // Still resolving DNS: hold the bytes until the socket opens.
+            // Report drained — completion isn't trackable until the Conn
+            // exists, and these early writes flush on connect.
             CONNECTS.with(|c| {
                 if let Some(pending) = c.borrow_mut().get_mut(&token) {
                     pending.write_buf.extend_from_slice(&data);
                 }
             });
+            true
         }
     }
 }

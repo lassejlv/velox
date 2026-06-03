@@ -25,6 +25,7 @@ const HOOKS_HIDE_PRELUDE: &str = r#"
     '__velox_main_module', '__velox_served', '__velox_require_result',
     '__velox_on_connection', '__velox_on_connect', '__velox_on_data',
     '__velox_on_end', '__velox_on_close', '__velox_on_error', '__velox_on_udp',
+    '__velox_on_drain', '__velox_write_wrap_init',
     '__velox_exec_done', '__velox_fs_done', '__velox_stdin_data',
     '__velox_stdin_end', '__velox_worker_dispatch', '__velox_parent_dispatch',
     '__velox_worker_data_json', '__velox_is_worker',
