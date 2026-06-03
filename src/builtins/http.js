@@ -132,7 +132,17 @@ function RequestParser(req, isResponse) {
   this.readUntilClose = false; // response with no framing — body ends at EOF
   this.done = false;
   this.onHeaders = null;     // set by Server: fired once when headers parsed
+  this.onError = null;       // set by Server: fired on a request parse error
+  this.errored = false;
 }
+
+RequestParser.prototype._fail = function (code, message) {
+  this.errored = true;
+  this.done = true;
+  var err = new Error('Parse Error: ' + message);
+  err.code = code;
+  if (this.onError) this.onError(err);
+};
 
 RequestParser.prototype.push = function (latin1Chunk) {
   if (this.done) return;
@@ -166,6 +176,7 @@ RequestParser.prototype._run = function () {
     var headerBlock = this.buffer.slice(0, idx);
     this.buffer = this.buffer.slice(idx + 4); // rest is (start of) the body
     this._parseHead(headerBlock);
+    if (this.errored) return;
     // Fire 'request' (onHeaders) BEFORE any body 'data'/'end' so the listener
     // is attached in time. This matters most for body-less requests, whose
     // 'end' would otherwise fire before the handler subscribes.
@@ -207,6 +218,12 @@ RequestParser.prototype._parseHead = function (block) {
     // "METHOD SP URL SP HTTP/x.y"
     var firstSp = firstLine.indexOf(' ');
     var lastSp = firstLine.lastIndexOf(' ');
+    // Strict request-line validation (llhttp rejects unknown methods).
+    var methodTok = firstSp === -1 ? firstLine : firstLine.slice(0, firstSp);
+    if (firstSp === -1 || METHODS.indexOf(methodTok) === -1) {
+      this._fail('HPE_INVALID_METHOD', 'Invalid method encountered');
+      return;
+    }
     req.method = firstLine.slice(0, firstSp);
     req.url = firstLine.slice(firstSp + 1, lastSp);
     var httpVersion = firstLine.slice(lastSp + 1); // e.g. "HTTP/1.1"
@@ -231,8 +248,22 @@ RequestParser.prototype._parseHead = function (block) {
       continue;
     }
     if (pendingName !== null) { addHeaderLine(req, pendingName, pendingValue); }
+    // Strictness for requests (llhttp parity, closes request smuggling):
+    // a bare CR or LF inside a header line — `split('\r\n')` only removes
+    // proper CRLF pairs, so any leftover is a stray terminator — and a line
+    // without a colon are hard parse errors.
+    if (!this.isResponse && (line.indexOf('\r') !== -1 || line.indexOf('\n') !== -1)) {
+      this._fail('HPE_INVALID_HEADER_TOKEN', 'Invalid header token');
+      return;
+    }
     var colon = line.indexOf(':');
-    if (colon === -1) { pendingName = null; continue; }
+    if (colon === -1) {
+      if (!this.isResponse) {
+        this._fail('HPE_INVALID_HEADER_TOKEN', 'Invalid header token');
+        return;
+      }
+      pendingName = null; continue;
+    }
     pendingName = line.slice(0, colon).trim();
     pendingValue = line.slice(colon + 1).trim();
   }
@@ -281,9 +312,20 @@ RequestParser.prototype._runChunked = function () {
       if (eol === -1) return; // need the full size line
       var sizeLine = this.buffer.slice(0, eol);
       this.buffer = this.buffer.slice(eol + 2);
+      // Strict size line (llhttp parity): no stray CR/LF, and the size token
+      // itself must be pure hex — anything else is a hard parse error that
+      // could otherwise be abused for request smuggling.
+      if (sizeLine.indexOf('\r') !== -1 || sizeLine.indexOf('\n') !== -1) {
+        this._fail('HPE_INVALID_CHUNK_SIZE', 'Invalid character in chunk size');
+        return;
+      }
       // Strip any chunk extensions after ';'.
       var semi = sizeLine.indexOf(';');
       if (semi !== -1) sizeLine = sizeLine.slice(0, semi);
+      if (!/^[0-9a-fA-F]+$/.test(sizeLine.trim())) {
+        this._fail('HPE_INVALID_CHUNK_SIZE', 'Invalid character in chunk size');
+        return;
+      }
       this.chunkRemaining = parseInt(sizeLine.trim(), 16) || 0;
       if (this.chunkRemaining === 0) {
         this.chunkState = 'TRAILERS';
@@ -300,6 +342,10 @@ RequestParser.prototype._runChunked = function () {
       if (this.chunkRemaining === 0) this.chunkState = 'DATA_CRLF';
     } else if (this.chunkState === 'DATA_CRLF') {
       if (this.buffer.length < 2) return; // wait for trailing CRLF
+      if (this.buffer.slice(0, 2) !== '\r\n') {
+        this._fail('HPE_INVALID_CHUNK_SIZE', 'Chunk data not terminated by CRLF');
+        return;
+      }
       this.buffer = this.buffer.slice(2); // consume "\r\n"
       this.chunkState = 'SIZE';
     } else if (this.chunkState === 'TRAILERS') {
@@ -631,11 +677,47 @@ Server.prototype._onConnection = function (socket) {
   // it is reset and re-targeted at a fresh IncomingMessage for each request.
   var parser = new RequestParser(new IncomingMessage(socket));
 
+  // Node's clientError contract: a request parse error goes to 'clientError'
+  // listeners if any; the default behavior answers 400 and closes the socket.
+  function onParseError(err) {
+    if (self.listenerCount('clientError') > 0) {
+      self.emit('clientError', err, socket);
+      return;
+    }
+    try { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); } catch (e) {}
+  }
+  parser.onError = onParseError;
+
+  // Eagerly reject garbage that follows a completed request (llhttp parses
+  // pipelined bytes immediately; waiting for the response to finish would let
+  // a malformed follow-up request hang the connection forever).
+  function checkPipelinedGarbage() {
+    if (parser.upgraded || parser.errored || !parser.done) return;
+    var b = parser.buffer;
+    var k = 0;
+    while (k < b.length && (b[k] === '\r' || b[k] === '\n')) k++;
+    if (k >= b.length) return; // nothing but blank lines so far
+    var rest = b.slice(k);
+    var sp = rest.indexOf(' ');
+    var token = sp === -1 ? rest : rest.slice(0, sp);
+    var ok = false;
+    for (var m = 0; m < METHODS.length; m++) {
+      if (sp === -1 ? METHODS[m].indexOf(token) === 0 : METHODS[m] === token) { ok = true; break; }
+    }
+    if (!ok) {
+      var err = new Error('Parse Error: Invalid method encountered');
+      err.code = 'HPE_INVALID_METHOD';
+      parser.errored = true;
+      onParseError(err);
+    }
+  }
+
   // Wire the current message's lifecycle. Called for the first request and
   // again after each keep-alive reset.
   function arm() {
     var req = parser.req;
     var res = new ServerResponse(req);
+    parser._curRes = res;
 
     // Fire 'request' once the request line + headers are parsed (Node behavior).
     parser.onHeaders = function () {
@@ -674,12 +756,32 @@ Server.prototype._onConnection = function (socket) {
     if (parser.upgraded) return;
     // socket 'data' is a Buffer (no setEncoding here); feed latin1 to parser.
     parser.push(Buffer.isBuffer(buf) ? buf.toString('latin1') : toLatin1Str(buf));
+    checkPipelinedGarbage();
   });
   socket.on('end', function () {
     // Peer EOF: if the parser never completed (e.g. no body framing), close it.
     if (!parser.done && parser.state !== 'HEADERS') parser._finish();
   });
-  socket.on('error', function (e) { if (parser.req) parser.req.emit('error', e); });
+  socket.on('error', function (e) {
+    // A connection error tears the connection down (Node aborts the socket);
+    // forward to the request only when someone is listening.
+    if (parser.req && parser.req.listenerCount('error') > 0) parser.req.emit('error', e);
+    socket.destroy();
+  });
+  socket.on('close', function () {
+    // Client went away while a response was still being produced → the
+    // request was aborted (Node: 'aborted', then 'error' if anyone listens).
+    var req = parser.req, res = parser._curRes;
+    if (req && res && !res.writableEnded && !req.aborted && !parser.upgraded) {
+      req.aborted = true;
+      req.emit('aborted');
+      if (req.listenerCount('error') > 0) {
+        var err = new Error('aborted');
+        err.code = 'ECONNRESET';
+        req.emit('error', err);
+      }
+    }
+  });
 };
 
 function toLatin1Str(x) {
@@ -845,7 +947,21 @@ function bindClientSocket(socket) {
   socket.on('close', function () {
     socket._veloxClosed = true;
     var req = socket._veloxReq;
-    if (req) { if (req._parser) req._parser.eof(); req.emit('close'); }
+    // Let a read-until-close body finish first — only THEN is an incomplete
+    // response a genuine abort ('aborted' + Node's ECONNRESET 'error' shape,
+    // the latter only when someone listens).
+    if (req && req._parser) req._parser.eof();
+    var res = req && req.res;
+    if (res && !res.complete && !res.aborted) {
+      res.aborted = true;
+      res.emit('aborted');
+      if (res.listenerCount('error') > 0) {
+        var aerr = new Error('aborted');
+        aerr.code = 'ECONNRESET';
+        res.emit('error', aerr);
+      }
+    }
+    if (req) { req.emit('close'); }
   });
   socket.on('error', function (e) { var req = socket._veloxReq; if (req) req.emit('error', e); });
 }
