@@ -906,24 +906,71 @@ function Agent(options) {
   this._free = {}; // key -> [idle sockets] (velox's internal keep-alive pool)
 }
 inherits(Agent, EventEmitter);
-Agent.prototype._acquire = function (key) {
-  var list = this._free[key];
+// The keep-alive pool lives in Node's public maps: an in-flight socket sits in
+// `sockets[name]`, an idle reusable one in `freeSockets[name]` (entries vanish
+// when empty, as tooling expects).
+Agent.prototype._acquire = function (name) {
+  var list = this.freeSockets[name];
   while (list && list.length) {
     var s = list.pop();
+    if (!list.length) delete this.freeSockets[name];
     if (s && !s._veloxClosed) return s;
   }
+  if (list && !list.length) delete this.freeSockets[name];
   return null;
 };
-Agent.prototype._release = function (key, socket) {
-  if (socket._veloxClosed) return;
-  var list = this._free[key] || (this._free[key] = []);
-  if (list.length < this.maxFreeSockets) list.push(socket);
-  else if (socket.end) socket.end();
+Agent.prototype._trackSocket = function (name, socket) {
+  (this.sockets[name] = this.sockets[name] || []).push(socket);
+  var self = this;
+  if (!socket._veloxAgentCleanup) {
+    socket._veloxAgentCleanup = true;
+    socket.once('close', function () {
+      self._untrack(self.sockets, name, socket);
+      self._untrack(self.freeSockets, name, socket);
+    });
+  }
+};
+Agent.prototype._untrack = function (map, name, socket) {
+  var list = map[name];
+  if (!list) return;
+  var i = list.indexOf(socket);
+  if (i !== -1) list.splice(i, 1);
+  if (!list.length) delete map[name];
+};
+Agent.prototype._release = function (name, socket) {
+  // Active → free transitions land on the next tick (Node's timing; callers
+  // observe sockets[name] until then).
+  var self = this;
+  nextTick(function () {
+    self._untrack(self.sockets, name, socket);
+    if (socket._veloxClosed) return;
+    var list = self.freeSockets[name] || (self.freeSockets[name] = []);
+    if (self.keepAlive && list.length < self.maxFreeSockets) {
+      list.push(socket);
+      self.emit('free', socket, { host: name.split(':')[0] });
+    } else {
+      if (!list.length) delete self.freeSockets[name];
+      if (socket.end) socket.end();
+    }
+  });
 };
 Agent.prototype.destroy = function () {
-  for (var k in this._free) this._free[k].forEach(function (s) { if (s.end) s.end(); });
-  this._free = {};
+  var self = this;
+  [this.freeSockets, this.sockets].forEach(function (map) {
+    for (var k in map) map[k].slice().forEach(function (s) { if (s.destroy) s.destroy(); });
+  });
+  this.freeSockets = {};
+  this.sockets = {};
 };
+Object.defineProperty(Agent.prototype, 'totalSocketCount', {
+  configurable: true,
+  get: function () {
+    var n = 0;
+    for (var a in this.sockets) n += this.sockets[a].length;
+    for (var b in this.freeSockets) n += this.freeSockets[b].length;
+    return n;
+  },
+});
 // Node's socket-pool name: host:port[:localAddress][:family] — note no
 // protocol prefix and no `path` (velox's internal pool key is separate).
 Agent.prototype.getName = function (o) {
@@ -1031,13 +1078,16 @@ function ClientRequest(options, cb) {
   if (typeof cb === 'function') this.once('response', cb);
 
   var self = this;
-  this._key = (useTls ? 'https' : 'http') + ':' + this._host + ':' + this._port;
   this._agent = (options.agent !== undefined) ? options.agent : globalAgent;
+  this._key = this._agent && this._agent.getName
+    ? this._agent.getName({ host: this._host, port: this._port })
+    : this._host + ':' + this._port;
 
   // Reuse a pooled keep-alive socket if the agent has one; else open a new one
   // (through the caller's `createConnection` factory when provided).
   var socket = (this._agent && this._agent.keepAlive) ? this._agent._acquire(this._key) : null;
   var reused = !!socket;
+  this.reusedSocket = reused;
   if (!socket) {
     if (typeof options.createConnection === 'function') {
       socket = options.createConnection(
@@ -1070,6 +1120,10 @@ function ClientRequest(options, cb) {
   // A fresh socket fires 'connect'; a reused one is already connected (end()
   // flushes immediately via the not-connecting path).
   if (!reused) socket.on('connect', function () { self._onSocketConnect(); });
+
+  // Agent bookkeeping + Node's 'socket' event (delivered async, post-ctor).
+  if (this._agent && this._agent._trackSocket) this._agent._trackSocket(this._key, socket);
+  nextTick(function () { self.emit('socket', socket); });
 
   // AbortSignal: abort the request (AbortError 'error' + destroy) on signal.
   if (options.signal) {
