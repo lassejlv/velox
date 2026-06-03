@@ -170,6 +170,24 @@ check("fs async read/write + promisify", async () => {
 check("node:constants", () => { const C = require("node:constants"); if (C.O_CREAT !== 0x200 || C.S_IFREG !== 0x8000 || C.R_OK !== 4) throw new Error("constants"); });
 check("Buffer internal *Slice/*Write methods", () => { const b = Buffer.from("hello world"); if (b.utf8Slice(0, 5) !== "hello") throw new Error("utf8Slice"); if (b.hexSlice(0, 2) !== "6865") throw new Error("hexSlice"); if (b.latin1Slice(6, 11) !== "world") throw new Error("latin1Slice"); const w = Buffer.alloc(5); if (w.utf8Write("abcde", 0, 5) !== 5 || w.toString() !== "abcde") throw new Error("utf8Write"); });
 check("node:util/types subpath", () => { const t = require("node:util/types"); if (typeof t.isUint8Array !== "function" || !t.isUint8Array(new Uint8Array(1)) || t.isUint8Array([])) throw new Error("isUint8Array"); if (!t.isArrayBuffer(new ArrayBuffer(1)) || !t.isDate(new Date())) throw new Error("types"); });
+check("fs symlink/readlink/link + lstat", () => {
+  const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "velox-sym-"));
+  try {
+    const target = path.join(dir, "t.txt"); fs.writeFileSync(target, "data");
+    const link = path.join(dir, "l"); fs.symlinkSync(target, link);
+    if (fs.readlinkSync(link) !== target) throw new Error("readlink");
+    if (!fs.lstatSync(link).isSymbolicLink()) throw new Error("isSymbolicLink");
+    const hard = path.join(dir, "h"); fs.linkSync(target, hard);
+    if (fs.readFileSync(hard, "utf8") !== "data") throw new Error("hardlink");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+check("fs.statSync bigint", () => { const fs = require("node:fs"); const s = fs.statSync(".", { bigint: true }); if (typeof s.size !== "bigint" || typeof s.mtimeMs !== "bigint") throw new Error("bigint stat"); });
+check("fs.promises.open FileHandle", async () => {
+  const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
+  const f = path.join(os.tmpdir(), "velox-fh-" + process.pid); fs.writeFileSync(f, "fh-data");
+  try { const fh = await fs.promises.open(f, "r"); const { bytesRead, buffer } = await fh.read(Buffer.alloc(7), 0, 7, 0); await fh.close(); if (bytesRead !== 7 || buffer.toString() !== "fh-data") throw new Error("read"); } finally { fs.rmSync(f, { force: true }); }
+});
 check("net socket paused-mode read() via 'readable'", async () => {
   const net = require("node:net");
   await new Promise<void>((resolve, reject) => {

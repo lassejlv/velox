@@ -29,21 +29,39 @@ function encOf(options) {
   return options && options.encoding ? options.encoding : null;
 }
 
-function Stats(o) {
+function Stats(o, bigint) {
   this._type = o._type;
-  this.size = o.size;
-  this.mode = o.mode;
-  this.mtimeMs = o.mtimeMs;
-  this.atimeMs = o.atimeMs;
-  this.ctimeMs = o.ctimeMs;
-  this.birthtimeMs = o.birthtimeMs;
+  // Dates are derived from the millisecond fields before any BigInt coercion.
   this.mtime = new Date(o.mtimeMs);
   this.atime = new Date(o.atimeMs);
   this.ctime = new Date(o.ctimeMs);
   this.birthtime = new Date(o.birthtimeMs);
-  this.blksize = 4096;
-  this.blocks = Math.ceil(o.size / 512);
-  this.dev = 0; this.ino = 0; this.nlink = 1; this.uid = 0; this.gid = 0; this.rdev = 0;
+  if (bigint) {
+    var B = function (n) { return BigInt(Math.floor(n || 0)); };
+    this.size = B(o.size);
+    this.mode = B(o.mode);
+    this.mtimeMs = B(o.mtimeMs);
+    this.atimeMs = B(o.atimeMs);
+    this.ctimeMs = B(o.ctimeMs);
+    this.birthtimeMs = B(o.birthtimeMs);
+    this.mtimeNs = B(o.mtimeMs) * 1000000n;
+    this.atimeNs = B(o.atimeMs) * 1000000n;
+    this.ctimeNs = B(o.ctimeMs) * 1000000n;
+    this.birthtimeNs = B(o.birthtimeMs) * 1000000n;
+    this.blksize = 4096n;
+    this.blocks = BigInt(Math.ceil((o.size || 0) / 512));
+    this.dev = 0n; this.ino = 0n; this.nlink = 1n; this.uid = 0n; this.gid = 0n; this.rdev = 0n;
+  } else {
+    this.size = o.size;
+    this.mode = o.mode;
+    this.mtimeMs = o.mtimeMs;
+    this.atimeMs = o.atimeMs;
+    this.ctimeMs = o.ctimeMs;
+    this.birthtimeMs = o.birthtimeMs;
+    this.blksize = 4096;
+    this.blocks = Math.ceil(o.size / 512);
+    this.dev = 0; this.ino = 0; this.nlink = 1; this.uid = 0; this.gid = 0; this.rdev = 0;
+  }
 }
 Stats.prototype.isFile = function () { return this._type === 'file'; };
 Stats.prototype.isDirectory = function () { return this._type === 'dir'; };
@@ -141,8 +159,8 @@ function appendFileSync(p, data, options) {
 function existsSync(p) {
   try { return __velox_exists(fsPath(p)); } catch (e) { return false; }
 }
-function statSync(p) { return new Stats(JSON.parse(__velox_stat(fsPath(p), true))); }
-function lstatSync(p) { return new Stats(JSON.parse(__velox_stat(fsPath(p), false))); }
+function statSync(p, options) { return new Stats(JSON.parse(__velox_stat(fsPath(p), true)), !!(options && options.bigint)); }
+function lstatSync(p, options) { return new Stats(JSON.parse(__velox_stat(fsPath(p), false)), !!(options && options.bigint)); }
 function readdirSync(p, options) {
   var names = JSON.parse(__velox_readdir(fsPath(p)));
   if (options && options.withFileTypes) {
@@ -164,6 +182,21 @@ function renameSync(a, b) { __velox_rename(fsPath(a), fsPath(b)); }
 function realpathSync(p) { return __velox_realpath(fsPath(p)); }
 function accessSync(p) { if (!__velox_exists(fsPath(p))) { throw globalThis.__velox_fs_error('ENOENT', 'ENOENT: no such file or directory, access \'' + p + '\''); } }
 function copyFileSync(src, dest) { writeFileSync(dest, readFileSync(src)); }
+// symlink: `target` is the link contents and need not exist, so only normalize
+// it when it's a file: URL (a plain relative/absolute string is passed through).
+function symlinkTarget(target) {
+  if (target && typeof target === 'object' && target.protocol === 'file:') return fsPath(target);
+  var s = String(target);
+  if (s.slice(0, 7) === 'file://') return fsPath(target);
+  return s;
+}
+function symlinkSync(target, path, type) { __velox_symlink(symlinkTarget(target), fsPath(path)); }
+function readlinkSync(p, options) {
+  var t = __velox_readlink(fsPath(p));
+  if (options && (options === 'buffer' || options.encoding === 'buffer')) return globalThis.Buffer.from(t, 'utf8');
+  return t;
+}
+function linkSync(existingPath, newPath) { __velox_link(fsPath(existingPath), fsPath(newPath)); }
 function randSuffix() {
   var s = '';
   for (var i = 0; i < 6; i++) s += 'abcdefghijklmnopqrstuvwxyz0123456789'[(Math.random() * 36) | 0];
@@ -374,6 +407,112 @@ function readv(fd, buffers, position, cb) {
   });
 }
 
+// --- FileHandle (fs.promises.open) -----------------------------------------
+// Wraps a synthetic fd from openSync; methods drive the sync fd primitives and
+// resolve on the microtask queue, matching the rest of this shim.
+function FileHandle(fd, path) {
+  this.fd = fd;
+  this._path = path;
+}
+FileHandle.prototype.read = function (buffer, offset, length, position) {
+  var self = this;
+  // Node-21 object form: read({ buffer, offset, length, position })
+  if (buffer && typeof buffer === 'object' && !globalThis.Buffer.isBuffer(buffer) && !(buffer instanceof Uint8Array)) {
+    var o = buffer;
+    buffer = o.buffer || globalThis.Buffer.alloc(16384);
+    offset = o.offset || 0;
+    length = o.length === undefined ? buffer.length - offset : o.length;
+    position = o.position == null ? null : o.position;
+  }
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try {
+        var bytesRead = readSync(self.fd, buffer, offset, length, position == null ? null : position);
+        res({ bytesRead: bytesRead, buffer: buffer });
+      } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.write = function (buffer, offset, length, position) {
+  var self = this;
+  // Node-21 object form: write({ buffer, offset, length, position })
+  if (buffer && typeof buffer === 'object' && !globalThis.Buffer.isBuffer(buffer) && !(buffer instanceof Uint8Array) && typeof buffer !== 'string') {
+    var o = buffer;
+    buffer = o.buffer;
+    offset = o.offset;
+    length = o.length;
+    position = o.position;
+  }
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try {
+        var bytesWritten = writeSync(self.fd, buffer, offset, length, position);
+        res({ bytesWritten: bytesWritten, buffer: buffer });
+      } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.readFile = function (options) {
+  var self = this;
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try { res(readFileSync(self._path, options)); } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.writeFile = function (data, options) {
+  var self = this;
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try { writeFileSync(self._path, data, options); res(); } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.appendFile = function (data, options) {
+  var self = this;
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try { appendFileSync(self._path, data, options); res(); } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.stat = function (options) {
+  var self = this;
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try { res(statSync(self._path, options)); } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.truncate = function (len) {
+  var self = this;
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try { ftruncateSync(self.fd, len); res(); } catch (e) { rej(e); }
+    });
+  });
+};
+FileHandle.prototype.sync = function () { return Promise.resolve(); };
+FileHandle.prototype.datasync = function () { return Promise.resolve(); };
+FileHandle.prototype.chmod = function () { return Promise.resolve(); };
+FileHandle.prototype.chown = function () { return Promise.resolve(); };
+FileHandle.prototype.utimes = function () { return Promise.resolve(); };
+FileHandle.prototype.close = function () {
+  var self = this;
+  return new Promise(function (res) { queueMicrotask(function () { closeSync(self.fd); res(); }); });
+};
+
+function promisesOpen(p, flags, mode) {
+  return new Promise(function (res, rej) {
+    queueMicrotask(function () {
+      try {
+        var fd = openSync(p, flags, mode);
+        res(new FileHandle(fd, fsPath(p)));
+      } catch (e) { rej(e); }
+    });
+  });
+}
+
 // --- read/write streams (sync-backed) --------------------------------------
 
 function createReadStream(p, options) {
@@ -553,12 +692,14 @@ function copyFileAsync(src, dest, mode, cb) {
   fsMutAsync('copyFile', src, fsPath(dest), cb);
 }
 function statAsync(p, options, cb) {
-  if (typeof options === 'function') { cb = options; }
-  fsOpAsync('stat', p, cb, function (t) { return new Stats(JSON.parse(t)); });
+  if (typeof options === 'function') { cb = options; options = undefined; }
+  var bigint = !!(options && options.bigint);
+  fsOpAsync('stat', p, cb, function (t) { return new Stats(JSON.parse(t), bigint); });
 }
 function lstatAsync(p, options, cb) {
-  if (typeof options === 'function') { cb = options; }
-  fsOpAsync('lstat', p, cb, function (t) { return new Stats(JSON.parse(t)); });
+  if (typeof options === 'function') { cb = options; options = undefined; }
+  var bigint = !!(options && options.bigint);
+  fsOpAsync('lstat', p, cb, function (t) { return new Stats(JSON.parse(t), bigint); });
 }
 function readdirAsync(p, options, cb) {
   if (typeof options === 'function') { cb = options; options = undefined; }
@@ -746,6 +887,10 @@ var promises = {
   rename: function (a, b) { return new Promise(function (res, rej) { renameAsync(a, b, function (e) { e ? rej(e) : res(); }); }); },
   copyFile: function (s, d, m) { return new Promise(function (res, rej) { copyFileAsync(s, d, m, function (e) { e ? rej(e) : res(); }); }); },
   realpath: promisify(realpathSync),
+  symlink: function (target, path, type) { return new Promise(function (res, rej) { queueMicrotask(function () { try { symlinkSync(target, path, type); res(); } catch (e) { rej(e); } }); }); },
+  readlink: function (p, o) { return new Promise(function (res, rej) { queueMicrotask(function () { try { res(readlinkSync(p, o)); } catch (e) { rej(e); } }); }); },
+  link: function (existingPath, newPath) { return new Promise(function (res, rej) { queueMicrotask(function () { try { linkSync(existingPath, newPath); res(); } catch (e) { rej(e); } }); }); },
+  open: promisesOpen,
   opendir: function (p, o) { return new Promise(function (res, rej) { opendirAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
   access: promisify(accessSync),
   mkdtemp: promisify(mkdtempSync),
@@ -777,6 +922,9 @@ module.exports = {
   realpathSync: realpathSync,
   accessSync: accessSync,
   copyFileSync: copyFileSync,
+  symlinkSync: symlinkSync,
+  readlinkSync: readlinkSync,
+  linkSync: linkSync,
   mkdtempSync: mkdtempSync,
   mkdtemp: callbackify(mkdtempSync, true),
   openSync: openSync,
@@ -841,7 +989,11 @@ module.exports = {
   realpath: callbackify(realpathSync, true),
   access: callbackify(accessSync, false),
   copyFile: copyFileAsync,
+  symlink: callbackify(symlinkSync, false),
+  readlink: callbackify(readlinkSync, true),
+  link: callbackify(linkSync, false),
   openAsBlob: openAsBlob,
+  FileHandle: FileHandle,
   Stats: Stats,
   Dirent: Dirent,
   constants: constants,

@@ -17,12 +17,16 @@
 // depth-aware formatter (below) that mirrors the native output format.
 function inspect(value, opts) {
   // Node also supports inspect(value, showHidden, depth, colors), but the
-  // object form is what matters for the depth option.
-  if (opts && typeof opts === 'object' && 'depth' in opts) {
-    var depth = opts.depth;
+  // object form is what matters for the depth/maxArrayLength options.
+  if (opts && typeof opts === 'object' && ('depth' in opts || 'maxArrayLength' in opts)) {
+    var depth = 'depth' in opts ? opts.depth : 2;
     // `depth: null` means infinite. Anything else must be a number.
     if (depth !== null && typeof depth !== 'number') depth = 2;
-    return inspectWithDepth(value, depth);
+    var maxArrayLength = 'maxArrayLength' in opts ? opts.maxArrayLength : 100;
+    // `null`/`Infinity` mean no limit. Otherwise must be a non-negative number.
+    if (maxArrayLength === null || maxArrayLength === Infinity) maxArrayLength = null;
+    else if (typeof maxArrayLength !== 'number') maxArrayLength = 100;
+    return inspectWithDepth(value, depth, maxArrayLength);
   }
   return globalThis.__velox_inspect(value);
 }
@@ -37,7 +41,9 @@ inspect.custom = Symbol.for('nodejs.util.inspect.custom');
 // `[Array]`. `maxDepth === null` means never truncate.
 // ---------------------------------------------------------------------------
 
-function inspectWithDepth(value, maxDepth) {
+function inspectWithDepth(value, maxDepth, maxArrayLength) {
+  // Default array truncation limit (Node default is 100). `null` = no limit.
+  if (maxArrayLength === undefined) maxArrayLength = 100;
   function isIdentifier(key) {
     return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key);
   }
@@ -143,8 +149,10 @@ function inspectWithDepth(value, maxDepth) {
   function formatArray(arr, depth, seen) {
     var parts = [];
     var len = arr.length;
+    // Cap the number of indexed elements rendered (Node's maxArrayLength).
+    var limit = (maxArrayLength === null) ? len : Math.min(len, maxArrayLength);
     var emptyRun = 0;
-    for (var i = 0; i < len; i++) {
+    for (var i = 0; i < limit; i++) {
       if (!(i in arr)) { emptyRun++; continue; }
       if (emptyRun > 0) {
         parts.push('<' + emptyRun + ' empty item' + (emptyRun > 1 ? 's' : '') + '>');
@@ -156,6 +164,10 @@ function inspectWithDepth(value, maxDepth) {
     }
     if (emptyRun > 0) {
       parts.push('<' + emptyRun + ' empty item' + (emptyRun > 1 ? 's' : '') + '>');
+    }
+    if (maxArrayLength !== null && len > maxArrayLength) {
+      var remaining = len - maxArrayLength;
+      parts.push('... ' + remaining + ' more item' + (remaining > 1 ? 's' : ''));
     }
     var keys;
     try { keys = Object.keys(arr); } catch (e) { keys = []; }

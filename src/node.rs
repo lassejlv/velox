@@ -483,6 +483,9 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_rm", fs_rm);
         register(ctx, c"__velox_rename", fs_rename);
         register(ctx, c"__velox_realpath", fs_realpath);
+        register(ctx, c"__velox_symlink", fs_symlink);
+        register(ctx, c"__velox_link", fs_link);
+        register(ctx, c"__velox_readlink", fs_readlink);
     }
 }
 
@@ -1196,6 +1199,70 @@ unsafe extern "C-unwind" fn fs_realpath(
     match std::fs::canonicalize(&path) {
         Ok(p) => unsafe { js_string(ctx, &p.to_string_lossy()) },
         Err(e) => unsafe { fs_throw(ctx, exception, &e, &path, "realpath") },
+    }
+}
+
+/// `__velox_symlink(target, path)` → create a symbolic link at `path`.
+unsafe extern "C-unwind" fn fs_symlink(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let target = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let path = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    match std::os::unix::fs::symlink(&target, &path) {
+        Ok(()) => unsafe { JSValue::new_undefined(ctx) },
+        Err(e) => unsafe { fs_throw(ctx, exception, &e, &path, "symlink") },
+    }
+}
+
+/// `__velox_link(existingPath, newPath)` → create a hard link.
+unsafe extern "C-unwind" fn fs_link(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let existing = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let new_path = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    match std::fs::hard_link(&existing, &new_path) {
+        Ok(()) => unsafe { JSValue::new_undefined(ctx) },
+        Err(e) => unsafe { fs_throw(ctx, exception, &e, &existing, "link") },
+    }
+}
+
+/// `__velox_readlink(path)` → the target of a symbolic link.
+unsafe extern "C-unwind" fn fs_readlink(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let path = path_arg(ctx, argc, argv);
+    match std::fs::read_link(&path) {
+        Ok(p) => unsafe { js_string(ctx, &p.to_string_lossy()) },
+        Err(e) => unsafe { fs_throw(ctx, exception, &e, &path, "readlink") },
     }
 }
 
