@@ -44,6 +44,14 @@ check("Response.body stream consumption", async () => {
 });
 check("Request clone", async () => { const req = new Request("https://ex.com", { method: "POST", body: "x" }); const c = req.clone(); if (c.method !== "POST" || await c.text() !== "x") throw new Error("clone"); });
 check("Response.ok ranges", () => { if (!new Response("", { status: 200 }).ok) throw new Error("200"); if (new Response("", { status: 404 }).ok) throw new Error("404"); });
+check("WebAssembly instantiate with imports", async () => {
+  // (module (import "env" "log" (func $log (param i32))) (func (export "run") i32.const 42 call $log))
+  const bytes = new Uint8Array([0,0x61,0x73,0x6d,1,0,0,0, 1,8,2,0x60,1,0x7f,0,0x60,0,0, 2,0x0b,1,3,0x65,0x6e,0x76,3,0x6c,0x6f,0x67,0,0, 3,2,1,1, 7,7,1,3,0x72,0x75,0x6e,0,1, 0x0a,8,1,6,0,0x41,0x2a,0x10,0,0x0b]);
+  let got = -1;
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { log: (x: number) => { got = x; } } });
+  (instance.exports as any).run();
+  if (got !== 42) throw new Error("import callback not invoked: " + got);
+});
 
 // Blob / FormData
 check("Blob", async () => { const b = new Blob(["a", "b"], { type: "text/plain" }); if (b.size !== 2) throw new Error("size"); if (await b.text() !== "ab") throw new Error("text"); });
