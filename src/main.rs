@@ -445,7 +445,53 @@ fn run_source(code: &str, _label: &str) -> ExitCode {
     result
 }
 
+/// The primary subcommand names, used to offer a "did you mean" hint when a
+/// bareword argument is a near-miss typo rather than a real file.
+const COMMANDS: &[&str] = &[
+    "init", "install", "add", "remove", "test", "bench", "build", "outdated",
+    "update", "x", "run", "repl", "help",
+];
+
+/// The closest command within edit distance 2 of `name` (None if nothing close).
+fn closest_command(name: &str) -> Option<&'static str> {
+    COMMANDS
+        .iter()
+        .map(|c| (*c, levenshtein(name, c)))
+        .filter(|(_, d)| *d <= 2)
+        .min_by_key(|(_, d)| *d)
+        .map(|(c, _)| c)
+}
+
+/// Classic Levenshtein edit distance (two-row DP).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
 fn run_file(path: &Path) -> ExitCode {
+    // A bareword that doesn't exist on disk but is a near-miss for a subcommand
+    // (`velox buld`, `velox instal`) is almost certainly a typo, not a file —
+    // suggest the command instead of a cryptic "failed to read".
+    if !path.exists()
+        && let Some(name) = path.to_str()
+        && !name.contains('/')
+        && !name.contains('.')
+        && let Some(suggestion) = closest_command(name)
+    {
+        ui::report_unknown_command(name, suggestion);
+        return ExitCode::FAILURE;
+    }
+
     // Resolve + transpile + bundle the entry and its relative imports into a
     // single script (JSC's evaluator does not accept ESM syntax directly).
     // Cached: a repeat run with unchanged sources skips re-bundling.

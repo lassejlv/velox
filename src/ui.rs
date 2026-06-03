@@ -165,6 +165,24 @@ pub fn report_runtime_error(message: &str) {
     }
 }
 
+/// A bareword that's a near-miss for a subcommand (`velox buld`) — show the
+/// likely intended command rather than a cryptic file-not-found.
+pub fn report_unknown_command(input: &str, suggestion: &str) {
+    eprintln!(
+        "{} no such file or command {}",
+        "✖".if_supports_color(Stdout, |t| t.style(Style::new().red().bold())),
+        format!("`{input}`").if_supports_color(Stdout, |t| t.bold()),
+    );
+    eprintln!(
+        "  did you mean {}?",
+        format!("velox {suggestion}").if_supports_color(Stdout, |t| t.style(Style::new().green().bold())),
+    );
+    eprintln!(
+        "  run {} to see all commands",
+        "velox help".if_supports_color(Stdout, |t| t.cyan()),
+    );
+}
+
 /// Render a module-resolution / bundling failure.
 pub fn report_module_error(message: &str) {
     let mut lines = message.lines();
