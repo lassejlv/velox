@@ -70,6 +70,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("ws", include_str!("builtins/ws.js")),
     ("assert", include_str!("builtins/assert.js")),
     ("querystring", include_str!("builtins/querystring.js")),
+    ("punycode", include_str!("builtins/punycode.js")),
     ("string_decoder", include_str!("builtins/string_decoder.js")),
     ("timers", include_str!("builtins/timers.js")),
     (
