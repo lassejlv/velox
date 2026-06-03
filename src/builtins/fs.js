@@ -259,6 +259,10 @@ function openSync(p, flags, mode) {
   if (flags[0] === 'r' && !exists) {
     throw globalThis.__velox_fs_error('ENOENT', "ENOENT: no such file or directory, open '" + p + "'");
   }
+  // The 'x' flag (wx/ax) requires the file NOT to exist — fail with EEXIST.
+  if (flags.indexOf('x') !== -1 && exists) {
+    throw globalThis.__velox_fs_error('EEXIST', "EEXIST: file already exists, open '" + p + "'");
+  }
   if (flags[0] === 'w' || (flags[0] === 'a' && !exists)) {
     if (flags[0] === 'w' || !exists) __velox_write_file(path, '', false); // create/truncate
   }

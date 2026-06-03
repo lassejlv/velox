@@ -539,7 +539,17 @@ ServerResponse.prototype.end = function (chunk, encoding, cb) {
   } else {
     // Headers already sent via write(); flush the final piece.
     if (buf && buf.length > 0) this.write(buf);
-    if (this._chunked && this.socket) this.socket.write(CHUNK_TERM); // terminating chunk
+    if (this._chunked && this.socket) {
+      if (this._trailers) {
+        // Terminating chunk followed by trailer headers (then the blank line).
+        var tl = '0\r\n';
+        for (var tk in this._trailers) tl += tk + ': ' + this._trailers[tk] + '\r\n';
+        tl += '\r\n';
+        this.socket.write(Buffer.from(tl, 'latin1'));
+      } else {
+        this.socket.write(CHUNK_TERM); // terminating chunk
+      }
+    }
   }
 
   this.finished = true;
@@ -553,6 +563,13 @@ ServerResponse.prototype.end = function (chunk, encoding, cb) {
 };
 
 ServerResponse.prototype.flushHeaders = function () { if (!this._headerSent) this._sendHeaders(null); };
+// addTrailers — trailer headers sent after a chunked body (the response must
+// advertise a `Trailer` header). Stored; emitted by end() on the chunked path.
+ServerResponse.prototype.addTrailers = function (headers) {
+  this._trailers = this._trailers || {};
+  if (Array.isArray(headers)) { for (var i = 0; i < headers.length; i++) this._trailers[headers[i][0]] = headers[i][1]; }
+  else for (var k in headers) this._trailers[k] = headers[k];
+};
 // 1xx informational responses sent ahead of the main response.
 ServerResponse.prototype.writeContinue = function (cb) {
   if (this.socket) this.socket.write('HTTP/1.1 100 Continue\r\n\r\n', 'latin1');

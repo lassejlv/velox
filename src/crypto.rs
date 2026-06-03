@@ -940,6 +940,8 @@ fn digest(algo: &str, data: &[u8], out_len: usize) -> Option<Vec<u8>> {
         "sha256" => Sha256::digest(data).to_vec(),
         "sha384" => Sha384::digest(data).to_vec(),
         "sha512" => Sha512::digest(data).to_vec(),
+        "sha512256" => sha2::Sha512_256::digest(data).to_vec(),
+        "sha512224" => sha2::Sha512_224::digest(data).to_vec(),
         "sha3256" => sha3::Sha3_256::digest(data).to_vec(),
         "sha3384" => sha3::Sha3_384::digest(data).to_vec(),
         "sha3512" => sha3::Sha3_512::digest(data).to_vec(),

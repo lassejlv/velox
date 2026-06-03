@@ -783,7 +783,13 @@ module.exports = {
   createVerify: createVerify,
   Sign: Sign,
   Verify: Verify,
-  constants: {},
+  constants: {
+    RSA_PKCS1_PADDING: 1, RSA_NO_PADDING: 3, RSA_PKCS1_OAEP_PADDING: 4,
+    RSA_X931_PADDING: 5, RSA_PKCS1_PSS_PADDING: 6,
+    RSA_PSS_SALTLEN_DIGEST: -1, RSA_PSS_SALTLEN_MAX_SIGN: -2, RSA_PSS_SALTLEN_AUTO: -2,
+    DH_CHECK_P_NOT_SAFE_PRIME: 2, DH_NOT_SUITABLE_GENERATOR: 8,
+    ENGINE_METHOD_ALL: 65535, defaultCoreCipherList: "", defaultCipherList: "",
+  },
   webcrypto: globalThis.crypto,
   subtle: globalThis.crypto ? globalThis.crypto.subtle : undefined,
 };
