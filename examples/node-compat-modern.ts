@@ -180,6 +180,16 @@ check("process.getBuiltinModule", () => { const fs = (process as any).getBuiltin
 check("Buffer.copyBytesFrom", () => { const u = new Uint16Array([1, 2, 3, 4]); const b = Buffer.copyBytesFrom(u, 1, 2); if (!Buffer.isBuffer(b) || b.length !== 4) throw new Error("cbf"); u[1] = 99; if (b.readUInt16LE(0) !== 2) throw new Error("cbf-not-copied"); });
 check("crypto.generatePrimeSync", () => { const c = require("node:crypto"); const p = c.generatePrimeSync(48, { bigint: true }); if (typeof p !== "bigint" || p.toString(2).length !== 48 || !c.checkPrimeSync(p)) throw new Error("genprime"); const buf = c.generatePrimeSync(32); if (!(buf instanceof ArrayBuffer) || !c.checkPrimeSync(Buffer.from(buf))) throw new Error("genprime-buf"); });
 check("crypto.checkPrimeSync", () => { const c = require("node:crypto"); if (!c.checkPrimeSync(7919n) || !c.checkPrimeSync(2147483647n)) throw new Error("prime"); if (c.checkPrimeSync(91n) || c.checkPrimeSync(561n)) throw new Error("composite (Carmichael)"); });
+check("crypto RSA-OAEP (subtle + publicEncrypt/privateDecrypt)", async () => {
+  const c = require("node:crypto");
+  const keys = c.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const dec = c.privateDecrypt({ key: keys.privateKey, oaepHash: "sha256" }, c.publicEncrypt({ key: keys.publicKey, oaepHash: "sha256" }, Buffer.from("node-oaep")));
+  if (dec.toString() !== "node-oaep") throw new Error("node oaep");
+  const kp: any = await crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
+  const ct = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, kp.publicKey, new TextEncoder().encode("subtle-oaep"));
+  const pt = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, kp.privateKey, ct);
+  if (new TextDecoder().decode(pt) !== "subtle-oaep") throw new Error("subtle oaep");
+});
 check("crypto.getCurves + RSA key-type detection", () => { const c = require("node:crypto"); if (!c.getCurves().includes("P-256")) throw new Error("getCurves"); const { publicKey } = c.generateKeyPairSync("rsa", { modulusLength: 2048 }); if (c.createPublicKey(publicKey).asymmetricKeyType !== "rsa") throw new Error("rsa type"); });
 check("module.SourceMap/findSourceMap", () => { const M = require("node:module"); if (typeof M.SourceMap !== "function" || typeof M.findSourceMap !== "function") throw new Error("sourcemap"); new M.SourceMap({}); });
 check("crypto.generateKeySync/generateKey", async () => { const c = require("node:crypto"); const k = c.generateKeySync("hmac", { length: 256 }); if (k.type !== "secret" || k.export().length !== 32) throw new Error("sync"); if (c.generateKeySync("aes", { length: 128 }).export().length !== 16) throw new Error("aes"); await new Promise<void>((res, rej) => c.generateKey("hmac", { length: 512 }, (e: any, key: any) => e ? rej(e) : key.export().length === 64 ? res() : rej(new Error("async len")))); });

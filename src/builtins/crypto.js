@@ -571,6 +571,28 @@ ECDH.prototype.computeSecret = function (otherPublicKey, inputEncoding, outputEn
 };
 function createECDH(curve) { return new ECDH(curve); }
 
+// publicEncrypt/privateDecrypt — RSA-OAEP (the default padding). `key` may be a
+// PEM string/Buffer/KeyObject, or { key, oaepHash, padding }. Other paddings
+// aren't supported (OAEP is the secure default and what Web Crypto uses).
+function rsaKeyAndHash(key) {
+  var hash = "sha256";
+  if (key && typeof key === "object" && !Buffer.isBuffer(key) && typeof key.export !== "function" && key.key != null) {
+    if (key.oaepHash) hash = String(key.oaepHash).toLowerCase().replace(/-/g, "");
+    return { pem: pemOf(key.key), hash: hash };
+  }
+  return { pem: pemOf(key), hash: hash };
+}
+function publicEncrypt(key, buffer) {
+  var k = rsaKeyAndHash(key);
+  var data = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  return Buffer.from(__velox_rsa_encrypt(k.pem, data.toString("latin1"), k.hash), "latin1");
+}
+function privateDecrypt(key, buffer) {
+  var k = rsaKeyAndHash(key);
+  var data = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  return Buffer.from(__velox_rsa_decrypt(k.pem, data.toString("latin1"), k.hash), "latin1");
+}
+
 function getCiphers() {
   return [
     "aes-128-cbc", "aes-192-cbc", "aes-256-cbc",
@@ -720,6 +742,8 @@ module.exports = {
   Decipheriv: Cipheriv,
   getCiphers: getCiphers,
   getCurves: getCurves,
+  publicEncrypt: publicEncrypt,
+  privateDecrypt: privateDecrypt,
   generateKeyPairSync: generateKeyPairSync,
   generateKeyPair: generateKeyPair,
   sign: sign,

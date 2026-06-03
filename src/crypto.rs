@@ -68,6 +68,8 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_gen_ed25519", gen_ed25519_fn);
         register(ctx, c"__velox_gen_ec", gen_ec_fn);
         register(ctx, c"__velox_gen_rsa", gen_rsa_fn);
+        register(ctx, c"__velox_rsa_encrypt", rsa_encrypt_fn);
+        register(ctx, c"__velox_rsa_decrypt", rsa_decrypt_fn);
         register(ctx, c"__velox_sign_ed25519", sign_ed25519_fn);
         register(ctx, c"__velox_verify_ed25519", verify_ed25519_fn);
         register(ctx, c"__velox_ecdh_generate", ecdh_generate_fn);
@@ -400,6 +402,90 @@ fn gen_rsa(bits: usize) -> Result<(String, String), String> {
         .to_public_key_pem(LineEnding::LF)
         .map_err(|e| e.to_string())?;
     Ok((public_pem, private_pem))
+}
+
+/// `__velox_rsa_encrypt(publicKeyPem, dataLatin1, hash)` → OAEP ciphertext
+/// (latin1). Backs `crypto.publicEncrypt` (OAEP) and Web Crypto RSA-OAEP.
+unsafe extern "C-unwind" fn rsa_encrypt_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let pem = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let data = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
+        .unwrap_or_default();
+    let hash = args
+        .get(2)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_else(|| "sha256".to_string());
+    match rsa_oaep_encrypt(&pem, &data, &hash) {
+        Ok(ct) => unsafe { js_string_latin1(ctx, &ct) },
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+/// `__velox_rsa_decrypt(privateKeyPem, dataLatin1, hash)` → OAEP plaintext.
+unsafe extern "C-unwind" fn rsa_decrypt_fn(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let pem = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let data = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_latin1(ctx, *v) })
+        .unwrap_or_default();
+    let hash = args
+        .get(2)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_else(|| "sha256".to_string());
+    match rsa_oaep_decrypt(&pem, &data, &hash) {
+        Ok(pt) => unsafe { js_string_latin1(ctx, &pt) },
+        Err(e) => unsafe { throw(ctx, exception, &e) },
+    }
+}
+
+// OAEP MGF1/label hash. SHA-256 (the Web Crypto default) / 384 / 512; anything
+// else falls back to SHA-256 (SHA-1 OAEP is legacy and not offered).
+fn oaep_padding(hash: &str) -> rsa::Oaep {
+    match hash.to_lowercase().replace('-', "").as_str() {
+        "sha384" => rsa::Oaep::new::<sha2_oaep::Sha384>(),
+        "sha512" => rsa::Oaep::new::<sha2_oaep::Sha512>(),
+        _ => rsa::Oaep::new::<sha2_oaep::Sha256>(),
+    }
+}
+
+fn rsa_oaep_encrypt(pem: &str, data: &[u8], hash: &str) -> Result<Vec<u8>, String> {
+    use rsa::RsaPublicKey;
+    use rsa::pkcs8::DecodePublicKey;
+    let key = RsaPublicKey::from_public_key_pem(pem).map_err(|e| format!("RSA public key: {e}"))?;
+    let mut rng = rand::thread_rng();
+    key.encrypt(&mut rng, oaep_padding(hash), data)
+        .map_err(|e| format!("RSA-OAEP encrypt: {e}"))
+}
+
+fn rsa_oaep_decrypt(pem: &str, data: &[u8], hash: &str) -> Result<Vec<u8>, String> {
+    use rsa::RsaPrivateKey;
+    use rsa::pkcs8::DecodePrivateKey;
+    let key = RsaPrivateKey::from_pkcs8_pem(pem).map_err(|e| format!("RSA private key: {e}"))?;
+    key.decrypt(oaep_padding(hash), data)
+        .map_err(|e| format!("RSA-OAEP decrypt: {e}"))
 }
 
 fn gen_ec() -> Result<(String, String), String> {

@@ -267,6 +267,7 @@
       }
       if (name === "AES-CBC") { var cc = crypto.createCipheriv(aesName(key) + "-cbc", k, toBuf(algorithm.iv)); return Promise.resolve(toAB(Buffer.concat([cc.update(pt), cc.final()]))); }
       if (name === "AES-CTR") { var ct2 = crypto.createCipheriv(aesName(key) + "-ctr", k, toBuf(algorithm.counter)); return Promise.resolve(toAB(Buffer.concat([ct2.update(pt), ct2.final()]))); }
+      if (name === "RSA-OAEP") return Promise.resolve(toAB(crypto.publicEncrypt({ key: key._m.pem, oaepHash: nodeHash(key.algorithm.hash) }, pt)));
       throw new Error("Unsupported encrypt algorithm " + name);
     } catch (e) { return Promise.reject(e); }
   }
@@ -286,6 +287,7 @@
       }
       if (name === "AES-CBC") { var dc = crypto.createDecipheriv(aesName(key) + "-cbc", k, toBuf(algorithm.iv)); return Promise.resolve(toAB(Buffer.concat([dc.update(in_), dc.final()]))); }
       if (name === "AES-CTR") { var dt = crypto.createDecipheriv(aesName(key) + "-ctr", k, toBuf(algorithm.counter)); return Promise.resolve(toAB(Buffer.concat([dt.update(in_), dt.final()]))); }
+      if (name === "RSA-OAEP") return Promise.resolve(toAB(crypto.privateDecrypt({ key: key._m.pem, oaepHash: nodeHash(key.algorithm.hash) }, in_)));
       throw new Error("Unsupported decrypt algorithm " + name);
     } catch (e) { return Promise.reject(e); }
   }
