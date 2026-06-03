@@ -100,10 +100,27 @@ const CONSOLE_PRELUDE: &str = r#"
   var groupIndent = '';
   var counts = {};
   var timers = {};
+  // Final output sink. Node's console writes through process.stdout/stderr, so
+  // code that monkey-patches `process.stdout.write` captures console output —
+  // a pattern test harnesses and CLI tools rely on. Honor it: when the stream's
+  // `write` has been replaced (differs from the native one installed by
+  // `makeStream`), route through it; otherwise use the fast native path, which
+  // also keeps velox's level coloring.
+  function sink(level, text) {
+    try {
+      var p = globalThis.process;
+      var s = (level === 'error' || level === 'warn') ? (p && p.stderr) : (p && p.stdout);
+      if (s && typeof s.write === 'function' && s.__velox_native_write && s.write !== s.__velox_native_write) {
+        s.write(text + '\n');
+        return;
+      }
+    } catch (e) {}
+    __velox_log(level, text);
+  }
   function emit(level, args) {
     var text = fmt(args);
     if (groupIndent) text = groupIndent + text.split('\n').join('\n' + groupIndent);
-    __velox_log(level, text);
+    sink(level, text);
   }
   function make(level) { return function () { emit(level, arguments); }; }
 
@@ -117,11 +134,11 @@ const CONSOLE_PRELUDE: &str = r#"
       var args = Array.prototype.slice.call(arguments);
       var msg = 'Trace' + (args.length ? ': ' + fmt(args) : '');
       var stack = new Error().stack || '';
-      __velox_log('error', msg + '\n' + String(stack).split('\n').slice(2).join('\n'));
+      sink('error', msg + '\n' + String(stack).split('\n').slice(2).join('\n'));
     },
     dir: function (obj, options) {
-      try { __velox_log('log', groupIndent + __velox_inspect(obj)); }
-      catch (e) { __velox_log('log', groupIndent + String(obj)); }
+      try { sink('log', groupIndent + __velox_inspect(obj)); }
+      catch (e) { sink('log', groupIndent + String(obj)); }
     },
     group: function () { if (arguments.length) emit('log', arguments); groupIndent += '  '; },
     groupCollapsed: function () { if (arguments.length) emit('log', arguments); groupIndent += '  '; },
@@ -129,12 +146,12 @@ const CONSOLE_PRELUDE: &str = r#"
     assert: function (cond) {
       if (cond) return;
       var rest = Array.prototype.slice.call(arguments, 1);
-      __velox_log('error', 'Assertion failed' + (rest.length ? ': ' + fmt(rest) : ''));
+      sink('error', 'Assertion failed' + (rest.length ? ': ' + fmt(rest) : ''));
     },
     count: function (label) {
       label = label === undefined ? 'default' : String(label);
       counts[label] = (counts[label] || 0) + 1;
-      __velox_log('log', label + ': ' + counts[label]);
+      sink('log', label + ': ' + counts[label]);
     },
     countReset: function (label) { counts[label === undefined ? 'default' : String(label)] = 0; },
     time: function (label) {
@@ -145,19 +162,19 @@ const CONSOLE_PRELUDE: &str = r#"
       label = label === undefined ? 'default' : String(label);
       if (!(label in timers)) return;
       var now = (globalThis.performance && performance.now) ? performance.now() : Date.now();
-      __velox_log('log', label + ': ' + (now - timers[label]).toFixed(3) + 'ms');
+      sink('log', label + ': ' + (now - timers[label]).toFixed(3) + 'ms');
       delete timers[label];
     },
     timeLog: function (label) {
       label = label === undefined ? 'default' : String(label);
       if (!(label in timers)) return;
       var now = (globalThis.performance && performance.now) ? performance.now() : Date.now();
-      __velox_log('log', label + ': ' + (now - timers[label]).toFixed(3) + 'ms');
+      sink('log', label + ': ' + (now - timers[label]).toFixed(3) + 'ms');
     },
     table: function (data) {
       // Minimal: fall back to an inspected dump (full grid rendering is heavy).
-      try { __velox_log('log', groupIndent + __velox_inspect(data)); }
-      catch (e) { __velox_log('log', groupIndent + String(data)); }
+      try { sink('log', groupIndent + __velox_inspect(data)); }
+      catch (e) { sink('log', groupIndent + String(data)); }
     },
     dirxml: function () { emit('log', arguments); },
     clear: function () { if (globalThis.__velox_write) globalThis.__velox_write(1, '\x1b[2J\x1b[0f'); },

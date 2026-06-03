@@ -525,6 +525,18 @@ function callbackify(original) {
 // debuglog
 // ---------------------------------------------------------------------------
 
+// Legacy util.log — timestamped console line (deprecated in Node, still called
+// by old packages and Node's own tests).
+function log() {
+  var args = Array.prototype.slice.call(arguments);
+  var now = new Date();
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  var stamp = pad(now.getDate()) + " " +
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][now.getMonth()] + " " +
+    pad(now.getHours()) + ":" + pad(now.getMinutes()) + ":" + pad(now.getSeconds());
+  console.log("%s - %s", stamp, format.apply(null, args));
+}
+
 function debuglog(_section, _cb) {
   // velox has no NODE_DEBUG support; always return a disabled no-op logger.
   const fn = function debug() {};
@@ -1245,6 +1257,7 @@ module.exports = {
   callbackify,
   debuglog,
   debug: debuglog, // Node aliases util.debug -> util.debuglog
+  log,
   types,
   isDeepStrictEqual,
   parseArgs,

@@ -142,10 +142,16 @@ pub const GLOBALS_PRELUDE: &str = r#"
   try { _pids = String(__velox_pids()).split(","); } catch (e) {}
 
   function makeStream(fd) {
-    return {
+    var nativeWrite = function (chunk, enc, cb) {
+      __velox_write(fd, String(chunk));
+      if (typeof enc === 'function') enc();
+      else if (typeof cb === 'function') cb();
+      return true;
+    };
+    var stream = {
       fd: fd,
       writable: true,
-      write: function (chunk) { __velox_write(fd, String(chunk)); return true; },
+      write: nativeWrite,
       end: function (chunk) { if (chunk != null) __velox_write(fd, String(chunk)); },
       get isTTY() { return !!__velox_isatty(fd); },
       get columns() { return 80; },
@@ -169,6 +175,10 @@ pub const GLOBALS_PRELUDE: &str = r#"
       getColorDepth: function () { return __velox_isatty(fd) ? 8 : 1; },
       hasColors: function () { return !!__velox_isatty(fd); },
     };
+    // Console's sink compares `stream.write` against this to detect user
+    // monkey-patching (capture-stdout pattern) and route output through it.
+    Object.defineProperty(stream, '__velox_native_write', { value: nativeWrite });
+    return stream;
   }
 
   // A minimal stdin stream: starts a background reader when first consumed
@@ -455,6 +465,10 @@ pub const GLOBALS_PRELUDE: &str = r#"
     }
     return {};
   };
+  // Internal bookkeeping of which native modules were loaded at bootstrap.
+  // velox bundles everything, so the honest answer is an empty list — code only
+  // ever slices/filters it (Node's own test-bootstrap-modules, some profilers).
+  process.moduleLoadList = [];
 
   // Node tags `process` so `Object.prototype.toString.call(process)` is
   // `[object process]`; libraries (e.g. axios's adapter detection) rely on it.
