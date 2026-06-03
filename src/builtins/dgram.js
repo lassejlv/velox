@@ -60,6 +60,13 @@ Socket.prototype.bind = function (port, address, callback) {
 
 // send(msg, [offset, length,] port [, address] [, callback])
 Socket.prototype.send = function (msg, a2, a3, a4, a5, a6) {
+  // Node validates the message type synchronously (ERR_INVALID_ARG_TYPE).
+  if (typeof msg !== 'string' && !Buffer.isBuffer(msg) &&
+      !ArrayBuffer.isView(msg) && !Array.isArray(msg)) {
+    throw require('node:util')._veloxErr.errInvalidArgType(
+      'The "msg" argument must be of type string or an instance of Buffer, TypedArray, or DataView.',
+      msg);
+  }
   var offset = 0, length, port, address, callback;
   if (Buffer.isBuffer(msg) && typeof a2 === 'number' && typeof a3 === 'number') {
     offset = a2; length = a3; port = a4; address = a5; callback = a6;
@@ -84,6 +91,11 @@ Socket.prototype.send = function (msg, a2, a3, a4, a5, a6) {
     else nextTick(function () { self.emit('error', e); });
   }
   return this;
+};
+
+// Legacy alias (pre-0.10): same path as send, which validates the msg type.
+Socket.prototype.sendto = function (msg, offset, length, port, address, callback) {
+  return this.send(msg, offset, length, port, address, callback);
 };
 
 Socket.prototype.address = function () {

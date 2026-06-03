@@ -21,6 +21,15 @@ var nextTick =
       ? function (fn, a, b, c) { queueMicrotask(function () { fn(a, b, c); }); }
       : function (fn, a, b, c) { Promise.resolve().then(function () { fn(a, b, c); }); };
 
+// options.defaultEncoding must name a real encoding (Node: ERR_UNKNOWN_ENCODING).
+function validateDefaultEncoding(enc) {
+  if (enc === undefined || enc === null) return 'utf8';
+  if (!BufferImpl || BufferImpl.isEncoding(enc)) return enc;
+  var e = new TypeError('Unknown encoding: ' + enc);
+  e.code = 'ERR_UNKNOWN_ENCODING';
+  throw e;
+}
+
 function once(fn) {
   var called = false;
   return function () {
@@ -123,7 +132,7 @@ function ReadableState(options, stream) {
   this.errored = null;
   this.closeEmitted = false;
   this.emitClose = options.emitClose !== false;
-  this.defaultEncoding = options.defaultEncoding || 'utf8';
+  this.defaultEncoding = validateDefaultEncoding(options.defaultEncoding);
   this.encoding = options.encoding || null;
   this.readingMore = false;
   this.dataEmitted = false;
@@ -728,7 +737,7 @@ function WritableState(options, stream) {
   this.finished = false;       // 'finish' emitted
   this.destroyed = false;
   this.errored = null;
-  this.defaultEncoding = options.defaultEncoding || 'utf8';
+  this.defaultEncoding = validateDefaultEncoding(options.defaultEncoding);
   this.closeEmitted = false;
   this.emitClose = options.emitClose !== false;
   this.prefinished = false;

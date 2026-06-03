@@ -84,7 +84,18 @@ module.exports = {
   parse: parse,
   format: format,
   resolve: resolve,
-  domainToASCII: function (d) { return String(d).toLowerCase(); },
-  domainToUnicode: function (d) { return String(d); },
+  // Real IDNA handling: route through the URL host parser (full mapping,
+  // punycode encode, '' for invalid) and the punycode builtin for decode.
+  domainToASCII: function (d) {
+    if (arguments.length === 0) throw new TypeError('The "domain" argument must be specified');
+    try { return new URL("http://" + String(d) + "/").hostname; } catch (e) { return ""; }
+  },
+  domainToUnicode: function (d) {
+    if (arguments.length === 0) throw new TypeError('The "domain" argument must be specified');
+    try {
+      var ascii = new URL("http://" + String(d) + "/").hostname;
+      return require("node:punycode").toUnicode(ascii);
+    } catch (e) { return ""; }
+  },
 };
 module.exports.default = module.exports;

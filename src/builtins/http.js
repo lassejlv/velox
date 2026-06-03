@@ -1055,12 +1055,25 @@ function normalizeRequestArgs(url, options, cb) {
   return [options, cb];
 }
 
+// options.host/hostname must be a string (or absent) — Node throws
+// ERR_INVALID_ARG_TYPE synchronously, before any connection is attempted.
+function validateHost(host, name) {
+  if (host !== null && host !== undefined && typeof host !== 'string') {
+    throw require('node:util')._veloxErr.errInvalidArgType(
+      'The "options.' + name + '" property must be of type string or one of undefined or null.',
+      host);
+  }
+}
 function request(url, options, cb) {
   var a = normalizeRequestArgs(url, options, cb);
+  validateHost(a[0].hostname, 'hostname');
+  validateHost(a[0].host, 'host');
   return new ClientRequest(a[0], a[1]);
 }
 function get(url, options, cb) {
   var a = normalizeRequestArgs(url, options, cb);
+  validateHost(a[0].hostname, 'hostname');
+  validateHost(a[0].host, 'host');
   var req = new ClientRequest(a[0], a[1]);
   req.method = 'GET';
   req.end();

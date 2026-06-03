@@ -1171,6 +1171,29 @@ function getSystemErrorMap() {
   return m;
 }
 
+// Node-faithful "Received …" suffix for ERR_INVALID_ARG_TYPE messages (the
+// counterpart of test/common's invalidArgTypeHelper). Shared by shims via
+// `util._veloxErr` so validation errors match Node byte-for-byte.
+function errReceived(input) {
+  if (input === null) return " Received null";
+  if (input === undefined) return " Received undefined";
+  if (typeof input === "function") return " Received function " + (input.name || "");
+  if (typeof input === "object") {
+    if (input.constructor && input.constructor.name) {
+      return " Received an instance of " + input.constructor.name;
+    }
+    return " Received " + inspect(input, { depth: -1 });
+  }
+  var inspected = inspect(input, { colors: false });
+  if (inspected.length > 28) inspected = inspected.slice(0, 25) + "...";
+  return " Received type " + typeof input + " (" + inspected + ")";
+}
+function errInvalidArgType(prefix, actual) {
+  var e = new TypeError(prefix + errReceived(actual));
+  e.code = "ERR_INVALID_ARG_TYPE";
+  return e;
+}
+
 // util.getCallSites([frameCount][, options]) — Node 22's structured stack API.
 // Returns an array of call-site objects ({ functionName, scriptName, lineNumber,
 // column }) for the current call stack, nearest frame first, excluding the
@@ -1265,6 +1288,7 @@ module.exports = {
   stripVTControlCharacters,
   styleText,
   toUSVString,
+  _veloxErr: { errReceived: errReceived, errInvalidArgType: errInvalidArgType },
   transferableAbortController,
   transferableAbortSignal,
   aborted,

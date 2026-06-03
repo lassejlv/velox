@@ -419,8 +419,16 @@ pub const GLOBALS_PRELUDE: &str = r#"
   // process._uncaughtExceptionCapture.
   process._uncaughtExceptionCapture = null;
   process.setUncaughtExceptionCaptureCallback = function (fn) {
-    if (fn !== null && typeof fn !== 'function') throw new TypeError('The "fn" argument must be of type function or null');
-    if (fn && process._uncaughtExceptionCapture) throw new Error('`process.setUncaughtExceptionCaptureCallback()` was called while a capture callback was already active');
+    if (fn !== null && typeof fn !== 'function') {
+      var e = new TypeError('The "fn" argument must be of type function or null.' + require('node:util')._veloxErr.errReceived(fn));
+      e.code = 'ERR_INVALID_ARG_TYPE';
+      throw e;
+    }
+    if (fn && process._uncaughtExceptionCapture) {
+      var err = new Error('`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active');
+      err.code = 'ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET';
+      throw err;
+    }
     process._uncaughtExceptionCapture = fn;
   };
   process.hasUncaughtExceptionCaptureCallback = function () { return process._uncaughtExceptionCapture != null; };
@@ -477,6 +485,9 @@ pub const GLOBALS_PRELUDE: &str = r#"
 
   globalThis.process = process;
   globalThis.global = globalThis;
+  // Node exposes `gc` under --expose-gc; tests and leak-checkers gate on its
+  // presence. JSC can always collect synchronously, so just provide it.
+  globalThis.gc = function gc() { __velox_gc(); };
 
   // Called by JSC's unhandled-rejection hook (src/event_loop.rs). Emits
   // process 'unhandledRejection'; with no listener, surfaces the error like
@@ -527,6 +538,7 @@ pub const GLOBALS_PRELUDE: &str = r#"
 pub fn install(ctx: JSContextRef) {
     unsafe {
         register(ctx, c"__velox_write", velox_write);
+        register(ctx, c"__velox_gc", velox_gc);
         register(ctx, c"__velox_cwd", velox_cwd);
         register(ctx, c"__velox_platform", velox_platform);
         register(ctx, c"__velox_isatty", velox_isatty);
@@ -588,6 +600,22 @@ unsafe extern "C-unwind" fn velox_write(
         let _ = out.flush();
     }
     unsafe { JSValue::new_undefined(ctx) }
+}
+
+/// `__velox_gc()` — synchronous full collection via `JSGarbageCollect`. Backs
+/// `globalThis.gc` (Node exposes it under `--expose-gc`; tests gate on it).
+unsafe extern "C-unwind" fn velox_gc(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    unsafe {
+        objc2_javascript_core::JSGarbageCollect(ctx);
+        JSValue::new_undefined(ctx)
+    }
 }
 
 unsafe extern "C-unwind" fn velox_cwd(

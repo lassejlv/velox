@@ -1,7 +1,11 @@
 // node:events — a compact EventEmitter.
 
-function EventEmitter() {
+function EventEmitter(opts) {
   if (!this._events) this._events = Object.create(null);
+  if (opts !== undefined && opts !== null && opts.captureRejections !== undefined) {
+    validateCaptureRejections(opts.captureRejections, 'options.captureRejections');
+    this._captureRejections = opts.captureRejections;
+  }
   // Domain integration (mirrors Node's EE constructor): an emitter created
   // while a domain is active is owned by it. `_getDomain` is installed by
   // node:domain on first require, so this is a no-op until domains are used.
@@ -9,6 +13,13 @@ function EventEmitter() {
     var d = EventEmitter._getDomain();
     // Non-enumerable, as in Node — `domain` must not surface in Object.keys.
     if (d) Object.defineProperty(this, 'domain', { value: d, writable: true, enumerable: false, configurable: true });
+  }
+}
+
+function validateCaptureRejections(value, name) {
+  if (typeof value !== 'boolean') {
+    throw require('node:util')._veloxErr.errInvalidArgType(
+      'The "' + name + '" property must be of type boolean.', value);
   }
 }
 EventEmitter.EventEmitter = EventEmitter;
@@ -107,9 +118,37 @@ EventEmitter.prototype.emit = function (type) {
     return false;
   }
   var copy = list.slice();
-  for (var i = 0; i < copy.length; i++) copy[i].apply(this, args);
+  // captureRejections (per-instance flag, falling back to the static default):
+  // a listener returning a rejected promise routes the reason to the emitter's
+  // [Symbol.for('nodejs.rejection')] method, or failing that its 'error' event.
+  var capture = this._captureRejections !== undefined
+    ? this._captureRejections
+    : EventEmitter._defaultCaptureRejections;
+  for (var i = 0; i < copy.length; i++) {
+    var result = copy[i].apply(this, args);
+    if (capture && result && typeof result.then === 'function') {
+      addRejectionHandler(this, result, type, args);
+    }
+  }
   return true;
 };
+
+function addRejectionHandler(ee, promise, type, args) {
+  promise.then(undefined, function (err) {
+    process.nextTick(function () {
+      var sym = EventEmitter.captureRejectionSymbol;
+      if (typeof ee[sym] === 'function') {
+        ee[sym].apply(ee, [err, type].concat(args));
+      } else {
+        // Temporarily disable capture to avoid recursing on a rejecting
+        // 'error' listener (Node does the same dance).
+        var prev = ee._captureRejections;
+        ee._captureRejections = false;
+        try { ee.emit('error', err); } finally { ee._captureRejections = prev; }
+      }
+    });
+  });
+}
 
 EventEmitter.prototype.listeners = function (type) {
   return (this._events && this._events[type] ? this._events[type] : []).slice();
@@ -259,6 +298,17 @@ EventEmitter.addAbortListener = addAbortListener;
 EventEmitter.usingDomains = false;
 EventEmitter.errorMonitor = Symbol('events.errorMonitor');
 EventEmitter.captureRejectionSymbol = Symbol.for('nodejs.rejection');
+// Static default for captureRejections, validated like Node's accessor.
+EventEmitter._defaultCaptureRejections = false;
+Object.defineProperty(EventEmitter, 'captureRejections', {
+  enumerable: true,
+  configurable: true,
+  get: function () { return EventEmitter._defaultCaptureRejections; },
+  set: function (value) {
+    validateCaptureRejections(value, 'EventEmitter.captureRejections');
+    EventEmitter._defaultCaptureRejections = value;
+  },
+});
 
 module.exports = EventEmitter;
 module.exports.EventEmitter = EventEmitter;

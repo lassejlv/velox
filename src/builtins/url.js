@@ -66,6 +66,104 @@
     }).join(".");
   }
 
+  // RFC 3492 decoder, for validating `xn--` labels. Returns an array of code
+  // points, or null on any malformed input (bad digit, overflow, surrogate).
+  function basicToDigit(cp) {
+    if (cp >= 0x30 && cp <= 0x39) return cp - 0x30 + 26; // 0-9 → 26-35
+    if (cp >= 0x41 && cp <= 0x5a) return cp - 0x41;      // A-Z → 0-25
+    if (cp >= 0x61 && cp <= 0x7a) return cp - 0x61;      // a-z → 0-25
+    return null;
+  }
+  function punycodeDecode(input) {
+    var output = [];
+    var n = 128, i = 0, bias = 72;
+    var basic = input.lastIndexOf("-");
+    if (basic < 0) basic = 0;
+    for (var j = 0; j < basic; j++) {
+      var c = input.charCodeAt(j);
+      if (c >= 0x80) return null;
+      output.push(c);
+    }
+    var index = basic > 0 ? basic + 1 : 0;
+    while (index < input.length) {
+      var oldi = i, w = 1;
+      for (var k = 36; ; k += 36) {
+        if (index >= input.length) return null;
+        var digit = basicToDigit(input.charCodeAt(index++));
+        if (digit === null) return null;
+        if (digit > Math.floor((0x7fffffff - i) / w)) return null;
+        i += digit * w;
+        var t = k <= bias ? 1 : (k >= bias + 26 ? 26 : k - bias);
+        if (digit < t) break;
+        if (w > Math.floor(0x7fffffff / (36 - t))) return null;
+        w *= 36 - t;
+      }
+      var out = output.length + 1;
+      bias = punyAdapt(i - oldi, out, oldi === 0);
+      if (Math.floor(i / out) > 0x7fffffff - n) return null;
+      n += Math.floor(i / out);
+      i %= out;
+      if (n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) return null;
+      output.splice(i, 0, n);
+      i++;
+    }
+    return output;
+  }
+
+  // IDNA label validation (the practically-enforced subset of UTS #46):
+  // an `xn--` label must be pure ASCII and decode cleanly to its canonical
+  // form; the resulting Unicode label must not contain controls / U+FFFD,
+  // must not START with a joiner (ZWJ/ZWNJ need a preceding context char),
+  // and must not mix Latin letters with RTL script (Bidi rule).
+  function isDisallowedCp(cp) {
+    if (cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f)) return true; // C0/C1 controls
+    if (cp === 0xfffd) return true; // replacement char
+    return false;
+  }
+  function isRtlCp(cp) {
+    return (cp >= 0x0590 && cp <= 0x08ff) || (cp >= 0xfb1d && cp <= 0xfdff) ||
+           (cp >= 0xfe70 && cp <= 0xfeff) || (cp >= 0x10800 && cp <= 0x10fff) ||
+           (cp >= 0x1e800 && cp <= 0x1efff);
+  }
+  function validateIdnaLabel(label) {
+    var cps;
+    if (/^xn--/i.test(label)) {
+      var rest = label.slice(4);
+      if (/[^\x00-\x7f]/.test(rest)) return false; // non-ASCII after xn--
+      cps = punycodeDecode(rest);
+      if (cps === null || cps.length === 0) return false;
+      // Must be canonical: re-encoding the decoded form reproduces the label.
+      var uni = String.fromCodePoint.apply(String, cps);
+      if (("xn--" + punycodeEncode(uni)).toLowerCase() !== label.toLowerCase()) return false;
+      // A pure-ASCII decode means the label didn't need punycode at all.
+      if (!cps.some(function (cp) { return cp >= 0x80; })) return false;
+    } else {
+      cps = [];
+      for (var i = 0; i < label.length; i++) {
+        var cp = label.codePointAt(i);
+        cps.push(cp);
+        if (cp > 0xffff) i++;
+      }
+    }
+    var hasRtl = false, hasLatin = false;
+    for (var j = 0; j < cps.length; j++) {
+      var c = cps[j];
+      if (isDisallowedCp(c)) return false;
+      if ((c === 0x200c || c === 0x200d) && j === 0) return false; // joiner w/o context
+      if (isRtlCp(c)) hasRtl = true;
+      if ((c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)) hasLatin = true;
+    }
+    if (hasRtl && hasLatin) return false; // Bidi rule: no Latin in an RTL label
+    return true;
+  }
+  function validateIdnaHost(host) {
+    var labels = host.split(".");
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i] !== "" && !validateIdnaLabel(labels[i])) return false;
+    }
+    return true;
+  }
+
   // --- WHATWG IPv4 host parser (dotted-decimal/hex/octal → canonical) --------
   function parseIPv4Number(part) {
     var radix = 10;
@@ -98,11 +196,31 @@
     return out.join(".");
   }
 
-  // Process a special-scheme host: IDN→punycode, then IPv4 normalization.
+  // Process a special-scheme host: IDN→punycode (validated), then IPv4
+  // normalization. Throws on an IDNA-invalid host (the constructor surfaces
+  // it as an Invalid URL; setters swallow it, per WHATWG).
   function processHost(host, special) {
     if (host === "" || host[0] === "[") return host; // empty or IPv6 literal
-    if (special && /[^\x00-\x7f]/.test(host)) host = domainToASCII(host);
+    if (special && /[^\x00-\x7f]/.test(host)) {
+      // UTS #46 mapping: drop "ignored" code points (soft hyphen, CGJ,
+      // Mongolian/variation selectors, BOM), NFC-normalize (so e.g.
+      // "=" + U+0338 composes to "≠"), and lowercase BEFORE encoding.
+      host = host.replace(/[\u00ad\u034f\u180b-\u180d\ufe00-\ufe0f\ufeff]/g, "");
+      if (typeof host.normalize === "function") host = host.normalize("NFC");
+      host = host.toLowerCase();
+    }
+    if (special && /[^\x00-\x7f]/.test(host)) {
+      // A label that already claims to be punycode must be pure ASCII —
+      // encoding it again would just mask the violation.
+      if (/(^|\.)xn--[^.]*[^\x00-\x7f]/i.test(host)) {
+        throw new TypeError("Invalid URL: invalid IDNA host");
+      }
+      host = domainToASCII(host);
+    }
     host = host.toLowerCase();
+    if (special && !validateIdnaHost(host)) {
+      throw new TypeError("Invalid URL: invalid IDNA host");
+    }
     if (special) { var ip = parseIPv4(host); if (ip !== null) return ip; }
     return host;
   }
@@ -302,14 +420,21 @@
     get password() { return this._password; }
     set password(v) { this._password = String(v); }
     get hostname() { return this._hostname; }
-    set hostname(v) { this._hostname = String(v).toLowerCase(); }
+    // Setters run the same host processing as the parser (IDN→punycode, IPv4
+    // normalization) — assigning a Unicode host must encode it, per WHATWG.
+    set hostname(v) {
+      try { this._hostname = processHost(String(v), isSpecial(this._protocol)); } catch (e) {}
+    }
     get port() { return this._port; }
     set port(v) { v = String(v); this._port = v === "" ? "" : String(parseInt(v, 10) || ""); }
     get host() { return this._hostname + (this._port ? ":" + this._port : ""); }
     set host(v) {
       v = String(v); var i = v.indexOf(":");
-      if (i === -1) { this._hostname = v.toLowerCase(); this._port = ""; }
-      else { this._hostname = v.slice(0, i).toLowerCase(); this._port = v.slice(i + 1); }
+      var special = isSpecial(this._protocol);
+      try {
+        if (i === -1) { this._hostname = processHost(v, special); this._port = ""; }
+        else { this._hostname = processHost(v.slice(0, i), special); this._port = v.slice(i + 1); }
+      } catch (e) {}
     }
     get pathname() { return this._pathname; }
     set pathname(v) { v = String(v); this._pathname = needsSlashes(this._protocol) && v[0] !== "/" ? "/" + v : v; }

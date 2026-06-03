@@ -282,14 +282,35 @@ function fdEntry(fd) {
 }
 function closeSync(fd) { delete fdTable[fd]; }
 function readSync(fd, buffer, offset, length, position) {
+  // readSync(fd, buffer[, options]) — with ≤3 args the third is an options
+  // object ({ offset, length, position }), validated like Node's
+  // validateObject (rejects non-objects and arrays with ERR_INVALID_ARG_TYPE).
+  if (arguments.length <= 3 || (offset !== null && typeof offset === 'object')) {
+    var options = offset;
+    if (options !== undefined && options !== null &&
+        (typeof options !== 'object' || Array.isArray(options))) {
+      var err = new TypeError(
+        'The "options" argument must be of type object. Received ' +
+        (options === null ? 'null' : typeof options));
+      err.code = 'ERR_INVALID_ARG_TYPE';
+      throw err;
+    }
+    options = options || {};
+    position = options.position;
+    length = options.length;
+    offset = options.offset;
+  }
   var e = fdEntry(fd);
   offset = offset || 0;
-  length = length === undefined ? buffer.length - offset : length;
+  length = length === undefined || length === null ? buffer.length - offset : length;
+  if (typeof position === 'bigint') position = Number(position);
   var data = Buffer.from(__velox_read_file(e.path), 'latin1');
-  var pos = (position === null || position === undefined) ? e.pos : position;
+  // null/undefined/negative position → read from the fd's current offset.
+  var atCurrent = position === null || position === undefined || position < 0;
+  var pos = atCurrent ? e.pos : position;
   var slice = data.subarray(pos, pos + length);
   slice.copy(buffer, offset);
-  if (position === null || position === undefined) e.pos += slice.length;
+  if (atCurrent) e.pos += slice.length;
   return slice.length;
 }
 function writeSync(fd, data, a, b, c) {
