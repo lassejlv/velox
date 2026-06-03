@@ -164,10 +164,18 @@ Socket.prototype.pause = function () { this._readableFlowing = false; return thi
 Socket.prototype.resume = function () {
   if (this._readableFlowing !== true) {
     this._readableFlowing = true;
-    // Drain anything buffered while paused as 'data' events.
-    var q = this._readBuffer;
-    this._readBuffer = [];
-    for (var i = 0; i < q.length; i++) this.emit('data', this._encoding ? q[i].toString(this._encoding) : q[i]);
+    // Drain anything buffered while paused as 'data' events — on the next
+    // tick, as Node does (callers set state after resume() returns).
+    var self = this;
+    nextTick(function () {
+      if (self._readableFlowing !== true) return; // re-paused meanwhile
+      var q = self._readBuffer;
+      self._readBuffer = [];
+      for (var i = 0; i < q.length; i++) {
+        self.bytesRead += q[i].length;
+        self.emit('data', self._encoding ? q[i].toString(self._encoding) : q[i]);
+      }
+    });
   }
   return this;
 };
@@ -179,13 +187,17 @@ Socket.prototype.read = function (n) {
   var out;
   if (n == null || n >= all.length) { this._readBuffer = []; out = all; }
   else { out = all.slice(0, n); this._readBuffer = [all.slice(n)]; }
+  this.bytesRead += out.length;
   return this._encoding ? out.toString(this._encoding) : out;
 };
 // Override on()/addListener() to set the read mode from the listener type.
 Socket.prototype.on = function (event, fn) {
   EventEmitter.prototype.on.call(this, event, fn);
   if (event === 'data') {
-    this.resume();
+    // A 'data' listener only auto-starts the flow when the mode is still
+    // undetermined — an explicitly paused socket (pause()/pauseOnConnect)
+    // stays paused until resume(), as in Node.
+    if (this._readableFlowing !== false) this.resume();
   } else if (event === 'readable') {
     if (this._readableFlowing === null) this._readableFlowing = false;
     if (this._readBuffer.length > 0) { var self = this; nextTick(function () { self.emit('readable'); }); }
@@ -279,8 +291,8 @@ Socket.prototype._pushData = function (data) {
   var buf = Buffer.isBuffer(data)
     ? data
     : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  this.bytesRead += buf.length;
   if (this._readableFlowing === true) {
+    this.bytesRead += buf.length;
     this.emit('data', this._encoding ? buf.toString(this._encoding) : buf);
   } else {
     // Paused: buffer for read() and signal availability.
@@ -303,6 +315,7 @@ function Server(options, connectionListener) {
   this._host = '0.0.0.0';
   this.listening = false;
   this.maxConnections = null;
+  this._pauseOnConnect = !!(options && options.pauseOnConnect);
   if (typeof connectionListener === 'function') this.on('connection', connectionListener);
 }
 inherits(Server, EventEmitter);
@@ -393,6 +406,9 @@ globalThis.__velox_on_connection = function (serverId, socketId) {
   var server = servers.get(serverId);
   var socket = new Socket({ socketId: socketId, server: server });
   sockets.set(socketId, socket);
+  // pauseOnConnect: hand the socket over paused — data buffers (uncounted)
+  // until the consumer resumes it.
+  if (server && server._pauseOnConnect) socket.pause();
   if (server) server.emit('connection', socket);
 };
 

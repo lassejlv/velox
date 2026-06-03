@@ -111,6 +111,21 @@ function makeZlibHandle(syncFn) {
 function makeZlibClass(syncFn) {
   function ZlibStream(options) {
     if (!(this instanceof ZlibStream)) return new ZlibStream(options);
+    // options.params values must be numbers or booleans (Node validates the
+    // brotli parameter map up front with ERR_INVALID_ARG_TYPE).
+    if (options && options.params !== null && typeof options.params === 'object') {
+      for (var pk in options.params) {
+        var pv = options.params[pk];
+        if (typeof pv !== 'number' && typeof pv !== 'boolean') {
+          var perr = new TypeError(
+            'The "options.params[' + pk + ']" property must be of type number.' +
+            ' Received ' + (pv === null ? 'null' : 'type ' + typeof pv +
+            (typeof pv === 'string' ? " ('" + pv + "')" : '')));
+          perr.code = 'ERR_INVALID_ARG_TYPE';
+          throw perr;
+        }
+      }
+    }
     Transform.call(this, options);
     this._chunks = [];
     this._zlibSync = syncFn;
