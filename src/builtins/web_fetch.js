@@ -237,20 +237,21 @@
     // Minimal stream(): yields the whole buffer as one chunk. Good enough for
     // `for await` consumers without a full ReadableStream implementation.
     Blob.prototype.stream = function stream() {
-      var buffer = this._buffer;
+      // Node returns a WHATWG ReadableStream (with getReader/async iteration).
+      var bytes = new Uint8Array(bufferToArrayBuffer(this._buffer));
+      if (typeof g.ReadableStream === "function") {
+        return new g.ReadableStream({
+          start: function (controller) {
+            if (bytes.length) controller.enqueue(bytes);
+            controller.close();
+          },
+        });
+      }
+      // Fallback: async-iterable (no ReadableStream available).
       var iterator = {};
       iterator[Symbol.asyncIterator] = function () {
         var done = false;
-        return {
-          next: function () {
-            if (done) return Promise.resolve({ value: undefined, done: true });
-            done = true;
-            return Promise.resolve({
-              value: new Uint8Array(bufferToArrayBuffer(buffer)),
-              done: false,
-            });
-          },
-        };
+        return { next: function () { if (done) return Promise.resolve({ value: undefined, done: true }); done = true; return Promise.resolve({ value: bytes, done: false }); } };
       };
       return iterator;
     };

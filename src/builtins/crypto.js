@@ -244,7 +244,8 @@ function Cipheriv(algo, key, iv, op) {
   this._aad = "";
   this._authTag = null; // decrypt: caller-supplied tag
   this._tag = null;     // encrypt: produced tag
-  this._isGcm = /gcm$/.test(this._algo);
+  // AEAD ciphers carry a 16-byte auth tag and accept setAAD/getAuthTag.
+  this._isGcm = /gcm$/.test(this._algo) || this._algo === "chacha20-poly1305";
 }
 Cipheriv.prototype.setAAD = function (buf) { this._aad += toLatin1(buf); return this; };
 Cipheriv.prototype.setAutoPadding = function () { return this; };
@@ -598,6 +599,7 @@ function getCiphers() {
     "aes-128-cbc", "aes-192-cbc", "aes-256-cbc",
     "aes-128-ctr", "aes-192-ctr", "aes-256-ctr",
     "aes-128-gcm", "aes-256-gcm",
+    "chacha20-poly1305",
   ];
 }
 

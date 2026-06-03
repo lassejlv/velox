@@ -789,6 +789,20 @@ fn aes_cipher(
         "aes-256-ctr" => ctr_mode!(Aes256),
         "aes-128-gcm" => gcm_mode!(Aes128Gcm),
         "aes-256-gcm" => gcm_mode!(Aes256Gcm),
+        "chacha20-poly1305" => {
+            use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+            let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(key)
+                .map_err(|e| e.to_string())?;
+            let nonce = chacha20poly1305::Nonce::from_slice(iv);
+            let payload = Payload { msg: data, aad };
+            if encrypt {
+                cipher.encrypt(nonce, payload).map_err(|e| e.to_string())
+            } else {
+                cipher
+                    .decrypt(nonce, payload)
+                    .map_err(|_| "unable to authenticate data".to_string())
+            }
+        }
         other => Err(format!("unsupported cipher: {other}")),
     }
 }

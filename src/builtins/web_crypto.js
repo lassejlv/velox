@@ -348,11 +348,31 @@
     return deriveBits(algorithm, baseKey, bits).then(function (ab) { return importKey("raw", ab, derivedKeyType, extractable, usages); });
   }
 
+  // wrapKey/unwrapKey compose export+encrypt / decrypt+import.
+  function wrapKey(format, key, wrappingKey, wrapAlgo) {
+    return exportKey(format, key).then(function (exported) {
+      var bytes = format === "jwk"
+        ? toBuf(new TextEncoder().encode(JSON.stringify(exported)))
+        : toBuf(exported);
+      return encrypt(wrapAlgo, wrappingKey, bytes);
+    });
+  }
+  function unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgo, unwrappedKeyAlgo, extractable, usages) {
+    return decrypt(unwrapAlgo, unwrappingKey, wrappedKey).then(function (ab) {
+      if (format === "jwk") {
+        var jwk = JSON.parse(new TextDecoder().decode(new Uint8Array(ab)));
+        return importKey("jwk", jwk, unwrappedKeyAlgo, extractable, usages);
+      }
+      return importKey(format, ab, unwrappedKeyAlgo, extractable, usages);
+    });
+  }
+
   function SubtleCrypto() {}
   SubtleCrypto.prototype = {
     digest: digest, importKey: importKey, exportKey: exportKey,
     sign: sign, verify: verify, encrypt: encrypt, decrypt: decrypt,
     generateKey: generateKey, deriveBits: deriveBits, deriveKey: deriveKey,
+    wrapKey: wrapKey, unwrapKey: unwrapKey,
   };
 
   globalThis.CryptoKey = CryptoKey;

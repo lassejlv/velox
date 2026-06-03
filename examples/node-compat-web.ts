@@ -63,6 +63,8 @@ check("Intl breadth (PluralRules/DisplayNames/RTF)", () => { if (new Intl.Plural
 
 // Blob / FormData
 check("Blob", async () => { const b = new Blob(["a", "b"], { type: "text/plain" }); if (b.size !== 2) throw new Error("size"); if (await b.text() !== "ab") throw new Error("text"); });
+check("Blob.stream() + slice", async () => { const b = new Blob(["hello world"]); if (await b.slice(0, 5).text() !== "hello") throw new Error("slice"); const r = b.stream().getReader(); let out = new Uint8Array(0); for (;;) { const { done, value } = await r.read(); if (done) break; const n = new Uint8Array(out.length + value.length); n.set(out); n.set(value, out.length); out = n; } if (new TextDecoder().decode(out) !== "hello world") throw new Error("stream"); });
+check("ReadableStream pipeThrough/pipeTo", async () => { const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const ts = new TransformStream({ transform(ch, ctrl) { ctrl.enqueue(String(ch).toUpperCase()); } }); let out = ""; const ws = new WritableStream({ write(ch) { out += ch; } }); await rs.pipeThrough(ts).pipeTo(ws); if (out !== "AB") throw new Error("pipe: " + out); });
 check("FormData", () => { const fd = new FormData(); fd.append("a", "1"); fd.append("a", "2"); if (fd.getAll("a").join(",") !== "1,2") throw new Error("fd"); });
 
 // AbortController + fetch cancellation
