@@ -1,0 +1,98 @@
+name: Node.js Upstream Compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      node_ref:
+        description: Node.js git ref to fetch tests from
+        required: true
+        default: v22.12.0
+      mode:
+        description: Test selection mode
+        required: true
+        default: subset
+        type: choice
+        options:
+          - subset
+          - full
+          - sample
+          - match
+      sample_every:
+        description: For sample mode, run every Nth upstream test
+        required: false
+        default: "8"
+      match:
+        description: For match mode, run upstream tests whose name contains this text
+        required: false
+        default: ""
+
+jobs:
+  node-compat:
+    # velox is macOS-only and needs ad-hoc signing for JavaScriptCore JIT.
+    runs-on: macos-14
+    timeout-minutes: 360
+    env:
+      NODE_VERSION: ${{ github.event.inputs.node_ref || 'v22.12.0' }}
+      ARTIFACT_DIR: artifacts/node-compat
+      TIMEOUT: "8"
+      JOBS: "16"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-node-compat-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run Node.js upstream tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+
+          mode="${{ github.event.inputs.mode || 'subset' }}"
+          case "$mode" in
+            subset)
+              ./scripts/node-test.sh
+              ;;
+            full)
+              ./scripts/node-test.sh --all
+              ;;
+            sample)
+              ./scripts/node-test.sh --sample "${{ github.event.inputs.sample_every || '8' }}"
+              ;;
+            match)
+              pattern="${{ github.event.inputs.match || '' }}"
+              if [ -z "$pattern" ]; then
+                echo "match input is required when mode=match" >&2
+                exit 2
+              fi
+              ./scripts/node-test.sh --match "$pattern"
+              ;;
+            *)
+              echo "unknown mode: $mode" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Upload Node.js compatibility logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-compat-${{ github.event.inputs.mode || 'subset' }}-${{ github.run_id }}
+          path: |
+            artifacts/node-compat/summary.txt
+            artifacts/node-compat/last-pass.txt
+            artifacts/node-compat/last-fail.txt
+            artifacts/node-compat/failures.log
+          if-no-files-found: warn
