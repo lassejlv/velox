@@ -204,12 +204,27 @@ function readableAddChunk(stream, chunk, encoding, addToFront) {
   }
   state.length += chunkLength(state, chunk);
 
-  if (state.flowing && state.length === chunkLength(state, chunk)) {
-    // first chunk while flowing — drain it out
-  }
   emitReadable(stream);
-  flow(stream);
+  // Node only emits 'data' synchronously on push when a 'data' listener is
+  // attached; otherwise the chunk stays buffered. A consumer that resume()d but
+  // hasn't yet attached its 'data' listener in the same tick (e.g. got piping a
+  // response) would otherwise lose synchronously-pushed data. Defer the flow so
+  // the buffered chunk drains once the listener attaches / on the next tick.
+  if (state.flowing) {
+    if (stream.listenerCount('data') > 0) flow(stream);
+    else scheduleFlow(stream);
+  }
   return state.length < state.highWaterMark;
+}
+
+// Ensure buffered data in a flowing stream gets drained on the next tick even
+// if no 'data' listener was attached yet (mirrors resume()'s deferred flow).
+function scheduleFlow(stream) {
+  var state = stream._readableState;
+  if (state.flowing && !state.resumeScheduled) {
+    state.resumeScheduled = true;
+    nextTick(resume_, stream, state);
+  }
 }
 
 function chunkLength(state, chunk) {
@@ -227,7 +242,10 @@ function onEofChunk(stream, state) {
   // 'end' is emitted now — `flow()` isn't otherwise re-entered after EOF, so
   // consumers using 'data'+'end' (e.g. raw-body / express.json) would hang.
   if (state.flowing) {
-    flow(stream);
+    // Same rule as readableAddChunk: only drain synchronously if a 'data'
+    // listener is present, else defer so a same-tick listener still sees it.
+    if (stream.listenerCount('data') > 0) flow(stream);
+    else scheduleFlow(stream);
   } else {
     state.needReadable = false;
     emitReadable(stream);
