@@ -2,6 +2,14 @@
 
 function EventEmitter() {
   if (!this._events) this._events = Object.create(null);
+  // Domain integration (mirrors Node's EE constructor): an emitter created
+  // while a domain is active is owned by it. `_getDomain` is installed by
+  // node:domain on first require, so this is a no-op until domains are used.
+  if (EventEmitter._getDomain) {
+    var d = EventEmitter._getDomain();
+    // Non-enumerable, as in Node — `domain` must not surface in Object.keys.
+    if (d) Object.defineProperty(this, 'domain', { value: d, writable: true, enumerable: false, configurable: true });
+  }
 }
 EventEmitter.EventEmitter = EventEmitter;
 EventEmitter.defaultMaxListeners = 10;
@@ -83,6 +91,17 @@ EventEmitter.prototype.emit = function (type) {
   if (!list || list.length === 0) {
     if (type === 'error') {
       var err = args[0];
+      // An emitter owned by a domain routes unhandled errors there instead of
+      // throwing (Node's domain semantics; `domain` is set by node:domain).
+      if (this.domain && this !== this.domain && typeof this.domain.emit === 'function') {
+        if (err instanceof Error) {
+          err.domainEmitter = this;
+          err.domain = this.domain;
+          err.domainThrown = false;
+        }
+        this.domain.emit('error', err);
+        return false;
+      }
       throw err instanceof Error ? err : new Error('Unhandled "error" event');
     }
     return false;
