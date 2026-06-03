@@ -1545,6 +1545,39 @@ module.exports.pipeline = pipeline;
 module.exports.finished = finished;
 module.exports.compose = compose;
 module.exports.promises = { pipeline: pipelinePromise, finished: finishedPromise };
+
+// Stream state predicates (Node 16+). undici and other libraries use
+// `stream.isDisturbed(body)` to decide whether a body can still be consumed.
+function isDisturbed(stream) {
+  if (!stream) return false;
+  var rs = stream._readableState;
+  return !!(stream.readableDidRead || stream.readableAborted || stream.bytesRead > 0 || (rs && (rs.dataEmitted || rs.endEmitted)) || stream.writableEnded);
+}
+function isErrored(stream) {
+  if (!stream) return false;
+  return !!(stream.errored || (stream._readableState && stream._readableState.errored) || (stream._writableState && stream._writableState.errored));
+}
+function isReadable(stream) {
+  if (!stream || stream.readable === false) return false;
+  var rs = stream._readableState;
+  if (rs) return !rs.destroyed && !rs.errored && !rs.endEmitted;
+  return typeof stream.read === 'function' && stream.readable !== false;
+}
+function isWritable(stream) {
+  if (!stream || stream.writable === false) return false;
+  var ws = stream._writableState;
+  if (ws) return !ws.destroyed && !ws.errored && !ws.ending && !ws.ended;
+  return typeof stream.write === 'function' && stream.writable !== false;
+}
+module.exports.isDisturbed = isDisturbed;
+module.exports.isErrored = isErrored;
+module.exports.isReadable = isReadable;
+module.exports.isWritable = isWritable;
+exports.isDisturbed = isDisturbed;
+exports.isErrored = isErrored;
+exports.isReadable = isReadable;
+exports.isWritable = isWritable;
+
 // Node's `stream` module re-exports EventEmitter (Stream's base class); some
 // libraries do `class X extends require('stream').EventEmitter` (e.g. node-cron).
 module.exports.EventEmitter = EventEmitter;
