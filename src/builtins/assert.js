@@ -629,6 +629,103 @@ function ifError(err) {
 }
 
 // ---------------------------------------------------------------------------
+// CallTracker (experimental call-tracking helper)
+// ---------------------------------------------------------------------------
+
+class CallTracker {
+  constructor() {
+    // Each entry: { name, expected, calls: [{ thisArg, arguments }] }.
+    this._tracked = new Map();
+  }
+
+  calls(fn, exact) {
+    // calls(exact) — fn omitted, wraps a no-op.
+    if (typeof fn === 'number') {
+      exact = fn;
+      fn = () => {};
+    }
+    if (fn === undefined) fn = () => {};
+    if (exact === undefined) exact = 1;
+    if (typeof fn !== 'function') {
+      throw new TypeError('The "fn" argument must be of type function.');
+    }
+    if (typeof exact !== 'number') {
+      throw new TypeError('The "exact" argument must be of type number.');
+    }
+
+    const tracked = this._tracked;
+    const wrapper = function (...args) {
+      const record = tracked.get(wrapper);
+      if (record) {
+        record.calls.push({ thisArg: this, arguments: args });
+      }
+      return fn.apply(this, args);
+    };
+
+    tracked.set(wrapper, {
+      name: fn.name || 'calls',
+      expected: exact,
+      calls: [],
+    });
+    return wrapper;
+  }
+
+  getCalls(fn) {
+    const record = this._tracked.get(fn);
+    if (!record) {
+      throw new Error('The provided function is not a tracked function.');
+    }
+    return record.calls.slice();
+  }
+
+  report() {
+    const out = [];
+    for (const record of this._tracked.values()) {
+      const actual = record.calls.length;
+      if (actual !== record.expected) {
+        out.push({
+          message:
+            'Expected the ' + record.name + ' function to be executed ' +
+            record.expected + ' time(s) but was executed ' + actual +
+            ' time(s).',
+          actual,
+          expected: record.expected,
+          operator: record.name,
+          stack: new Error().stack,
+        });
+      }
+    }
+    return out;
+  }
+
+  verify() {
+    const report = this.report();
+    if (report.length > 0) {
+      const message = report.map((r) => r.message).join('\n\n');
+      throw new AssertionError({
+        message,
+        operator: 'CallTracker.verify',
+        stackStartFn: CallTracker.prototype.verify,
+      });
+    }
+  }
+
+  reset(fn) {
+    if (fn === undefined) {
+      for (const record of this._tracked.values()) {
+        record.calls = [];
+      }
+      return;
+    }
+    const record = this._tracked.get(fn);
+    if (!record) {
+      throw new Error('The provided function is not a tracked function.');
+    }
+    record.calls = [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Assemble the exported callable + its method surface
 // ---------------------------------------------------------------------------
 
@@ -650,6 +747,7 @@ assert.match = match;
 assert.doesNotMatch = doesNotMatch;
 assert.fail = fail;
 assert.ifError = ifError;
+assert.CallTracker = CallTracker;
 
 // The strict variant: a callable mirror where loose helpers alias strict ones.
 function strictAssert(value, message) {
@@ -673,6 +771,7 @@ strictAssert.match = match;
 strictAssert.doesNotMatch = doesNotMatch;
 strictAssert.fail = fail;
 strictAssert.ifError = ifError;
+strictAssert.CallTracker = CallTracker;
 strictAssert.strict = strictAssert;
 
 assert.strict = strictAssert;

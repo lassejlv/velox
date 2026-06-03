@@ -323,7 +323,7 @@ pub const GLOBALS_PRELUDE: &str = r#"
       return [s, nano];
     },
     uptime: function () { return __velox_hrtime_ns() / 1e9; },
-    memoryUsage: function () { return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }; },
+    memoryUsage: function () { var m = __velox_mem_info_parse(); return { rss: m.rss, heapTotal: m.rss, heapUsed: m.rss, external: 0, arrayBuffers: 0 }; },
     cpuUsage: function (prev) {
       var parts = String(__velox_cpu_usage()).split(",");
       var user = Math.round(+parts[0]), system = Math.round(+parts[1]);
@@ -346,9 +346,42 @@ pub const GLOBALS_PRELUDE: &str = r#"
       if (mask !== undefined) process._umask = typeof mask === "string" ? parseInt(mask, 8) : (mask | 0);
       return prev;
     },
-    features: {},
+    // Node exposes a small set of build-time feature flags; libraries probe
+    // these (e.g. `process.features.tls`, `.inspector`) before using an API.
+    features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: true, tls_sni: true, tls_ocsp: true, tls: true, cached_builtins: true, typescript: "transpile" },
   };
   process.hrtime.bigint = function () { return BigInt(Math.round(__velox_hrtime_ns())); };
+
+  // memoryUsage().rss / availableMemory() are backed by one native that reports
+  // current resident size (mach task_info) and free physical memory (mach
+  // vm_statistics). Cached parse helper so the hot `.rss()` accessor is cheap.
+  globalThis.__velox_mem_info_parse = function () {
+    try { return JSON.parse(__velox_mem_info()); } catch (e) { return { rss: 0, available: 0 }; }
+  };
+  process.memoryUsage.rss = function () { return __velox_mem_info_parse().rss; };
+  process.availableMemory = function () { return __velox_mem_info_parse().available; };
+  process.constrainedMemory = function () { return 0; };
+
+  // getActiveResourcesInfo() lists strings naming live event-loop resources.
+  // velox doesn't expose per-handle bookkeeping to JS; report an empty list
+  // (callers use it for diagnostics, not control flow).
+  process.getActiveResourcesInfo = function () { return []; };
+
+  // loadEnvFile([path]) parses a .env file and assigns to process.env, mirroring
+  // Node 20.12+. Minimal dotenv: KEY=VALUE per line, # comments, optional quotes.
+  process.loadEnvFile = function (path) {
+    var fs = require('node:fs');
+    var src = fs.readFileSync(path == null ? '.env' : path, 'utf8');
+    src.split(/\r?\n/).forEach(function (line) {
+      var m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
+      if (!m) return;
+      var v = m[2];
+      if (v[0] === '"' && v[v.length - 1] === '"') v = v.slice(1, -1).replace(/\\n/g, '\n').replace(/\\"/g, '"');
+      else if (v[0] === "'" && v[v.length - 1] === "'") v = v.slice(1, -1);
+      else { var h = v.indexOf(' #'); if (h !== -1) v = v.slice(0, h); v = v.trim(); }
+      if (process.env[m[1]] === undefined) process.env[m[1]] = v;
+    });
+  };
   // Node tags `process` so `Object.prototype.toString.call(process)` is
   // `[object process]`; libraries (e.g. axios's adapter detection) rely on it.
   try { Object.defineProperty(process, Symbol.toStringTag, { value: "process", configurable: true }); } catch (e) {}
@@ -406,6 +439,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_os_info", velox_os_info);
         register(ctx, c"__velox_hrtime_ns", velox_hrtime_ns);
         register(ctx, c"__velox_cpu_usage", velox_cpu_usage);
+        register(ctx, c"__velox_mem_info", velox_mem_info);
         register(ctx, c"__velox_load_builtin", velox_load_builtin);
 
         register(ctx, c"__velox_read_file", fs_read_file);
@@ -598,6 +632,62 @@ unsafe extern "C-unwind" fn velox_cpu_usage(
         sys_us = 0.0;
     }
     unsafe { js_string(ctx, &format!("{user_us},{sys_us}")) }
+}
+
+/// `__velox_mem_info()` → JSON `{"rss":<bytes>,"available":<bytes>}`. RSS is the
+/// process's current resident size (mach `task_info`/`MACH_TASK_BASIC_INFO`);
+/// `available` is free + inactive physical pages (mach `host_statistics64`).
+/// Backs `process.memoryUsage().rss`/`.rss()` and `process.availableMemory()`.
+// `mach_task_self`/`mach_host_self` are deprecated in `libc` (it points at the
+// `mach2` crate) but still the standard way to reach these mach calls without
+// pulling in another dependency; they're macOS-stable.
+#[allow(deprecated)]
+unsafe extern "C-unwind" fn velox_mem_info(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let rss: u64 = unsafe {
+        let mut info: libc::mach_task_basic_info = std::mem::zeroed();
+        let mut count = (std::mem::size_of::<libc::mach_task_basic_info>()
+            / std::mem::size_of::<libc::natural_t>())
+            as libc::mach_msg_type_number_t;
+        let kr = libc::task_info(
+            libc::mach_task_self(),
+            libc::MACH_TASK_BASIC_INFO,
+            &mut info as *mut _ as libc::task_info_t,
+            &mut count,
+        );
+        if kr == libc::KERN_SUCCESS {
+            info.resident_size
+        } else {
+            0
+        }
+    };
+
+    let available: u64 = unsafe {
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE) as u64;
+        let mut vm: libc::vm_statistics64 = std::mem::zeroed();
+        let mut count = (std::mem::size_of::<libc::vm_statistics64>()
+            / std::mem::size_of::<libc::integer_t>())
+            as libc::mach_msg_type_number_t;
+        let kr = libc::host_statistics64(
+            libc::mach_host_self(),
+            libc::HOST_VM_INFO64,
+            &mut vm as *mut _ as libc::host_info64_t,
+            &mut count,
+        );
+        if kr == libc::KERN_SUCCESS {
+            (vm.free_count as u64 + vm.inactive_count as u64) * page_size
+        } else {
+            0
+        }
+    };
+
+    unsafe { js_string(ctx, &format!("{{\"rss\":{rss},\"available\":{available}}}")) }
 }
 
 /// `__velox_os_info()` → JSON of host facts (hostname, cpus, memory, loadavg).

@@ -9,14 +9,215 @@
 // inspect
 // ---------------------------------------------------------------------------
 
-// Delegate to the runtime-provided formatter. `__velox_inspect` already handles
-// objects/arrays/Map/Set/circular/depth/functions and returns a string
-// (top-level strings unquoted, nested quoted) — matching Node's util.inspect.
-function inspect(value, _opts) {
+// The runtime-provided formatter (`__velox_inspect`) already handles
+// objects/arrays/Map/Set/circular/functions and returns a string (top-level
+// strings unquoted, nested quoted) — matching Node's util.inspect. It uses a
+// hardcoded depth of 2 and takes no options. When the caller passes an explicit
+// `depth` option we can't forward it to the native, so we use a JS-side
+// depth-aware formatter (below) that mirrors the native output format.
+function inspect(value, opts) {
+  // Node also supports inspect(value, showHidden, depth, colors), but the
+  // object form is what matters for the depth option.
+  if (opts && typeof opts === 'object' && 'depth' in opts) {
+    var depth = opts.depth;
+    // `depth: null` means infinite. Anything else must be a number.
+    if (depth !== null && typeof depth !== 'number') depth = 2;
+    return inspectWithDepth(value, depth);
+  }
   return globalThis.__velox_inspect(value);
 }
 // Symbol Node looks up to let objects provide a custom inspect representation.
 inspect.custom = Symbol.for('nodejs.util.inspect.custom');
+
+// ---------------------------------------------------------------------------
+// Depth-aware inspect (used only when a `depth` option is supplied). Mirrors the
+// format produced by the native `__velox_inspect` (src/inspect.rs) so output is
+// consistent, but truncates objects/arrays deeper than `maxDepth` as Node does:
+// nested objects render as `[Object]` (or the constructor name) and arrays as
+// `[Array]`. `maxDepth === null` means never truncate.
+// ---------------------------------------------------------------------------
+
+function inspectWithDepth(value, maxDepth) {
+  function isIdentifier(key) {
+    return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key);
+  }
+  function quoteString(s) {
+    var out = "'";
+    for (var i = 0; i < s.length; i++) {
+      var c = s[i];
+      if (c === "'") out += "\\'";
+      else if (c === '\\') out += '\\\\';
+      else if (c === '\n') out += '\\n';
+      else if (c === '\r') out += '\\r';
+      else if (c === '\t') out += '\\t';
+      else {
+        var code = s.charCodeAt(i);
+        if (code < 0x20) out += '\\x' + code.toString(16).padStart(2, '0');
+        else out += c;
+      }
+    }
+    return out + "'";
+  }
+  function funcName(fn) {
+    try {
+      var src = Function.prototype.toString.call(fn);
+      var isClass = /^\s*class[\s{]/.test(src);
+      var name = fn.name;
+      if (isClass) return name ? '[class ' + name + ']' : '[class (anonymous)]';
+      return name ? '[Function: ' + name + ']' : '[Function (anonymous)]';
+    } catch (e) {
+      return '[Function]';
+    }
+  }
+  function ctorName(v) {
+    try {
+      var proto = Object.getPrototypeOf(v);
+      if (proto === null) return null;
+      var ctor = proto.constructor;
+      if (typeof ctor === 'function' && ctor.name) return ctor.name;
+    } catch (e) {}
+    return undefined;
+  }
+  function formatKey(key) {
+    return isIdentifier(key) ? key : quoteString(key);
+  }
+
+  function rec(value, depth, seen, topLevel) {
+    var t = typeof value;
+    if (value === null) return 'null';
+    if (t === 'undefined') return 'undefined';
+    if (t === 'boolean') return String(value);
+    if (t === 'number') return Object.is(value, -0) ? '-0' : String(value);
+    if (t === 'bigint') return String(value) + 'n';
+    if (t === 'symbol') return value.toString();
+    if (t === 'string') return topLevel ? value : quoteString(value);
+    if (t === 'function') return funcName(value);
+
+    if (seen.has(value)) return '[Circular *1]';
+
+    var tag;
+    try { tag = Object.prototype.toString.call(value); }
+    catch (e) { tag = '[object Object]'; }
+
+    if (value instanceof Date || tag === '[object Date]') {
+      try { return value.toISOString(); } catch (e) { return 'Invalid Date'; }
+    }
+    if (value instanceof RegExp || tag === '[object RegExp]') {
+      try { return String(value); } catch (e) { return '/?/'; }
+    }
+    if (value instanceof Error || tag === '[object Error]') {
+      try {
+        var nm = value.name || 'Error';
+        var msg = value.message;
+        return msg ? nm + ': ' + msg : nm;
+      } catch (e) { return '[Error]'; }
+    }
+
+    var isArray = Array.isArray(value);
+    var isMap = typeof Map !== 'undefined' && value instanceof Map;
+    var isSet = typeof Set !== 'undefined' && value instanceof Set;
+
+    // Depth limit — `null` maxDepth means infinite.
+    if (maxDepth !== null && depth > maxDepth) {
+      if (isArray) return '[Array]';
+      if (isMap) return '[Map]';
+      if (isSet) return '[Set]';
+      var cn = ctorName(value);
+      if (cn && cn !== 'Object') return '[' + cn + ']';
+      return '[Object]';
+    }
+
+    seen.add(value);
+    var result;
+    try {
+      if (isArray) result = formatArray(value, depth, seen);
+      else if (isMap) result = formatMap(value, depth, seen);
+      else if (isSet) result = formatSet(value, depth, seen);
+      else result = formatObject(value, depth, seen);
+    } finally {
+      seen.delete(value);
+    }
+    return result;
+  }
+
+  function formatArray(arr, depth, seen) {
+    var parts = [];
+    var len = arr.length;
+    var emptyRun = 0;
+    for (var i = 0; i < len; i++) {
+      if (!(i in arr)) { emptyRun++; continue; }
+      if (emptyRun > 0) {
+        parts.push('<' + emptyRun + ' empty item' + (emptyRun > 1 ? 's' : '') + '>');
+        emptyRun = 0;
+      }
+      var v;
+      try { v = arr[i]; } catch (e) { v = '[getter error]'; }
+      parts.push(rec(v, depth + 1, seen, false));
+    }
+    if (emptyRun > 0) {
+      parts.push('<' + emptyRun + ' empty item' + (emptyRun > 1 ? 's' : '') + '>');
+    }
+    var keys;
+    try { keys = Object.keys(arr); } catch (e) { keys = []; }
+    for (var k = 0; k < keys.length; k++) {
+      var key = keys[k];
+      if (/^(0|[1-9][0-9]*)$/.test(key) && Number(key) < len) continue;
+      parts.push(formatKey(key) + ': ' + safeInspect(arr, key, depth, seen));
+    }
+    if (parts.length === 0) return '[]';
+    return '[ ' + parts.join(', ') + ' ]';
+  }
+
+  function safeInspect(obj, key, depth, seen) {
+    var v;
+    try { v = obj[key]; } catch (e) { return '[getter error]'; }
+    return rec(v, depth + 1, seen, false);
+  }
+
+  function formatObject(obj, depth, seen) {
+    var parts = [];
+    var keys;
+    try { keys = Object.keys(obj); } catch (e) { keys = []; }
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      parts.push(formatKey(key) + ': ' + safeInspect(obj, key, depth, seen));
+    }
+    var prefix = '';
+    var cn = ctorName(obj);
+    if (cn === null) prefix = '[Object: null prototype] ';
+    else if (cn !== undefined && cn !== 'Object') prefix = cn + ' ';
+    if (parts.length === 0) return prefix ? prefix + '{}' : '{}';
+    return prefix + '{ ' + parts.join(', ') + ' }';
+  }
+
+  function formatMap(map, depth, seen) {
+    var parts = [];
+    try {
+      map.forEach(function (v, k) {
+        parts.push(rec(k, depth + 1, seen, false) + ' => ' + rec(v, depth + 1, seen, false));
+      });
+    } catch (e) {}
+    var head = 'Map(' + map.size + ')';
+    if (parts.length === 0) return head + ' {}';
+    return head + ' { ' + parts.join(', ') + ' }';
+  }
+
+  function formatSet(set, depth, seen) {
+    var parts = [];
+    try {
+      set.forEach(function (v) { parts.push(rec(v, depth + 1, seen, false)); });
+    } catch (e) {}
+    var head = 'Set(' + set.size + ')';
+    if (parts.length === 0) return head + ' {}';
+    return head + ' { ' + parts.join(', ') + ' }';
+  }
+
+  try {
+    return rec(value, 0, new WeakSet(), true);
+  } catch (e) {
+    try { return String(value); } catch (e2) { return '[unprintable]'; }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // format / formatWithOptions
@@ -687,9 +888,176 @@ function aborted(signal, resource) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// MIMEType / MIMEParams (Node 18+)
+// ---------------------------------------------------------------------------
+
+// A MIME token (type/subtype/param-name) per the WHATWG MIME spec: at least one
+// HTTP token code point. We keep this permissive but reject empty/whitespace.
+var MIME_HAS_WS = /[\s;]/;
+
+function isValidMimeToken(str) {
+  return str.length > 0 && !MIME_HAS_WS.test(str);
+}
+
+// MIMEParams is a Map-like container of MIME parameters. It preserves insertion
+// order and exposes get/set/has/delete plus iteration (entries/keys/values and
+// Symbol.iterator), matching Node's util.MIMEParams.
+function MIMEParams() {
+  // Internal storage as a real Map; param names are lowercased on the way in.
+  Object.defineProperty(this, '__map', { value: new Map(), enumerable: false });
+}
+MIMEParams.prototype.get = function (name) {
+  name = String(name);
+  return this.__map.has(name) ? this.__map.get(name) : null;
+};
+MIMEParams.prototype.has = function (name) {
+  return this.__map.has(String(name));
+};
+MIMEParams.prototype.set = function (name, value) {
+  name = String(name).toLowerCase();
+  value = String(value);
+  if (!isValidMimeToken(name)) {
+    throw new TypeError('Invalid MIME parameter name "' + name + '"');
+  }
+  this.__map.set(name, value);
+  return this;
+};
+MIMEParams.prototype.delete = function (name) {
+  this.__map.delete(String(name));
+};
+MIMEParams.prototype.entries = function () {
+  return this.__map.entries();
+};
+MIMEParams.prototype.keys = function () {
+  return this.__map.keys();
+};
+MIMEParams.prototype.values = function () {
+  return this.__map.values();
+};
+MIMEParams.prototype[Symbol.iterator] = function () {
+  return this.__map.entries();
+};
+// Reserialize: "key=value;key2=value2", quoting values that need it.
+MIMEParams.prototype.toString = function () {
+  var out = [];
+  this.__map.forEach(function (value, name) {
+    // Quote the value if it contains characters outside the HTTP token set.
+    var needsQuote = value.length === 0 || /[^!#$%&'*+\-.^_`|~A-Za-z0-9]/.test(value);
+    if (needsQuote) {
+      value = '"' + value.replace(/(["\\])/g, '\\$1') + '"';
+    }
+    out.push(name + '=' + value);
+  });
+  return out.join(';');
+};
+
+// Parse a parameter string (the part after the first ';') into a MIMEParams.
+function parseMimeParams(str, params) {
+  var i = 0;
+  var len = str.length;
+  while (i < len) {
+    // Skip leading ';' and whitespace.
+    while (i < len && (str[i] === ';' || /\s/.test(str[i]))) i++;
+    if (i >= len) break;
+    // Read the parameter name up to '=' or ';'.
+    var nameStart = i;
+    while (i < len && str[i] !== '=' && str[i] !== ';') i++;
+    var name = str.slice(nameStart, i).trim().toLowerCase();
+    if (i < len && str[i] === ';') { continue; } // bare name, no value
+    i++; // consume '='
+    var value;
+    if (i < len && str[i] === '"') {
+      // Quoted string: read until the closing unescaped quote.
+      i++;
+      var buf = '';
+      while (i < len) {
+        var ch = str[i];
+        if (ch === '\\' && i + 1 < len) { buf += str[i + 1]; i += 2; continue; }
+        if (ch === '"') { i++; break; }
+        buf += ch; i++;
+      }
+      value = buf;
+      // Skip to next ';'.
+      while (i < len && str[i] !== ';') i++;
+    } else {
+      var valStart = i;
+      while (i < len && str[i] !== ';') i++;
+      value = str.slice(valStart, i).trim();
+    }
+    // Only the first occurrence of a name is kept (per spec), and the name must
+    // be a valid token.
+    if (name && isValidMimeToken(name) && !params.__map.has(name)) {
+      params.__map.set(name, value);
+    }
+  }
+}
+
+function MIMEType(input) {
+  input = String(input).trim();
+  var slash = input.indexOf('/');
+  if (slash === -1) {
+    throw new TypeError('Invalid MIME type "' + input + '"');
+  }
+  var type = input.slice(0, slash).trim().toLowerCase();
+  // Subtype runs up to the first ';' (which begins parameters).
+  var rest = input.slice(slash + 1);
+  var semi = rest.indexOf(';');
+  var subtype = (semi === -1 ? rest : rest.slice(0, semi)).trim().toLowerCase();
+  if (!isValidMimeToken(type) || !isValidMimeToken(subtype)) {
+    throw new TypeError('Invalid MIME type "' + input + '"');
+  }
+  this.__type = type;
+  this.__subtype = subtype;
+  this.__params = new MIMEParams();
+  if (semi !== -1) {
+    parseMimeParams(rest.slice(semi + 1), this.__params);
+  }
+}
+Object.defineProperties(MIMEType.prototype, {
+  type: {
+    enumerable: true,
+    configurable: true,
+    get: function () { return this.__type; },
+    set: function (v) {
+      v = String(v).toLowerCase();
+      if (!isValidMimeToken(v)) throw new TypeError('Invalid MIME type');
+      this.__type = v;
+    },
+  },
+  subtype: {
+    enumerable: true,
+    configurable: true,
+    get: function () { return this.__subtype; },
+    set: function (v) {
+      v = String(v).toLowerCase();
+      if (!isValidMimeToken(v)) throw new TypeError('Invalid MIME subtype');
+      this.__subtype = v;
+    },
+  },
+  essence: {
+    enumerable: true,
+    configurable: true,
+    get: function () { return this.__type + '/' + this.__subtype; },
+  },
+  params: {
+    enumerable: true,
+    configurable: true,
+    get: function () { return this.__params; },
+  },
+});
+MIMEType.prototype.toString = function () {
+  var str = this.essence;
+  var params = this.__params.toString();
+  if (params) str += ';' + params;
+  return str;
+};
+
 module.exports = {
   // Core
   inspect,
+  MIMEType,
+  MIMEParams,
   format,
   formatWithOptions,
   inherits,

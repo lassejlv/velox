@@ -1253,6 +1253,7 @@ Stream.Transform = Transform;
 Stream.PassThrough = PassThrough;
 Stream.pipeline = pipeline;
 Stream.finished = finished;
+Stream.compose = compose;
 
 // Promise-based variants.
 function pipelinePromise() {
@@ -1274,6 +1275,110 @@ function finishedPromise(stream, opts) {
   });
 }
 
+// ===========================================================================
+// compose(...streams) — chain streams/functions into a single Duplex whose
+// writable side feeds the first stage and whose readable side is the last
+// stage. Each argument may be a stream object (Readable/Writable/Duplex/
+// Transform) or an async-generator function `(source) => asyncIterable` that
+// transforms the previous stage's output into the next stage's input. The
+// returned Duplex pipelines all stages together (errors propagate via the
+// shared pipeline()).
+// ===========================================================================
+
+// Turn one compose() argument into a Duplex-ish stream. A function argument
+// becomes a Transform: its writable side is buffered into an async iterable
+// that's handed to the generator, and the generator's yielded values feed the
+// Duplex's readable side via Readable.from.
+function composeStageFromFunction(fn) {
+  // Source: an async iterable that yields each chunk written to `input` and
+  // completes when the writable side ends. A small promise-based queue bridges
+  // the (push-based) writable callbacks to the (pull-based) async iterator.
+  var queue = [];
+  var pendingResolve = null;
+  var ended = false;
+  var errored = null;
+
+  function pushChunk(chunk) {
+    if (pendingResolve) {
+      var r = pendingResolve;
+      pendingResolve = null;
+      r({ value: chunk, done: false });
+    } else {
+      queue.push(chunk);
+    }
+  }
+  function finish() {
+    ended = true;
+    if (pendingResolve) {
+      var r = pendingResolve;
+      pendingResolve = null;
+      r({ value: undefined, done: true });
+    }
+  }
+
+  var source = {};
+  source[Symbol.asyncIterator] = function () {
+    return {
+      next: function () {
+        if (errored) return Promise.reject(errored);
+        if (queue.length) return Promise.resolve({ value: queue.shift(), done: false });
+        if (ended) return Promise.resolve({ value: undefined, done: true });
+        return new Promise(function (resolve) { pendingResolve = resolve; });
+      },
+    };
+  };
+
+  // The generator's output is a readable; the writable half collects input.
+  var out = Readable.from(fn(source));
+  var stage = new Duplex({ objectMode: true });
+  stage._write = function (chunk, enc, cb) { pushChunk(chunk); cb(); };
+  stage._final = function (cb) { finish(); cb(); };
+  stage._read = function () {};
+  // Forward the generator output to the Duplex's readable side.
+  out.on('data', function (chunk) { stage.push(chunk); });
+  out.on('end', function () { stage.push(null); });
+  out.on('error', function (err) { errored = err; errorOrDestroy(stage, err); });
+  return stage;
+}
+
+function composeStage(arg) {
+  if (typeof arg === 'function') return composeStageFromFunction(arg);
+  return arg; // already a stream object — use as-is.
+}
+
+function compose() {
+  var args = Array.prototype.slice.call(arguments);
+  if (args.length === 0) {
+    throw new TypeError('compose requires at least one stream');
+  }
+
+  var stages = args.map(composeStage);
+
+  // Entry writable: feeds the first stage. Exit readable: the last stage.
+  var entry = new PassThrough({ objectMode: true });
+  var exit = new PassThrough({ objectMode: true });
+
+  // Pipeline every stage between the entry (writable feed) and exit (readable
+  // drain): pipeline(entry, ...stages, exit).
+  var chain = [entry].concat(stages).concat([exit]);
+  pipeline.apply(null, chain.concat([function (err) {
+    if (err) errorOrDestroy(result, err);
+  }]));
+
+  // The public Duplex: writes go to `entry`, reads come from `exit`.
+  var result = new Duplex({ objectMode: true });
+  result._write = function (chunk, enc, cb) {
+    if (!entry.write(chunk)) entry.once('drain', cb);
+    else cb();
+  };
+  result._final = function (cb) { entry.end(); cb(); };
+  result._read = function () {};
+  exit.on('data', function (chunk) { result.push(chunk); });
+  exit.on('end', function () { result.push(null); });
+  exit.on('error', function (err) { errorOrDestroy(result, err); });
+  return result;
+}
+
 module.exports = Stream;
 module.exports.Stream = Stream;
 module.exports.Readable = Readable;
@@ -1283,6 +1388,7 @@ module.exports.Transform = Transform;
 module.exports.PassThrough = PassThrough;
 module.exports.pipeline = pipeline;
 module.exports.finished = finished;
+module.exports.compose = compose;
 module.exports.promises = { pipeline: pipelinePromise, finished: finishedPromise };
 // Node's `stream` module re-exports EventEmitter (Stream's base class); some
 // libraries do `class X extends require('stream').EventEmitter` (e.g. node-cron).
@@ -1308,5 +1414,6 @@ exports.Transform = Transform;
 exports.PassThrough = PassThrough;
 exports.pipeline = pipeline;
 exports.finished = finished;
+exports.compose = compose;
 
 module.exports.default = module.exports;

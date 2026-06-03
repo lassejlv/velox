@@ -91,6 +91,22 @@ check("microtask before macrotask", async () => {
   await new Promise<void>((res) => { setTimeout(() => { order.push("macro"); res(); }, 0); queueMicrotask(() => order.push("micro")); });
   if (order[0] !== "micro") throw new Error("order=" + order);
 });
+check("BroadcastChannel same-name delivery", async () => {
+  const a = new BroadcastChannel("velox-test"); const b = new BroadcastChannel("velox-test");
+  const got = await new Promise<any>((res) => { let self = false; a.onmessage = () => (self = true); b.onmessage = (e: any) => res(e.data); a.postMessage(42); setTimeout(() => res(self ? "SELF" : "none"), 50); });
+  a.close(); b.close();
+  if (got !== 42) throw new Error("bc got=" + got);
+});
+check("node:buffer re-exports Blob/File", async () => {
+  const { Blob, File } = require("node:buffer");
+  if (new Blob(["x"]).size !== 1) throw new Error("Blob");
+  const f = new File(["ab"], "a.txt"); if (f.name !== "a.txt" || f.size !== 2) throw new Error("File");
+});
+check("MessageChannel ports", async () => {
+  const mc = new MessageChannel();
+  const v = await new Promise<any>((res) => { mc.port1.onmessage = (e: any) => res(e.data); mc.port2.postMessage(7); mc.port1.start?.(); mc.port2.start?.(); });
+  if (v !== 7) throw new Error("mc=" + v);
+});
 
 await new Promise((r) => setTimeout(r, 200));
 let pass = 0, fail = 0;

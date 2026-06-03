@@ -192,6 +192,23 @@ function setIntervalPromise(delay, value, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// scheduler (Node 17+ experimental)
+//
+// scheduler.wait(ms, opts) -> Promise that resolves after `ms` ms; honours
+// opts.signal for abort. Equivalent to setTimeout(ms, undefined, opts).
+// scheduler.yield() -> Promise that resolves on the next turn (setImmediate).
+// ---------------------------------------------------------------------------
+
+const scheduler = {
+  wait(ms, opts) {
+    return setTimeoutPromise(ms, undefined, opts);
+  },
+};
+scheduler['yield'] = function () {
+  return setImmediatePromise(undefined);
+};
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -199,5 +216,6 @@ module.exports = {
   setTimeout: setTimeoutPromise,
   setImmediate: setImmediatePromise,
   setInterval: setIntervalPromise,
+  scheduler: scheduler,
 };
 module.exports.default = module.exports;

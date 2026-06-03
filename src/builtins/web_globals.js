@@ -828,4 +828,73 @@
     Object.defineProperty(nav, "onLine", { enumerable: true, value: true });
     g.navigator = nav;
   }
+
+  // ---------------------------------------------------------------------------
+  // BroadcastChannel — same-runtime pub/sub. Channels sharing a name form a
+  // group; postMessage delivers a MessageEvent asynchronously to every OTHER
+  // open channel in the group (never back to itself). worker_threads are
+  // separate runtimes, so cross-thread delivery isn't supported here.
+  // ---------------------------------------------------------------------------
+  if (typeof g.BroadcastChannel === "undefined") {
+    var bcRegistry = new Map(); // name -> Set of open channels
+    var BroadcastChannel = class BroadcastChannel extends g.EventTarget {
+      constructor(name) {
+        super();
+        this._name = String(name);
+        this._closed = false;
+        this._onmessage = null;
+        this._onmessageerror = null;
+        var group = bcRegistry.get(this._name);
+        if (!group) { group = new Set(); bcRegistry.set(this._name, group); }
+        group.add(this);
+      }
+      get name() { return this._name; }
+      postMessage(value) {
+        if (this._closed) throw new DOMException("BroadcastChannel is closed", "InvalidStateError");
+        var group = bcRegistry.get(this._name);
+        if (!group) return;
+        var cloned;
+        try {
+          cloned = typeof g.structuredClone === "function" ? g.structuredClone(value) : value;
+        } catch (e) {
+          cloned = value;
+        }
+        var self = this;
+        var targets = [];
+        group.forEach(function (ch) { if (ch !== self && !ch._closed) targets.push(ch); });
+        g.queueMicrotask(function () {
+          for (var i = 0; i < targets.length; i++) {
+            var ch = targets[i];
+            if (ch._closed) continue;
+            var ev = typeof g.MessageEvent === "function"
+              ? new g.MessageEvent("message", { data: cloned })
+              : { type: "message", data: cloned };
+            ch.dispatchEvent(ev);
+          }
+        });
+      }
+      close() {
+        if (this._closed) return;
+        this._closed = true;
+        var group = bcRegistry.get(this._name);
+        if (group) {
+          group.delete(this);
+          if (group.size === 0) bcRegistry.delete(this._name);
+        }
+      }
+      get onmessage() { return this._onmessage; }
+      set onmessage(fn) {
+        if (this._onmessage) this.removeEventListener("message", this._onmessage);
+        this._onmessage = typeof fn === "function" ? fn : null;
+        if (this._onmessage) this.addEventListener("message", this._onmessage);
+      }
+      get onmessageerror() { return this._onmessageerror; }
+      set onmessageerror(fn) {
+        if (this._onmessageerror) this.removeEventListener("messageerror", this._onmessageerror);
+        this._onmessageerror = typeof fn === "function" ? fn : null;
+        if (this._onmessageerror) this.addEventListener("messageerror", this._onmessageerror);
+      }
+    };
+    g.BroadcastChannel = BroadcastChannel;
+  }
 })();
