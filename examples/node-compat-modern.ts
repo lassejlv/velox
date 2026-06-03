@@ -179,7 +179,17 @@ check("crypto.checkPrimeSync", () => { const c = require("node:crypto"); if (!c.
 check("crypto x25519 keygen + diffieHellman", () => { const c = require("node:crypto"); const a = c.generateKeyPairSync("x25519"); const b = c.generateKeyPairSync("x25519"); const s1 = c.diffieHellman({ privateKey: a.privateKey, publicKey: b.publicKey }); const s2 = c.diffieHellman({ privateKey: b.privateKey, publicKey: a.publicKey }); if (s1.length !== 32 || !s1.equals(s2)) throw new Error("x25519 dh"); });
 check("crypto x25519 RFC 7748 vector", () => { const c = require("node:crypto"); const priv = (h: string) => "-----BEGIN PRIVATE KEY-----\n" + Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), Buffer.from(h, "hex")]).toString("base64") + "\n-----END PRIVATE KEY-----\n"; const pub = (h: string) => "-----BEGIN PUBLIC KEY-----\n" + Buffer.concat([Buffer.from("302a300506032b656e032100", "hex"), Buffer.from(h, "hex")]).toString("base64") + "\n-----END PUBLIC KEY-----\n"; const shared = c.diffieHellman({ privateKey: c.createPrivateKey(priv("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")), publicKey: c.createPublicKey(pub("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")) }); if (shared.toString("hex") !== "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742") throw new Error("rfc7748"); });
 check("crypto.hash one-shot", () => { const c = require("node:crypto"); if (c.hash("sha256", "abc") !== "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") throw new Error("hash"); if (!Buffer.isBuffer(c.hash("sha256", "abc", "buffer"))) throw new Error("hash-buf"); });
-check("util.styleText", () => { const { styleText } = require("node:util"); if (styleText("red", "hi") !== "\x1b[31mhi\x1b[39m") throw new Error("styleText"); });
+check("util.styleText", () => {
+  const { styleText } = require("node:util");
+  const prev = process.env.NO_COLOR;
+  delete process.env.NO_COLOR;
+  try {
+    if (styleText("red", "hi") !== "\x1b[31mhi\x1b[39m") throw new Error("styleText");
+  } finally {
+    if (prev === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = prev;
+  }
+});
 check("util.aborted", async () => { const { aborted } = require("node:util"); const ac = new AbortController(); const p = aborted(ac.signal); ac.abort(); await p; });
 check("fs.cpSync recursive", () => { const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path"); const base = fs.mkdtempSync(path.join(os.tmpdir(), "velox-cp-")); fs.mkdirSync(path.join(base, "s/sub"), { recursive: true }); fs.writeFileSync(path.join(base, "s/a.txt"), "hi"); fs.writeFileSync(path.join(base, "s/sub/b.txt"), "yo"); fs.cpSync(path.join(base, "s"), path.join(base, "d"), { recursive: true }); if (fs.readFileSync(path.join(base, "d/a.txt"), "utf8") !== "hi") throw new Error("cp a"); if (fs.readFileSync(path.join(base, "d/sub/b.txt"), "utf8") !== "yo") throw new Error("cp b"); fs.rmSync(base, { recursive: true, force: true }); });
 check("fs.globSync", () => { const fs = require("node:fs"); const m = fs.globSync("examples/node-compat-*.ts"); if (!Array.isArray(m) || !m.includes("examples/node-compat-modern.ts")) throw new Error("globSync: " + m.length); });

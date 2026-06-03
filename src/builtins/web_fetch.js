@@ -473,6 +473,39 @@
         return b;
       });
     };
+
+    // `body` — a WHATWG ReadableStream of the body bytes (null when there's no
+    // body), created lazily and cached. Code that needs the bytes uses the
+    // internal `_bodyBuffer`; consumers like @hono/node-server stream via
+    // `res.body.getReader()`, which the previous raw-Buffer `body` lacked.
+    Object.defineProperty(proto, "body", {
+      configurable: true,
+      get: function () {
+        if (this._bodyStream !== undefined) return this._bodyStream;
+        if (this._sourceBody === null || this._sourceBody === undefined) {
+          this._bodyStream = null;
+          return null;
+        }
+        var self = this;
+        var sent = false;
+        this._bodyStream = new g.ReadableStream({
+          pull: function (controller) {
+            if (sent) return;
+            sent = true;
+            if (!self.bodyUsed) {
+              self.bodyUsed = true;
+              var bytes = new Uint8Array(self._bodyBuffer || Buffer.alloc(0));
+              if (bytes.length) controller.enqueue(bytes);
+            }
+            controller.close();
+          },
+        });
+        return this._bodyStream;
+      },
+      // Constructors historically assigned `this.body = <buffer>`; body is now
+      // derived from `_bodyBuffer`, so swallow the assignment.
+      set: function () {},
+    });
   }
 
   // ===========================================================================

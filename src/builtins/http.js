@@ -501,6 +501,7 @@ ServerResponse.prototype.write = function (chunk, encoding, cb) {
 
   var buf = chunk == null ? Buffer.alloc(0)
     : Buffer.isBuffer(chunk) ? chunk
+    : ArrayBuffer.isView(chunk) ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
     : Buffer.from(chunk, encoding || 'utf8');
 
   if (this._chunked) {
@@ -523,6 +524,7 @@ ServerResponse.prototype.end = function (chunk, encoding, cb) {
 
   var buf = chunk == null ? null
     : Buffer.isBuffer(chunk) ? chunk
+    : ArrayBuffer.isView(chunk) ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
     : Buffer.from(chunk, encoding || 'utf8');
 
   if (!this._headerSent) {
@@ -927,6 +929,7 @@ ClientRequest.prototype.write = function (chunk, encoding, cb) {
   if (typeof encoding === 'function') { cb = encoding; encoding = null; }
   var buf = chunk == null ? Buffer.alloc(0)
     : Buffer.isBuffer(chunk) ? chunk
+    : ArrayBuffer.isView(chunk) ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
     : Buffer.from(chunk, encoding || 'utf8');
 
   if (this._headerSent) {
@@ -946,7 +949,9 @@ ClientRequest.prototype.end = function (chunk, encoding, cb) {
   if (this.finished) return this;
 
   if (chunk != null) {
-    var buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8');
+    var buf = Buffer.isBuffer(chunk) ? chunk
+      : ArrayBuffer.isView(chunk) ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      : Buffer.from(chunk, encoding || 'utf8');
     this._bodyChunks.push(buf);
   }
   this.finished = true;

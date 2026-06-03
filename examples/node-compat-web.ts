@@ -25,6 +25,23 @@ check("Headers iterate", () => { const h = new Headers({ a: "1", b: "2" }); cons
 check("Response.json + status", async () => { const r = Response.json({ ok: 1 }, { status: 201 }); if (r.status !== 201) throw new Error("st"); if ((await r.json()).ok !== 1) throw new Error("j"); });
 check("Response.text", async () => { const r = new Response("hi"); if (await r.text() !== "hi") throw new Error("t"); });
 check("Response.arrayBuffer", async () => { const r = new Response("abc"); const ab = await r.arrayBuffer(); if (new Uint8Array(ab).length !== 3) throw new Error("ab"); });
+check("Response.body stream consumption", async () => {
+  const r = new Response("abc");
+  const body = r.body;
+  if (r.bodyUsed) throw new Error("body access consumed");
+  const clone = r.clone();
+  if (await clone.text() !== "abc") throw new Error("clone");
+  const reader = body!.getReader();
+  const first = await reader.read();
+  if (!r.bodyUsed || first.done || first.value.length !== 3) throw new Error("stream read");
+  try { await r.text(); throw new Error("text should reject"); }
+  catch (e: any) { if (!/consumed/.test(String(e.message))) throw e; }
+
+  const r2 = new Response("xyz");
+  if (await r2.text() !== "xyz") throw new Error("text");
+  const afterText = await r2.body!.getReader().read();
+  if (!afterText.done) throw new Error("stream after text");
+});
 check("Request clone", async () => { const req = new Request("https://ex.com", { method: "POST", body: "x" }); const c = req.clone(); if (c.method !== "POST" || await c.text() !== "x") throw new Error("clone"); });
 check("Response.ok ranges", () => { if (!new Response("", { status: 200 }).ok) throw new Error("200"); if (new Response("", { status: 404 }).ok) throw new Error("404"); });
 
