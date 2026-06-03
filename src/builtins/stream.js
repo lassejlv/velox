@@ -453,6 +453,12 @@ var _origOn = Readable.prototype.on = function (ev, fn) {
     if (state.flowing !== false) this.resume();
   } else if (ev === 'readable') {
     state.readableListening = true;
+    // A 'readable' listener means the consumer pulls via read(); leave flowing
+    // mode (unless a 'data' listener also wants it) so pushed data is buffered
+    // for read() instead of being emitted as lost 'data' events. Mirrors Node's
+    // updateReadableListening. Fixes got, which resume()s the response (flowing)
+    // and then adds a 'readable' listener + reads via response.read().
+    if (this.listenerCount('data') === 0) state.flowing = false;
     if ((state.length || state.ended) && !state.emittedReadable) {
       emitReadable(this);
     }
