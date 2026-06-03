@@ -102,11 +102,52 @@ function monitorEventLoopDelay() {
   };
 }
 
+// createHistogram — a RecordableHistogram that stores samples and computes
+// min/max/mean/stddev/percentile on demand (good enough for the metrics most
+// libraries collect; not the HdrHistogram velox lacks a native for).
+function createHistogram() {
+  var samples = [];
+  var lastDelta = null;
+  function pct(p) {
+    if (!samples.length) return 0;
+    var sorted = samples.slice().sort(function (a, b) { return a - b; });
+    var idx = Math.ceil((p / 100) * sorted.length) - 1;
+    return sorted[Math.max(0, Math.min(sorted.length - 1, idx))];
+  }
+  var h = {
+    record: function (v) { samples.push(Number(v)); },
+    recordDelta: function () {
+      var now = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6; // ns
+      if (lastDelta != null) samples.push(now - lastDelta);
+      lastDelta = now;
+    },
+    reset: function () { samples = []; lastDelta = null; },
+    percentile: pct,
+    get count() { return samples.length; },
+    get min() { return samples.length ? Math.min.apply(Math, samples) : 0; },
+    get max() { return samples.length ? Math.max.apply(Math, samples) : 0; },
+    get mean() { return samples.length ? samples.reduce(function (a, b) { return a + b; }, 0) / samples.length : 0; },
+    get stddev() {
+      if (!samples.length) return 0;
+      var m = h.mean, v = samples.reduce(function (a, b) { return a + (b - m) * (b - m); }, 0) / samples.length;
+      return Math.sqrt(v);
+    },
+    get exceeds() { return 0; },
+    get percentiles() {
+      var map = new Map();
+      [50, 75, 90, 97.5, 99, 99.9].forEach(function (p) { map.set(p, pct(p)); });
+      return map;
+    },
+  };
+  return h;
+}
+
 module.exports = {
   performance: performance,
   PerformanceObserver: PerformanceObserver,
   PerformanceEntry: function () {},
   monitorEventLoopDelay: monitorEventLoopDelay,
+  createHistogram: createHistogram,
   constants: {},
 };
 module.exports.default = module.exports;

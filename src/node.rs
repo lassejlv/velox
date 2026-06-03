@@ -382,6 +382,15 @@ pub const GLOBALS_PRELUDE: &str = r#"
   process.availableMemory = function () { return __velox_mem_info_parse().available; };
   process.constrainedMemory = function () { return 0; };
 
+  // allowedNodeEnvironmentFlags — a Set of the flags Node accepts in NODE_OPTIONS.
+  // Libraries probe `.has(flag)`; velox doesn't act on NODE_OPTIONS, so expose a
+  // small set of widely-recognized flags (membership check is what callers use).
+  process.allowedNodeEnvironmentFlags = new Set([
+    '--enable-source-maps', '--experimental-vm-modules', '--max-old-space-size',
+    '--no-warnings', '--no-deprecation', '--trace-warnings', '--unhandled-rejections',
+    '--preserve-symlinks', '--title', '--inspect', '--require', '--import', '--loader',
+  ]);
+
   // getActiveResourcesInfo() lists strings naming live event-loop resources.
   // velox doesn't expose per-handle bookkeeping to JS; report an empty list
   // (callers use it for diagnostics, not control flow).

@@ -45,6 +45,18 @@
     return Buffer.from(body, "base64");
   }
 
+  // Extract the EC private scalar from a PKCS8 DER: the ECPrivateKey carries
+  // `INTEGER 1` (02 01 01) then `OCTET STRING(coordLen)` (04 <len>) holding the
+  // scalar. Locate that exact prefix and return the following coordLen bytes.
+  function ecPrivScalar(der, coordLen) {
+    for (var i = 0; i + 4 + coordLen <= der.length; i++) {
+      if (der[i] === 0x02 && der[i + 1] === 0x01 && der[i + 2] === 0x01 && der[i + 3] === 0x04 && der[i + 4] === coordLen) {
+        return der.slice(i + 5, i + 5 + coordLen);
+      }
+    }
+    return null;
+  }
+
   // --- ECDSA: ASN.1 DER signature <-> raw r||s (IEEE P1363) ------------------
   function derToRaw(der, size) {
     var off = 2;
@@ -310,6 +322,21 @@
       var lenBytes = length / 8 | 0;
       if (name === "PBKDF2") return Promise.resolve(toAB(crypto.pbkdf2Sync(baseKey._m.secret, toBuf(algorithm.salt), algorithm.iterations, lenBytes, nodeHash(algorithm.hash))));
       if (name === "HKDF") return Promise.resolve(crypto.hkdfSync(nodeHash(algorithm.hash), baseKey._m.secret, toBuf(algorithm.salt), toBuf(algorithm.info || Buffer.alloc(0)), lenBytes));
+      if (name === "ECDH") {
+        // P-256 ECDH key agreement: raw scalar from the private PKCS8, raw point
+        // (0x04||X||Y) from the public SPKI, computed via the node ECDH native.
+        var crv = baseKey.algorithm.namedCurve || "P-256";
+        if (crv !== "P-256") throw new Error("ECDH deriveBits supports P-256 only");
+        var pubDer = pemToDer(algorithm.public._m.pem);
+        var point = pubDer.slice(pubDer.length - 65); // uncompressed point
+        var scalar = ecPrivScalar(pemToDer(baseKey._m.pem), 32);
+        if (!scalar) throw new Error("could not extract EC private scalar");
+        var ecdh = crypto.createECDH("prime256v1");
+        ecdh.setPrivateKey(scalar);
+        var secret = ecdh.computeSecret(point);
+        // length null/undefined ⇒ the full field element (256 bits).
+        return Promise.resolve(toAB(length == null ? secret : secret.slice(0, lenBytes)));
+      }
       throw new Error("Unsupported deriveBits algorithm " + name);
     } catch (e) { return Promise.reject(e); }
   }

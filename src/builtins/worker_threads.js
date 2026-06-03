@@ -170,5 +170,9 @@ module.exports = {
   setEnvironmentData: function () {},
   getEnvironmentData: function () { return undefined; },
   BroadcastChannel: typeof globalThis.BroadcastChannel !== 'undefined' ? globalThis.BroadcastChannel : undefined,
+  // Sentinel for `new Worker(file, { env: SHARE_ENV })` — share the parent's
+  // process.env with the worker. velox workers already inherit env, so this is
+  // just the recognizable symbol Node exposes.
+  SHARE_ENV: Symbol.for('nodejs.worker_threads.SHARE_ENV'),
 };
 module.exports.default = module.exports;
