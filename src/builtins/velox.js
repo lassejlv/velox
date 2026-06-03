@@ -8,12 +8,43 @@
 (function () {
   var cache = Object.create(null);
 
+  // Runtime CommonJS loader for an on-disk module the static bundler never saw —
+  // a dynamic `require(absolutePath)` of a `.ts`/`.tsx`/ESM file (e.g. tsx /
+  // drizzle-kit reading `drizzle.config.ts` at runtime). Bundles the file (TS
+  // stripped, ESM→CJS, its own deps resolved) via the native, evals the result,
+  // and returns the entry's exports. Cached by path.
+  function loadFileModule(spec) {
+    if (spec in cache) return cache[spec];
+    var prev = globalThis.__velox_require_result;
+    globalThis.__velox_require_result = undefined;
+    var bundle = __velox_bundle_module(spec);
+    // eslint-disable-next-line no-new-func
+    (new Function(bundle))();
+    var exp = globalThis.__velox_require_result;
+    globalThis.__velox_require_result = prev;
+    cache[spec] = exp;
+    return exp;
+  }
+
+  // A spec is a filesystem path (vs a bare builtin/package name) when absolute or
+  // explicitly relative.
+  function looksLikePath(spec) {
+    return spec.charCodeAt(0) === 47 /* / */ ||
+      spec.indexOf('./') === 0 || spec.indexOf('../') === 0;
+  }
+
   function builtinRequire(spec) {
     spec = String(spec);
+    if (looksLikePath(spec)) return loadFileModule(spec);
     var key = spec.indexOf('node:') === 0 ? spec.slice(5) : spec;
     if (key in cache) return cache[key];
     var src = __velox_load_builtin(key);
-    if (!src) throw new Error("Cannot find module '" + spec + "'");
+    if (!src) {
+      // Not a builtin and not an obvious path — try the filesystem as a last
+      // resort (bare specifiers that resolve to a real file).
+      try { return loadFileModule(spec); } catch (e) {}
+      throw new Error("Cannot find module '" + spec + "'");
+    }
     var module = { exports: {} };
     cache[key] = module.exports; // seed cache before running, for cycles
     try {

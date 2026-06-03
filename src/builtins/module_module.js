@@ -16,12 +16,23 @@ function loaderRequire(id) {
   throw new Error("Cannot find module '" + id + "'");
 }
 
+// Extension loader map (require.extensions / Module._extensions). velox bundles
+// at build time so these aren't the real load path, but tooling reads, copies,
+// and reassigns them (e.g. ts-node/tsx register a '.ts' loader by cloning '.js',
+// drizzle-kit indexes Module._extensions['.js']) — so they must be present and
+// callable, not undefined.
+var _extensions = {
+  '.js': function (module, filename) { return loaderRequire(filename); },
+  '.json': function (module, filename) { return loaderRequire(filename); },
+  '.node': function () { throw new Error('native addons are not supported'); },
+};
+
 function createRequire(filename) {
   var req = function require(id) { return loaderRequire(id); };
   req.resolve = function (id) { return id; };
   req.resolve.paths = function () { return null; };
   req.cache = {};
-  req.extensions = {};
+  req.extensions = _extensions;
   req.main = undefined;
   return req;
 }
@@ -45,6 +56,8 @@ Module.isBuiltin = isBuiltin;
 Module._resolveFilename = function (request) { return request; };
 Module._load = function (request) { return loaderRequire(request); };
 Module._cache = {};
+Module._extensions = _extensions;
+Module._pathCache = {};
 Module.syncBuiltinESMExports = function () {};
 Module.wrap = function (script) { return '(function (exports, require, module, __filename, __dirname) { ' + script + '\n});'; };
 Module.runMain = function () {};

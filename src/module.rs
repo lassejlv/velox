@@ -114,6 +114,11 @@ struct RequireCollector {
     calls: Vec<(Span, String)>,
     /// `import('x')` — span of the *whole* expression + the specifier value.
     dynamic_imports: Vec<(Span, String)>,
+    /// Non-literal `import(expr)` — start offset of the `import` keyword, so it
+    /// can be rewritten to `__velox_import(` and routed through the bundle's
+    /// loader (JSC's native dynamic import can't see node_modules). `expr` is
+    /// evaluated at runtime and resolved against cwd.
+    runtime_imports: Vec<u32>,
     /// Nesting depth inside function bodies (top level is 0).
     fn_depth: u32,
     /// True if an `await` appears at the module's top level.
@@ -150,12 +155,15 @@ impl<'a> Visit<'a> for RequireCollector {
                 self.dynamic_imports
                     .push((import.span, lit.value.to_string()));
             }
-            Expression::TemplateLiteral(tpl) => {
-                if let Some(s) = no_subst_template(tpl) {
-                    self.dynamic_imports.push((import.span, s));
-                }
+            Expression::TemplateLiteral(tpl) if no_subst_template(tpl).is_some() => {
+                self.dynamic_imports
+                    .push((import.span, no_subst_template(tpl).unwrap()));
             }
-            _ => {}
+            // A computed specifier (`import(it)`, `import(`x/${y}`)`) — route the
+            // runtime value through the bundle loader instead of JSC's native one.
+            _ => {
+                self.runtime_imports.push(import.span.start);
+            }
         }
         walk::walk_import_expression(self, import);
     }
@@ -296,6 +304,29 @@ pub fn bundle_with_deps(entry: &Path) -> Result<(String, Vec<PathBuf>), ModuleEr
     let entry_id = graph.load(&entry)?;
     let js = graph.emit(entry_id);
     Ok((js, graph.paths.clone()))
+}
+
+/// Bundle `entry` as a runtime CommonJS module: the returned JS, when eval'd,
+/// runs the entry synchronously and leaves its `module.exports` in
+/// `globalThis.__velox_require_result`. Used by the runtime file-loader for a
+/// dynamic `require()`/config-load of an on-disk `.ts`/ESM file the static
+/// bundler never saw (e.g. drizzle-kit reading `drizzle.config.ts`).
+pub fn bundle_module(spec: &str) -> Result<String, ModuleError> {
+    // A relative/absolute path is taken as-is; a bare specifier (e.g.
+    // "drizzle-orm/version") is Node-resolved against cwd's node_modules so a
+    // runtime `import()`/`require()` of a project dependency works.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let entry = if is_relative_specifier(spec) || Path::new(spec).is_absolute() {
+        absolutize(Path::new(spec))
+    } else {
+        match resolve(spec, &cwd, &cwd)? {
+            Resolution::File(p) => p,
+            Resolution::Builtin(_) => absolutize(Path::new(spec)),
+        }
+    };
+    let mut graph = Graph::default();
+    let entry_id = graph.load(&entry)?;
+    Ok(graph.emit_require(entry_id))
 }
 
 /// Like [`bundle`], but served from an on-disk cache when none of the source
@@ -638,22 +669,33 @@ impl Graph {
                     end: span.end,
                     text: format!("__velox_import('{id}')"),
                 }),
-                // A *literal* `import('x')` we can't resolve at bundle time can
-                // never load at runtime either (JSC's native loader can't see
-                // node_modules), so surface a clear "Cannot find module" rejection
-                // instead of leaving it bare — which fails with JSC's cryptic
-                // "module specifier does not start with ./".
+                // A *literal* `import('x')` we couldn't resolve at bundle time
+                // (e.g. drizzle-kit's bin bundled from a cache dir dynamically
+                // importing the *project's* drizzle-orm) is left to the runtime
+                // loader, which Node-resolves the specifier against cwd and bundles
+                // it on demand. Pass the raw specifier (not a bundle id) so the
+                // bundle `require`'s fallback routes it to `__velox_builtin_require`
+                // → the on-disk file loader.
                 Err(_) => {
                     let esc = specifier.replace('\\', "\\\\").replace('\'', "\\'");
                     edits.push(Edit {
                         start: span.start,
                         end: span.end,
-                        text: format!(
-                            "Promise.reject(new Error('Cannot find module \\'{esc}\\''))"
-                        ),
+                        text: format!("__velox_import('{esc}')"),
                     });
                 }
             }
+        }
+
+        // Non-literal `import(expr)` → `__velox_import(expr)`: rewrite just the
+        // `import` keyword (6 chars) so the runtime-evaluated specifier resolves
+        // through the bundle loader (against cwd) rather than JSC's native one.
+        for start in collector.runtime_imports {
+            edits.push(Edit {
+                start,
+                end: start + 6,
+                text: "__velox_import".to_string(),
+            });
         }
 
         // `import.meta` is module-only syntax that JSC rejects in a script, so
@@ -712,6 +754,19 @@ impl Graph {
     /// per module, the bundle line range its body occupies so a runtime stack
     /// frame can be mapped back to the original source (`crate::sourcemap`).
     fn emit(&self, entry_id: usize) -> String {
+        self.emit_mode(entry_id, false)
+    }
+
+    /// Like [`emit`] but the bundle is a self-contained expression that runs the
+    /// entry synchronously and stashes its `module.exports` in
+    /// `globalThis.__velox_require_result` — for the runtime CommonJS file-loader
+    /// (a dynamic `require()` of an on-disk `.ts`/ESM module the bundler never
+    /// saw as a static import). No run-as-main / `serve` / event-loop wiring.
+    fn emit_require(&self, entry_id: usize) -> String {
+        self.emit_mode(entry_id, true)
+    }
+
+    fn emit_mode(&self, entry_id: usize, as_require: bool) -> String {
         // Count of '\n' emitted so far; bundle line of the next char = lines + 1.
         let mut lines: u32 = 0;
         let mut spans: Vec<crate::sourcemap::ModuleSpan> = Vec::new();
@@ -803,6 +858,22 @@ impl Graph {
             .map(|id| format!("'{id}'"))
             .collect();
 
+        if as_require {
+            // Synchronous run: best-effort init the TLA deps (their bodies run
+            // until the first await), run the entry, and hand back its exports.
+            out.push_str(&format!(
+                "(function () {{\n  \
+                   [{1}].forEach(function (id) {{ try {{ if (!__cache[id]) {{ const m = {{ exports: {{}} }}; __cache[id] = m; __modules[id](m, m.exports, require); }} }} catch (e) {{}} }});\n  \
+                   const module = {{ exports: {{}} }};\n  \
+                   __cache['{0}'] = module;\n  \
+                   __modules['{0}'](module, module.exports, require);\n  \
+                   globalThis.__velox_require_result = module.exports;\n\
+                 }})();\n",
+                entry_id, tla_ids.join(", ")
+            ));
+            return out;
+        }
+
         // Run the entry module, surfacing any rejection from a top-level
         // `await` (which settles later, on the event loop) as an uncaught error.
         out.push_str(&format!(
@@ -878,7 +949,10 @@ fn module_preamble(path: Option<&PathBuf>, body: &str) -> String {
                if (typeof id !== 'string' || id.startsWith('node:')) return id; \
                if (id.startsWith('.') || id.startsWith('/')) { \
                  try { return require('node:path').resolve(__velox_pdir, id); } catch (e) { return id; } \
-               } return id; };\n",
+               } return id; };\n\
+             require.extensions = require.extensions || { '.js': function () {}, '.json': function () {}, '.node': function () {} };\n\
+             require.cache = require.cache || {};\n\
+             if (!('main' in require)) require.main = undefined;\n",
         );
     }
     if !declares_binding(body, "__filename") {

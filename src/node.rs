@@ -498,6 +498,8 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_kill", velox_kill);
         register(ctx, c"__velox_pids", velox_pids);
         register(ctx, c"__velox_load_builtin", velox_load_builtin);
+        register(ctx, c"__velox_transpile", velox_transpile);
+        register(ctx, c"__velox_bundle_module", velox_bundle_module);
 
         register(ctx, c"__velox_read_file", fs_read_file);
         register(ctx, c"__velox_write_file", fs_write_file);
@@ -846,6 +848,62 @@ unsafe extern "C-unwind" fn velox_os_info(
 /// `__velox_load_builtin(name)` → the JS source of a `node:` builtin shim (or
 /// `""` if unknown). Backs the global `require`/`Velox` lazy module loader, which
 /// evaluates the returned source as a CommonJS module on demand.
+/// `__velox_transpile(source, filename)` → transpiled JS (TS stripped, JSX
+/// lowered, ESM left intact). The runtime CommonJS file-loader (velox.js's
+/// `builtinRequire`) uses this to load on-disk `.ts`/`.tsx`/`.jsx` modules that
+/// were never seen by the bundler (e.g. drizzle-kit / tsx requiring a
+/// `drizzle.config.ts` at runtime). Returns the source unchanged on parse error
+/// (so plain `.js` always passes through).
+unsafe extern "C-unwind" fn velox_transpile(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let source = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let filename = args
+        .get(1)
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_else(|| "module.ts".to_string());
+    let path = std::path::PathBuf::from(&filename);
+    let out = crate::transpile::transpile(&path, &source).unwrap_or(source);
+    unsafe { js_string(ctx, &out) }
+}
+
+/// `__velox_bundle_module(path)` → a self-contained JS bundle for the on-disk
+/// module at `path` (its whole `import`/`require` graph resolved, TS stripped,
+/// ESM rewritten to CJS). Eval'ing the result runs the entry synchronously and
+/// leaves its exports in `globalThis.__velox_require_result`. Backs the runtime
+/// CommonJS file-loader (velox.js) for dynamic `require()` of a path the static
+/// bundler never saw. Throws a JS Error (via `__velox_fs_error`) on failure.
+unsafe extern "C-unwind" fn velox_bundle_module(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let path = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    match crate::module::bundle_module(&path) {
+        Ok(js) => unsafe { js_string(ctx, &js) },
+        Err(e) => unsafe {
+            let err = std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string());
+            fs_throw(ctx, exception, &err, &path, "open")
+        },
+    }
+}
+
 unsafe extern "C-unwind" fn velox_load_builtin(
     ctx: JSContextRef,
     _function: JSObjectRef,
