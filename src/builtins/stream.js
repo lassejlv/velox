@@ -153,6 +153,12 @@ Object.defineProperties(Readable.prototype, {
   },
   readableHighWaterMark: { configurable: true, get: function () { return this._readableState ? this._readableState.highWaterMark : 16384; } },
   readableObjectMode: { configurable: true, get: function () { return !!(this._readableState && this._readableState.objectMode); } },
+  // `destroyed` — true once destroy() has run (libraries check this; e.g. got).
+  destroyed: {
+    configurable: true,
+    get: function () { return !!(this._readableState && this._readableState.destroyed); },
+    set: function (v) { if (this._readableState) this._readableState.destroyed = v; },
+  },
 });
 
 Readable.prototype._read = function () {
@@ -1593,6 +1599,18 @@ function isWritable(stream) {
   if (ws) return !ws.destroyed && !ws.errored && !ws.ending && !ws.ended;
   return typeof stream.write === 'function' && stream.writable !== false;
 }
+// addAbortSignal(signal, stream) — destroy the stream when the signal aborts.
+function addAbortSignal(signal, stream) {
+  if (!signal) return stream;
+  var onAbort = function () {
+    try { stream.destroy(signal.reason || new Error('The operation was aborted')); } catch (e) {}
+  };
+  if (signal.aborted) { onAbort(); return stream; }
+  if (typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true });
+  return stream;
+}
+module.exports.addAbortSignal = addAbortSignal;
+exports.addAbortSignal = addAbortSignal;
 module.exports.isDisturbed = isDisturbed;
 module.exports.isErrored = isErrored;
 module.exports.isReadable = isReadable;

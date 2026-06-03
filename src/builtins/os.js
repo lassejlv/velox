@@ -42,6 +42,10 @@ exports.totalmem = function () { return info().totalmem || 0; };
 exports.freemem = function () { return info().totalmem || 0; };
 exports.uptime = function () { return typeof __velox_hrtime_ns === 'function' ? __velox_hrtime_ns() / 1e9 : 0; };
 exports.loadavg = function () { return info().loadavg || [0, 0, 0]; };
+// Process scheduling priority — velox doesn't adjust nice values; report normal
+// (0) and accept sets as a no-op so callers don't crash.
+exports.getPriority = function () { return 0; };
+exports.setPriority = function () {};
 exports.networkInterfaces = function () { return {}; };
 exports.availableParallelism = function () { return info().cpus || 1; };
 exports.userInfo = function () {

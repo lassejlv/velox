@@ -16,6 +16,18 @@
 // `depth` option we can't forward it to the native, so we use a JS-side
 // depth-aware formatter (below) that mirrors the native output format.
 function inspect(value, opts) {
+  // Honor a custom inspection method (`obj[util.inspect.custom]`) — many
+  // libraries provide one to control their representation.
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+    try {
+      var custom = value[inspect.custom];
+      if (typeof custom === 'function') {
+        var depthOpt = opts && typeof opts === 'object' && 'depth' in opts ? opts.depth : 2;
+        var r = custom.call(value, depthOpt, opts || {}, inspect);
+        return typeof r === 'string' ? r : inspect(r, opts);
+      }
+    } catch (e) {}
+  }
   // Node also supports inspect(value, showHidden, depth, colors), but the
   // object form is what matters for the depth/maxArrayLength options.
   if (opts && typeof opts === 'object' && ('depth' in opts || 'maxArrayLength' in opts)) {
