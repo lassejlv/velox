@@ -181,6 +181,16 @@ check("fs.statSync throwIfNoEntry + existsSync + fsync/ftruncate", () => {
     if (fs.readFileSync(f, "utf8") !== "he") throw new Error("ftruncate");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+check("readline createInterface line reading (events + async iterator)", async () => {
+  const readline = require("node:readline"); const { Readable } = require("node:stream");
+  const rl = readline.createInterface({ input: Readable.from(["line1\nline2\n"]) });
+  const lines: string[] = [];
+  await new Promise<void>((res) => { rl.on("line", (l: string) => lines.push(l)); rl.on("close", res); });
+  if (lines.join(",") !== "line1,line2") throw new Error("events: " + lines.join(","));
+  const out: string[] = [];
+  for await (const l of readline.createInterface({ input: Readable.from(["a\nb\nc\n"]) })) out.push(l);
+  if (out.join(",") !== "a,b,c") throw new Error("asyncIterator: " + out.join(","));
+});
 check("child_process spawn pid + kill", async () => {
   const { spawn } = require("node:child_process");
   const c = spawn("sleep", ["5"]);

@@ -146,6 +146,28 @@ function Interface(input, output, completer, terminal) {
     this._onKeypress = function (str, key) { self._editKey(str, key || {}); };
     this.input.on('keypress', this._onKeypress);
     if (this.input.resume) this.input.resume();
+  } else if (this.input && typeof this.input.on === 'function') {
+    // Non-terminal input (a file/stream/piped stdin): split incoming bytes on
+    // newlines and emit one 'line' per line; flush a trailing partial line and
+    // 'close' on end. This is the common line-by-line programmatic path.
+    var nself = this;
+    var nbuf = '';
+    this.input.on('data', function (chunk) {
+      nbuf += chunk.toString(typeof chunk === 'string' ? undefined : 'utf8');
+      var idx;
+      while ((idx = nbuf.indexOf('\n')) !== -1) {
+        var line = nbuf.slice(0, idx);
+        nbuf = nbuf.slice(idx + 1);
+        if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1); // strip CR
+        nself.emit('line', line);
+      }
+    });
+    this.input.on('end', function () {
+      if (nbuf.length > 0) { nself.emit('line', nbuf); nbuf = ''; }
+      nself.close();
+    });
+    this.input.on('error', function (e) { nself.emit('error', e); });
+    if (this.input.resume) this.input.resume();
   }
 }
 Interface.prototype = Object.create(EventEmitter.prototype);
