@@ -227,6 +227,29 @@ check("fs.promises.open FileHandle", async () => {
   const f = path.join(os.tmpdir(), "velox-fh-" + process.pid); fs.writeFileSync(f, "fh-data");
   try { const fh = await fs.promises.open(f, "r"); const { bytesRead, buffer } = await fh.read(Buffer.alloc(7), 0, 7, 0); await fh.close(); if (bytesRead !== 7 || buffer.toString() !== "fh-data") throw new Error("read"); } finally { fs.rmSync(f, { force: true }); }
 });
+check("fs.promises metadata ops (truncate/chmod/chown/utimes)", async () => {
+  const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
+  const fsp = fs.promises;
+  for (const m of ["truncate", "chmod", "lchmod", "chown", "lchown", "utimes", "lutimes"]) {
+    if (typeof fsp[m] !== "function") throw new Error("missing fs.promises." + m);
+  }
+  const f = path.join(os.tmpdir(), "velox-meta-" + process.pid); await fsp.writeFile(f, "abcdef");
+  try {
+    await fsp.truncate(f, 3); if ((await fsp.readFile(f, "utf8")) !== "abc") throw new Error("truncate");
+    await fsp.chmod(f, 0o644); await fsp.utimes(f, new Date(), new Date()); // no-ops, must resolve
+  } finally { await fsp.unlink(f); }
+});
+check("fs.promises.cp recursive directory copy", async () => {
+  const fs = require("node:fs"); const os = require("node:os"); const path = require("node:path");
+  const fsp = fs.promises;
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "velox-cp-"));
+  try {
+    await fsp.mkdir(path.join(dir, "sub"), { recursive: true });
+    await fsp.writeFile(path.join(dir, "sub", "x.txt"), "deep");
+    await fsp.cp(path.join(dir, "sub"), path.join(dir, "sub2"), { recursive: true });
+    if ((await fsp.readFile(path.join(dir, "sub2", "x.txt"), "utf8")) !== "deep") throw new Error("cp");
+  } finally { await fsp.rm(dir, { recursive: true, force: true }); }
+});
 check("net socket paused-mode read() via 'readable'", async () => {
   const net = require("node:net");
   await new Promise<void>((resolve, reject) => {

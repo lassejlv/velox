@@ -871,6 +871,25 @@ function stripVTControlCharacters(str) {
   return str.replace(ANSI_RE, '');
 }
 
+// toUSVString (Node 11+): replace any lone (unpaired) UTF-16 surrogate with the
+// Unicode replacement character U+FFFD, yielding a well-formed Unicode scalar
+// value string. `String.prototype.toWellFormed` does exactly this when present.
+function toUSVString(str) {
+  str = '' + str;
+  if (typeof str.toWellFormed === 'function') return str.toWellFormed();
+  return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g, function (m, lead) {
+    return lead === undefined ? '�' : lead + '�';
+  });
+}
+
+// transferableAbortController / transferableAbortSignal (Node 18.11+): in Node
+// these mark a controller/signal so its abort state survives a postMessage
+// structured-clone hop. velox passes AbortSignals across worker boundaries as
+// plain objects, so the "transferable" marking is a no-op — the controller and
+// signal work as-is.
+function transferableAbortController() { return new AbortController(); }
+function transferableAbortSignal(signal) { return signal; }
+
 // styleText (Node 20.12+): wrap `text` in the ANSI codes for one or more
 // color/modifier names. Honors NO_COLOR; unknown formats are skipped.
 var STYLE_CODES = {
@@ -1161,6 +1180,9 @@ module.exports = {
   parseEnv,
   stripVTControlCharacters,
   styleText,
+  toUSVString,
+  transferableAbortController,
+  transferableAbortSignal,
   aborted,
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,

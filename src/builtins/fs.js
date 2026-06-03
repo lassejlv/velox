@@ -908,6 +908,13 @@ var promises = {
   mkdtemp: promisify(mkdtempSync),
   glob: function (pattern, options) { return globAsyncIterator(pattern, options); },
   cp: function (src, dest, options) { return new Promise(function (res, rej) { cp(src, dest, options || {}, function (e) { e ? rej(e) : res(); }); }); },
+  truncate: promisify(truncateSync),
+  chmod: promisify(chmodSync),
+  lchmod: promisify(lchmodSync),
+  chown: promisify(chownSync),
+  lchown: promisify(lchownSync),
+  utimes: promisify(utimesSync),
+  lutimes: promisify(lutimesSync),
 };
 
 module.exports = {

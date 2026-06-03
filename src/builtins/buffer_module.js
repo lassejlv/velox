@@ -49,6 +49,14 @@ module.exports = {
     }
     return true;
   },
+  // transcode(source, fromEnc, toEnc): re-encode a Buffer/Uint8Array's bytes
+  // from one supported encoding to another (Node: ascii/latin1/utf8/utf16le/
+  // ucs2). Decode to a JS string then re-encode through Buffer.
+  transcode: function (source, fromEnc, toEnc) {
+    var b = asBytes(source);
+    var buf = globalThis.Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+    return globalThis.Buffer.from(buf.toString(fromEnc), toEnc);
+  },
 };
 
 // Node re-exports the web Blob/File and base64 helpers from node:buffer; mirror
