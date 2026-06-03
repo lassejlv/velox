@@ -16,7 +16,8 @@ use std::ptr;
 
 use objc2_javascript_core::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
-    JSObjectGetTypedArrayBytesPtr, JSObjectGetTypedArrayLength, JSObjectMakeTypedArray,
+    JSObjectGetTypedArrayByteOffset, JSObjectGetTypedArrayBytesPtr, JSObjectGetTypedArrayLength,
+    JSObjectMakeTypedArray,
     JSObjectRef, JSStringCreateWithCharacters, JSStringCreateWithUTF8CString,
     JSStringGetCharactersPtr, JSStringGetLength, JSStringRelease, JSTypedArrayType, JSValue,
     JSValueRef,
@@ -1390,7 +1391,15 @@ pub(crate) unsafe fn js_value_to_bytes(ctx: JSContextRef, value: JSValueRef) -> 
         if data.is_null() {
             return Vec::new();
         }
-        std::slice::from_raw_parts(data as *const u8, len).to_vec()
+        // `JSObjectGetTypedArrayBytesPtr` returns the backing ArrayBuffer's start,
+        // NOT the view's first element — so for a Buffer/Uint8Array created with a
+        // non-zero byteOffset (e.g. `buf.subarray(n)`, or pg-protocol slicing a
+        // shared write buffer) the raw pointer points `byteOffset` bytes too early.
+        // Add the offset so we copy the view's actual bytes. (Offset 0 → no-op, so
+        // every existing offset-0 path is unaffected.)
+        let offset = JSObjectGetTypedArrayByteOffset(ctx, obj, ptr::null_mut());
+        let base = (data as *const u8).add(offset);
+        std::slice::from_raw_parts(base, len).to_vec()
     }
 }
 

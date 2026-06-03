@@ -268,6 +268,23 @@ check("net socket paused-mode read() via 'readable'", async () => {
   });
 });
 
+check("net socket write honors Buffer byteOffset (subarray view)", async () => {
+  const net = require("node:net");
+  await new Promise<void>((resolve, reject) => {
+    // pg / many binary protocols slice a shared write buffer, so the chunk passed
+    // to socket.write is a typed-array VIEW with a non-zero byteOffset. The native
+    // must copy from the view's first element, not the backing buffer's start.
+    const srv = net.createServer((sock: any) => { sock.on("data", (d: Buffer) => { sock.end(); srv.close(); d.toString("hex") === "050607" ? resolve() : reject(new Error("got: " + d.toString("hex"))); }); });
+    srv.listen(0, () => {
+      const big = Buffer.alloc(10); for (let i = 0; i < 10; i++) big[i] = i;
+      const view = big.subarray(5, 8); // byteOffset 5 -> bytes 05 06 07
+      const c = net.connect(srv.address().port, "127.0.0.1", () => c.write(view));
+      c.on("error", reject);
+      setTimeout(() => reject(new Error("byteOffset write timeout")), 1500);
+    });
+  });
+});
+
 await new Promise((r) => setTimeout(r, 300));
 let pass = 0, fail = 0;
 for (const [name, ok, err] of results) { if (ok) pass++; else { fail++; console.log("FAIL " + name + ": " + err); } }
