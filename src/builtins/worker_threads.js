@@ -42,9 +42,39 @@ function Worker(filename, options) {
   options = options || {};
   var isFile = !options.eval;
   var source = String(filename);
-  var dataJson = serialize(options.workerData === undefined ? null : options.workerData);
+  // The worker-data payload carries an envelope: the user's workerData plus
+  // the stdio flags, so the worker side knows to wire its process streams.
+  var stdio = {
+    stdin: !!options.stdin,
+    stdout: !!options.stdout,
+    stderr: !!options.stderr,
+  };
+  var dataJson = serialize({
+    __velox_env: { stdio: stdio },
+    data: options.workerData === undefined ? null : options.workerData,
+  });
   this.threadId = __velox_spawn_worker(source, isFile, dataJson);
   this._exited = false;
+
+  // worker.stdout/stderr: Readables fed by internal stdio envelopes from the
+  // worker; worker.stdin: a Writable whose chunks cross as base64 envelopes.
+  var stream = require('node:stream');
+  var self = this;
+  this.stdout = stdio.stdout ? new stream.Readable({ read: function () {} }) : null;
+  this.stderr = stdio.stderr ? new stream.Readable({ read: function () {} }) : null;
+  this.stdin = stdio.stdin
+    ? new stream.Writable({
+        write: function (chunk, enc, cb) {
+          var buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, enc);
+          self.postMessage({ __velox_stdio: 'stdin', data: buf.toString('base64') });
+          cb();
+        },
+        final: function (cb) {
+          self.postMessage({ __velox_stdio: 'stdin_end' });
+          cb();
+        },
+      })
+    : null;
   workers.set(this.threadId, this);
 }
 Worker.prototype = Object.create(EventEmitter.prototype);
@@ -65,6 +95,12 @@ globalThis.__velox_worker_dispatch = function (id, type, json) {
   if (!w) return;
   if (type === 'message') {
     var v; try { v = deserialize(json); } catch (e) { v = json; }
+    // Internal stdio envelope from the worker's patched process streams.
+    if (v && typeof v === 'object' && v.__velox_stdio) {
+      var dest = v.__velox_stdio === 'stderr' ? w.stderr : w.stdout;
+      if (dest) dest.push(Buffer.from(v.data || '', 'base64'));
+      return;
+    }
     w.emit('message', v);
   } else if (type === 'error') {
     var msg; try { msg = JSON.parse(json); } catch (e) { msg = json; }
@@ -73,6 +109,8 @@ globalThis.__velox_worker_dispatch = function (id, type, json) {
     if (w._exited) return;
     w._exited = true;
     workers.delete(id);
+    if (w.stdout) w.stdout.push(null);
+    if (w.stderr) w.stderr.push(null);
     w.emit('exit', parseInt(json, 10) || 0);
   }
 };
@@ -84,7 +122,13 @@ var workerData;
 
 if (isWorker) {
   var raw = globalThis.__velox_worker_data_json;
+  var workerEnv = null;
   try { workerData = raw === undefined ? undefined : deserialize(raw); } catch (e) { workerData = undefined; }
+  // Unwrap the parent's envelope ({ __velox_env, data }) when present.
+  if (workerData && typeof workerData === 'object' && workerData.__velox_env) {
+    workerEnv = workerData.__velox_env;
+    workerData = workerData.data;
+  }
 
   parentPort = new EventEmitter();
   var msgListeners = 0;
@@ -124,23 +168,92 @@ if (isWorker) {
   globalThis.__velox_parent_dispatch = function (type, json) {
     if (type === 'message') {
       var v; try { v = deserialize(json); } catch (e) { v = json; }
+      // Internal stdio envelope: parent feeding this worker's stdin.
+      if (v && typeof v === 'object' && v.__velox_stdio) {
+        if (workerStdin) {
+          if (v.__velox_stdio === 'stdin') workerStdin.push(Buffer.from(v.data || '', 'base64'));
+          else if (v.__velox_stdio === 'stdin_end') {
+            workerStdin.push(null);
+            __velox_worker_keepalive(false);
+          }
+        }
+        return;
+      }
       parentPort.emit('message', v);
     }
   };
+
+  // Wire the worker's process streams per the parent's stdio flags: stdout/
+  // stderr writes become envelopes back to the parent (console output rides
+  // along, since its sink honors a replaced `write`); stdin becomes a real
+  // Readable fed by parent envelopes. Keep the loop alive while stdin is open.
+  var workerStdin = null;
+  if (workerEnv && workerEnv.stdio) {
+    var streamMod = require('node:stream');
+    if (workerEnv.stdio.stdout && process.stdout) {
+      process.stdout.write = function (chunk, enc, cb) {
+        var buf = Buffer.isBuffer(chunk) ? chunk
+          : Buffer.from(String(chunk), typeof enc === 'string' ? enc : 'utf8');
+        __velox_parent_post(serialize({ __velox_stdio: 'stdout', data: buf.toString('base64') }));
+        if (typeof enc === 'function') enc();
+        else if (typeof cb === 'function') cb();
+        return true;
+      };
+    }
+    if (workerEnv.stdio.stderr && process.stderr) {
+      process.stderr.write = function (chunk, enc, cb) {
+        var buf = Buffer.isBuffer(chunk) ? chunk
+          : Buffer.from(String(chunk), typeof enc === 'string' ? enc : 'utf8');
+        __velox_parent_post(serialize({ __velox_stdio: 'stderr', data: buf.toString('base64') }));
+        if (typeof enc === 'function') enc();
+        else if (typeof cb === 'function') cb();
+        return true;
+      };
+    }
+    if (workerEnv.stdio.stdin) {
+      workerStdin = new streamMod.Readable({ read: function () {} });
+      try { process.stdin = workerStdin; } catch (e) {}
+      __velox_worker_keepalive(true);
+    }
+  }
 }
 
 // --- MessageChannel / MessagePort (same-thread, in-process) ----------------
 
-function MessagePort() { EventEmitter.call(this); this._other = null; }
+function MessagePort() { EventEmitter.call(this); this._other = null; this._closed = false; }
 MessagePort.prototype = Object.create(EventEmitter.prototype);
 MessagePort.prototype.postMessage = function (value) {
+  // Posting on a closed channel is a silent no-op (Node drops the message).
+  if (this._closed) return;
   var other = this._other;
-  if (other) queueMicrotask(function () { other.emit('message', value); });
+  if (other && !other._closed) queueMicrotask(function () { if (!other._closed) other.emit('message', value); });
 };
 MessagePort.prototype.start = function () {};
-MessagePort.prototype.close = function () { this.emit('close'); };
+// Closing either port closes the whole channel; 'close' fires on both ports
+// asynchronously, and an optional callback observes this port's close.
+MessagePort.prototype.close = function (cb) {
+  if (typeof cb === 'function') this.once('close', cb);
+  if (this._closed) return;
+  var self = this, other = this._other;
+  this._closed = true;
+  if (other) other._closed = true;
+  queueMicrotask(function () {
+    self.emit('close');
+    if (other) other.emit('close');
+  });
+};
 MessagePort.prototype.ref = function () {};
 MessagePort.prototype.unref = function () {};
+// DOM-style handler property (Node's MessagePort supports both styles).
+Object.defineProperty(MessagePort.prototype, 'onmessage', {
+  configurable: true,
+  get: function () { return this._onmessage || null; },
+  set: function (fn) {
+    if (this._onmessage) this.removeListener('message', this._onmessage);
+    this._onmessage = typeof fn === 'function' ? fn : null;
+    if (this._onmessage) this.on('message', this._onmessage);
+  },
+});
 
 function MessageChannel() {
   this.port1 = new MessagePort();
@@ -165,7 +278,14 @@ module.exports = {
   // it. velox doesn't enforce the constraint, but the symbol must exist —
   // undici (Node's fetch, pulled in by cheerio/etc.) calls it at load time.
   markAsUncloneable: function () {},
-  moveMessagePortToContext: function (port) { return port; },
+  moveMessagePortToContext: function (port) {
+    if (port && port._closed) {
+      var e = new Error('Cannot send data on closed MessagePort');
+      e.code = 'ERR_CLOSED_MESSAGE_PORT';
+      throw e;
+    }
+    return port;
+  },
   receiveMessageOnPort: function () { return undefined; },
   setEnvironmentData: function () {},
   getEnvironmentData: function () { return undefined; },

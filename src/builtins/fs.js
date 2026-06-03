@@ -348,6 +348,11 @@ function ftruncateSync(fd, len) {
 }
 function truncateSync(p, len) {
   len = len || 0;
+  // The native set_len both shrinks and extends sparsely (no content copy).
+  if (typeof __velox_truncate === 'function') {
+    __velox_truncate(fsPath(p), len);
+    return;
+  }
   var cur = Buffer.from(__velox_read_file(fsPath(p)), 'latin1');
   __velox_write_file(fsPath(p), cur.subarray(0, len).toString('latin1'), false);
 }
@@ -485,13 +490,54 @@ FileHandle.prototype.write = function (buffer, offset, length, position) {
     });
   });
 };
-FileHandle.prototype.readFile = function (options) {
-  var self = this;
+// Shared by the promise readFile paths: AbortSignal support + Node's
+// 2 GiB - 1 single-read ceiling (ERR_FS_FILE_TOO_LARGE).
+var kIoMaxLength = Math.pow(2, 31) - 1;
+function abortError(signal) {
+  if (signal && signal.reason) return signal.reason;
+  try { return new DOMException('The operation was aborted', 'AbortError'); }
+  catch (e) {
+    var err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    err.code = 'ABORT_ERR';
+    return err;
+  }
+}
+function readFilePromise(path, options) {
+  var signal = options && options.signal;
   return new Promise(function (res, rej) {
-    queueMicrotask(function () {
-      try { res(readFileSync(self._path, options)); } catch (e) { rej(e); }
-    });
+    // NB: only ever POLL `signal.aborted` — never addEventListener. Callers
+    // may hand us a (deeply proxied) frozen options object whose methods
+    // can't be invoked through the proxy; Node's implementation also polls
+    // between chunk reads rather than subscribing.
+    function doRead() {
+      if (signal && signal.aborted) return rej(abortError(signal));
+      try {
+        var size = statSync(path).size;
+        if (size > kIoMaxLength) {
+          var big = new RangeError('File size (' + size + ') is greater than 2 GiB');
+          big.code = 'ERR_FS_FILE_TOO_LARGE';
+          throw big;
+        }
+        var data = readFileSync(path, options);
+        if (signal && signal.aborted) return rej(abortError(signal));
+        res(data);
+      } catch (e) {
+        rej(e);
+      }
+    }
+    if (signal) {
+      if (signal.aborted) return rej(abortError(signal));
+      // Give a just-scheduled abort (nextTick / a setImmediate tick) a chance
+      // to land first — Node reads in async chunks, so such aborts cancel.
+      setTimeout(function () { setTimeout(doRead, 0); }, 0);
+    } else {
+      queueMicrotask(doRead);
+    }
   });
+}
+FileHandle.prototype.readFile = function (options) {
+  return readFilePromise(this._path, options);
 };
 FileHandle.prototype.writeFile = function (data, options) {
   var self = this;
@@ -905,7 +951,13 @@ function openAsBlob(p, options) {
 }
 
 var promises = {
-  readFile: function (p, o) { return new Promise(function (res, rej) { readFile(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },
+  readFile: function (p, o) {
+    // Accepts a FileHandle too (fsPromises.readFile(handle, opts)), and routes
+    // signal/size handling through the same path as FileHandle#readFile.
+    if (p instanceof FileHandle) return readFilePromise(p._path, o);
+    if (o && o.signal) return readFilePromise(fsPath(p), o);
+    return new Promise(function (res, rej) { readFile(p, o, function (e, d) { e ? rej(e) : res(d); }); });
+  },
   writeFile: function (p, d, o) { return new Promise(function (res, rej) { writeFile(p, d, o, function (e) { e ? rej(e) : res(); }); }); },
   appendFile: promisify(appendFileSync),
   stat: function (p, o) { return new Promise(function (res, rej) { statAsync(p, o, function (e, d) { e ? rej(e) : res(d); }); }); },

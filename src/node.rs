@@ -564,6 +564,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_readdir", fs_readdir);
         register(ctx, c"__velox_mkdir", fs_mkdir);
         register(ctx, c"__velox_rm", fs_rm);
+        register(ctx, c"__velox_truncate", fs_truncate);
         register(ctx, c"__velox_rename", fs_rename);
         register(ctx, c"__velox_realpath", fs_realpath);
         register(ctx, c"__velox_symlink", fs_symlink);
@@ -1314,6 +1315,42 @@ unsafe extern "C-unwind" fn fs_rm(
             JSValue::new_undefined(ctx)
         },
         Err(e) => unsafe { fs_throw(ctx, exception, &e, &path, "unlink") },
+    }
+}
+
+/// `__velox_truncate(path, len)` — real (sparse-friendly) truncate via
+/// `File::set_len`, which both shrinks and extends without materializing the
+/// contents (the JS fallback round-trips the file body as a string, which is
+/// not viable for multi-GB sizes).
+unsafe extern "C-unwind" fn fs_truncate(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let path = args
+        .first()
+        .map(|v| unsafe { js_value_to_string(ctx, *v) })
+        .unwrap_or_default();
+    let len = args
+        .get(1)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0);
+    let len = if len.is_finite() && len > 0.0 {
+        len as u64
+    } else {
+        0
+    };
+    let result = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .and_then(|f| f.set_len(len));
+    match result {
+        Ok(()) => unsafe { JSValue::new_undefined(ctx) },
+        Err(e) => unsafe { fs_throw(ctx, exception, &e, &path, "truncate") },
     }
 }
 

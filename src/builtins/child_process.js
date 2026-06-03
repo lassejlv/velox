@@ -256,22 +256,39 @@ function execImpl(file, args, options, cb, shell) {
   child.stdout.on('data', function (c) { outChunks.push(c); });
   child.stderr.on('data', function (c) { errChunks.push(c); });
 
+  // options.timeout: kill the child with killSignal after the deadline. The
+  // resulting completion reports killed=true / code=null / the signal.
+  var timer = null;
+  if (options.timeout > 0) {
+    timer = setTimeout(function () {
+      timer = null;
+      try { child.kill(options.killSignal || 'SIGTERM'); } catch (e) {}
+    }, options.timeout);
+  }
+
   child.on('error', function (e) {
+    if (timer) { clearTimeout(timer); timer = null; }
     if (cb) cb(e, decodeOut('', enc), decodeOut('', enc));
     cb = null;
   });
 
   child.on('close', function (code, signal) {
+    if (timer) { clearTimeout(timer); timer = null; }
     if (!cb) return;
     var stdout = decodeOut(globalThis.Buffer.concat(outChunks).toString('latin1'), enc);
     var stderr = decodeOut(globalThis.Buffer.concat(errChunks).toString('latin1'), enc);
     var err = null;
-    if (code !== 0 && code !== null) {
+    // A kill (signal or timeout) surfaces as an error too, with Node's shape:
+    // code null, the signal name, and killed reflecting whether WE killed it.
+    if (child.killed && code === 0) { code = null; signal = signal || child.signalCode; }
+    if (code !== 0) {
       err = new Error('Command failed: ' + file +
         (stderr ? '\n' + stderr.toString() : ''));
-      err.code = code;
-      err.signal = signal;
+      err.code = code === undefined ? null : code;
+      err.signal = signal || (child.killed ? child.signalCode : null) || null;
+      if (err.signal) err.code = null;
       err.killed = child.killed;
+      err.cmd = file;
     }
     cb(err, stdout, stderr);
     cb = null;

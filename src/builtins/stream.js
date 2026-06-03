@@ -786,7 +786,9 @@ Writable.prototype.write = function (chunk, encoding, cb) {
   var ret = state.length < state.highWaterMark;
   if (!ret) state.needDrain = true;
 
-  if (state.writing || state.corked) {
+  // Also queue while earlier chunks sit in `buffered` (afterWrite drains them
+  // on a later tick now) — writing directly would reorder the stream.
+  if (state.writing || state.corked || state.buffered.length) {
     state.buffered.push({ chunk: chunk, encoding: encoding, callback: cb, len: len });
   } else {
     doWrite(this, state, chunk, encoding, len, cb);
@@ -797,18 +799,32 @@ Writable.prototype.write = function (chunk, encoding, cb) {
 function doWrite(stream, state, chunk, encoding, len, cb) {
   state.writing = true;
   var finished = false;
+  var sync = true;
   stream._write(chunk, encoding, function (err) {
     if (finished) return; // guard against double-callback
     finished = true;
     state.writing = false;
     state.length -= len;
-    if (cb) cb(err);
     if (err) {
+      if (cb) cb(err);
       errorOrDestroy(stream, err);
       return;
     }
-    afterWrite(stream, state);
+    if (sync) {
+      // The _write completed synchronously (inside write()). Deliver the cb
+      // and 'drain' on the next tick — emitting 'drain' re-entrantly inside
+      // write() lets a piping source resume() BEFORE it sees write()'s false
+      // return and pauses, deadlocking the pipe. (Node defers exactly this.)
+      nextTick(function () {
+        if (cb) cb();
+        afterWrite(stream, state);
+      });
+    } else {
+      if (cb) cb();
+      afterWrite(stream, state);
+    }
   });
+  sync = false;
 }
 
 function afterWrite(stream, state) {
