@@ -10,10 +10,53 @@ use objc2_javascript_core::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
     JSObjectMakeFunctionWithCallback, JSObjectRef, JSObjectSetProperty,
     JSStringCreateWithUTF8CString, JSStringGetMaximumUTF8CStringSize, JSStringGetUTF8CString,
-    JSStringRelease, JSValue, JSValueRef,
+    JSStringRelease, JSValue, JSValueRef, kJSPropertyAttributeDontEnum,
 };
 
 use owo_colors::OwoColorize;
+
+/// Pre-declare every `__velox_*` global that a shim or the bundle assigns at
+/// runtime (after the startup sweep has already run) as a NON-enumerable,
+/// writable slot. A later plain assignment then preserves these attributes, so
+/// none of velox's internal I/O hooks leak into `for..in globalThis`.
+const HOOKS_HIDE_PRELUDE: &str = r#"
+(function () {
+  var names = [
+    '__velox_main_module', '__velox_served', '__velox_require_result',
+    '__velox_on_connection', '__velox_on_connect', '__velox_on_data',
+    '__velox_on_end', '__velox_on_close', '__velox_on_error', '__velox_on_udp',
+    '__velox_exec_done', '__velox_fs_done', '__velox_stdin_data',
+    '__velox_stdin_end', '__velox_worker_dispatch', '__velox_parent_dispatch',
+    '__velox_worker_data_json', '__velox_is_worker',
+    '__velox_sqlite_call_function', '__velox_sqlite_agg_start',
+    '__velox_sqlite_agg_step', '__velox_sqlite_agg_result',
+  ];
+  for (var i = 0; i < names.length; i++) {
+    try {
+      Object.defineProperty(globalThis, names[i], {
+        value: undefined, writable: true, enumerable: false, configurable: true,
+      });
+    } catch (e) {}
+  }
+})();
+"#;
+
+/// Run once after all preludes: redefine every enumerable own global as
+/// non-enumerable so velox's built-ins are invisible to `for..in`/`Object.keys`
+/// on `globalThis`, matching Node (which makes all its globals non-enumerable).
+const GLOBALS_HIDE_SWEEP: &str = r#"
+(function () {
+  var g = globalThis;
+  var names = Object.getOwnPropertyNames(g);
+  for (var i = 0; i < names.length; i++) {
+    var k = names[i];
+    var d = Object.getOwnPropertyDescriptor(g, k);
+    if (d && d.enumerable && d.configurable) {
+      try { Object.defineProperty(g, k, { enumerable: false }); } catch (e) {}
+    }
+  }
+})();
+"#;
 
 /// JavaScript shim that defines `console` on top of the native `__velox_log`
 /// hook. Formatting (object stringification, arg joining) lives here in JS so
@@ -139,6 +182,11 @@ impl Runtime {
         let context = unsafe { JSContext::new() };
         let runtime = Self { context };
         runtime.install_console();
+        // Reserve the `__velox_*` runtime hook slots as NON-enumerable up front.
+        // Shims assign these later with a plain `globalThis.__velox_x = fn`, which
+        // keeps the existing (hidden) attributes — so they never surface to a
+        // `for..in globalThis` / leaked-globals audit. Must run before any shim.
+        let _ = runtime.eval(HOOKS_HIDE_PRELUDE);
         let ctx = runtime.global_context();
         crate::event_loop::install(ctx);
         crate::event_loop::install_unhandled_rejection(ctx);
@@ -171,6 +219,14 @@ impl Runtime {
         // If launched by `child_process.fork`, connect the IPC channel so
         // `process.send`/`process.on('message')` work. No-op otherwise.
         let _ = runtime.eval(crate::node::FORK_IPC_PRELUDE);
+        // Node defines every built-in global (process, Buffer, URL, Event, …) as
+        // NON-enumerable, so `for (k in globalThis)` yields nothing and code that
+        // audits the global namespace sees a clean slate. velox's preludes install
+        // theirs as plain enumerable assignments, which leaks them. Sweep once,
+        // after every prelude has run, to hide them — the JSC built-ins (Object,
+        // Array, …) are already non-enumerable, so this only touches what velox
+        // added. User code runs later, so its own globals stay visible.
+        let _ = runtime.eval(GLOBALS_HIDE_SWEEP);
         runtime
     }
 
@@ -246,7 +302,7 @@ impl Runtime {
                 global,
                 name,
                 function as JSValueRef,
-                0,
+                kJSPropertyAttributeDontEnum,
                 ptr::null_mut(),
             );
             JSStringRelease(name);

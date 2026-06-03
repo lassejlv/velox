@@ -652,6 +652,30 @@ function connect(arg1, arg2, arg3) {
 }
 var createConnection = connect;
 
+// Happy Eyeballs (RFC 8305) tunables. velox connects single-stack, so these are
+// process-wide knobs that don't change behavior, but the getters/setters exist
+// because Node's test harness (`common/index.js`) reads them at load time.
+var _autoSelectFamily = false;
+var _autoSelectFamilyAttemptTimeout = 250;
+function getDefaultAutoSelectFamily() {
+  return _autoSelectFamily;
+}
+function setDefaultAutoSelectFamily(value) {
+  _autoSelectFamily = !!value;
+}
+function getDefaultAutoSelectFamilyAttemptTimeout() {
+  return _autoSelectFamilyAttemptTimeout;
+}
+function setDefaultAutoSelectFamilyAttemptTimeout(value) {
+  value = Number(value);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError(
+      "The value of \"value\" is out of range. It must be a positive integer. Received " + value,
+    );
+  }
+  _autoSelectFamilyAttemptTimeout = Math.max(10, value);
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -666,5 +690,9 @@ module.exports = {
   isIPv4: isIPv4,
   isIPv6: isIPv6,
   BlockList: BlockList,
+  getDefaultAutoSelectFamily: getDefaultAutoSelectFamily,
+  setDefaultAutoSelectFamily: setDefaultAutoSelectFamily,
+  getDefaultAutoSelectFamilyAttemptTimeout: getDefaultAutoSelectFamilyAttemptTimeout,
+  setDefaultAutoSelectFamilyAttemptTimeout: setDefaultAutoSelectFamilyAttemptTimeout,
 };
 module.exports.default = module.exports;

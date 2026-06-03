@@ -1159,6 +1159,76 @@ function getSystemErrorMap() {
   return m;
 }
 
+// util.getCallSites([frameCount][, options]) — Node 22's structured stack API.
+// Returns an array of call-site objects ({ functionName, scriptName, lineNumber,
+// column }) for the current call stack, nearest frame first, excluding the
+// getCallSites frame itself. Parsed from `Error().stack`; velox reports bundle
+// coordinates, which is enough for the error-message and call-site-capture uses
+// in Node's test harness (common.mustCall/mustNotCall).
+function __parseCallFrame(line) {
+  line = line.trim();
+  if (!line) return null;
+  var fn = "";
+  var loc = "";
+  var at = line.indexOf("@");
+  if (at !== -1) {
+    // JSC format: `name@url:line:col` (name empty for anonymous frames).
+    fn = line.slice(0, at);
+    loc = line.slice(at + 1);
+  } else {
+    // V8 format: `at name (url:line:col)` or `at url:line:col`.
+    var m = /^at\s+(.*)$/.exec(line);
+    var rest = m ? m[1] : line;
+    var paren = /^(.*)\s+\((.*)\)$/.exec(rest);
+    if (paren) {
+      fn = paren[1];
+      loc = paren[2];
+    } else {
+      loc = rest;
+    }
+  }
+  var lm = /^(.*?):(\d+)(?::(\d+))?$/.exec(loc);
+  var scriptName = loc;
+  var lineNumber = 0;
+  var column = 0;
+  if (lm) {
+    scriptName = lm[1];
+    lineNumber = +lm[2];
+    column = lm[3] ? +lm[3] : 0;
+  }
+  return {
+    functionName: fn || "",
+    scriptName: scriptName,
+    lineNumber: lineNumber,
+    column: column,
+    columnNumber: column,
+  };
+}
+function getCallSites(frameCountOrOptions, options) {
+  var frameCount = 10;
+  if (typeof frameCountOrOptions === "number") frameCount = frameCountOrOptions;
+  else if (frameCountOrOptions && typeof frameCountOrOptions === "object") {
+    options = frameCountOrOptions;
+  }
+  var stack = (new Error()).stack || "";
+  var lines = stack.split("\n");
+  var sites = [];
+  for (var i = 0; i < lines.length; i++) {
+    var raw = lines[i];
+    // Skip a leading `Error`/`TypeError: msg` header (V8 style) if present.
+    if (i === 0 && /^[A-Za-z]*Error\b/.test(raw.trim()) &&
+        raw.indexOf("@") === -1 && raw.indexOf("(") === -1) {
+      continue;
+    }
+    var site = __parseCallFrame(raw);
+    if (site) sites.push(site);
+  }
+  // Drop the frame for getCallSites itself; callers expect their own frame first.
+  sites.shift();
+  if (sites.length > frameCount) sites.length = frameCount;
+  return sites;
+}
+
 module.exports = {
   // Core
   inspect,
@@ -1166,6 +1236,7 @@ module.exports = {
   MIMEParams,
   getSystemErrorName,
   getSystemErrorMap,
+  getCallSites,
   format,
   formatWithOptions,
   inherits,

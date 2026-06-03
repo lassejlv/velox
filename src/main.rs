@@ -448,8 +448,8 @@ fn run_source(code: &str, _label: &str) -> ExitCode {
 /// The primary subcommand names, used to offer a "did you mean" hint when a
 /// bareword argument is a near-miss typo rather than a real file.
 const COMMANDS: &[&str] = &[
-    "init", "install", "add", "remove", "test", "bench", "build", "outdated",
-    "update", "x", "run", "repl", "help",
+    "init", "install", "add", "remove", "test", "bench", "build", "outdated", "update", "x", "run",
+    "repl", "help",
 ];
 
 /// The closest command within edit distance 2 of `name` (None if nothing close).

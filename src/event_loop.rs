@@ -29,6 +29,7 @@ use mio::{Events, Poll, Registry, Token, Waker};
 use objc2_javascript_core::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectMakeFunctionWithCallback, JSObjectRef,
     JSObjectSetProperty, JSStringCreateWithUTF8CString, JSStringRelease, JSValue, JSValueRef,
+    kJSPropertyAttributeDontEnum,
 };
 
 use crate::runtime::js_value_to_string;
@@ -384,12 +385,15 @@ pub(crate) unsafe fn register(ctx: JSContextRef, name: &CStr, callback: NativeFn
         let global = JSContext::global_object(ctx);
         let name_str = JSStringCreateWithUTF8CString(name.as_ptr());
         let function = JSObjectMakeFunctionWithCallback(ctx, name_str, Some(callback));
+        // Hide `__velox_*` natives from `Object.keys(globalThis)` / `for..in`:
+        // they're internal plumbing, and code that audits the global namespace
+        // (notably Node's own test harness leaked-globals check) must not see them.
         JSObjectSetProperty(
             ctx,
             global,
             name_str,
             function as JSValueRef,
-            0,
+            kJSPropertyAttributeDontEnum,
             ptr::null_mut(),
         );
         JSStringRelease(name_str);

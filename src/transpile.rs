@@ -8,7 +8,7 @@ use std::path::Path;
 use oxc::allocator::Allocator;
 use oxc::codegen::{Codegen, CodegenOptions};
 use oxc::diagnostics::OxcDiagnostic;
-use oxc::parser::Parser;
+use oxc::parser::{ParseOptions, Parser};
 use oxc::semantic::SemanticBuilder;
 use oxc::span::SourceType;
 use oxc::transformer::{TransformOptions, Transformer};
@@ -68,7 +68,17 @@ pub fn transpile_with_map(
     // as TypeScript so the REPL accepts type annotations.
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
 
-    let parser_ret = Parser::new(&allocator, source, source_type).parse();
+    // Every module is wrapped in an async function by the bundler (`module.rs`),
+    // so a top-level `return` — which Node allows because it wraps modules in a
+    // CommonJS function — is meaningful here too (it bails out of the wrapper).
+    // Node's own test files lean on this heavily (`if (!hasX) { skip(); return; }`),
+    // so accept it rather than rejecting the whole file as a parse error.
+    let parser_ret = Parser::new(&allocator, source, source_type)
+        .with_options(ParseOptions {
+            allow_return_outside_function: true,
+            ..ParseOptions::default()
+        })
+        .parse();
     if !parser_ret.errors.is_empty() {
         return Err(parser_ret.errors);
     }

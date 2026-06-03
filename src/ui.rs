@@ -56,7 +56,10 @@ pub fn about() {
             ("velox remove <pkg>...", "remove packages"),
             ("velox update", "upgrade dependencies in range"),
             ("velox outdated", "list dependencies with newer versions"),
-            ("velox x <pkg> [args]", "run a package executable (npx-style)"),
+            (
+                "velox x <pkg> [args]",
+                "run a package executable (npx-style)",
+            ),
         ],
     );
     section(
@@ -107,7 +110,10 @@ pub fn banner() {
     let logo = r#"  ╦  ╦┌─┐┬  ┌─┐─┐ ┬
   ╚╗╔╝├┤ │  │ │┌┴┬┘
    ╚╝ └─┘┴─┘└─┘┴ └─"#;
-    println!("{}", logo.if_supports_color(Stdout, |t| t.style(Style::new().cyan().bold())));
+    println!(
+        "{}",
+        logo.if_supports_color(Stdout, |t| t.style(Style::new().cyan().bold()))
+    );
     println!(
         "  {} {}  ·  {} REPL on JavaScriptCore",
         "velox".if_supports_color(Stdout, |t| t.style(Style::new().bright_white().bold())),
@@ -175,7 +181,8 @@ pub fn report_unknown_command(input: &str, suggestion: &str) {
     );
     eprintln!(
         "  did you mean {}?",
-        format!("velox {suggestion}").if_supports_color(Stdout, |t| t.style(Style::new().green().bold())),
+        format!("velox {suggestion}")
+            .if_supports_color(Stdout, |t| t.style(Style::new().green().bold())),
     );
     eprintln!(
         "  run {} to see all commands",

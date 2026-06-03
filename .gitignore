@@ -5,8 +5,11 @@
 
 # Node test files fetched on demand + run artifacts
 /tests/node/parallel/
+/tests/node/node-src/
 /tests/node/failures.log
 /tests/node/last-pass.txt
 /tests/node/last-fail.txt
 /artifacts/node-compat/
 /node-compat-*/
+/node-compat/
+.DS_Store

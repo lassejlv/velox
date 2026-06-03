@@ -98,7 +98,7 @@ use oxc::ast::ast::{
     ImportExpression, ModuleExportName, Statement,
 };
 use oxc::ast_visit::{Visit, walk};
-use oxc::parser::Parser;
+use oxc::parser::{ParseOptions, Parser};
 use oxc::span::{SourceType, Span};
 use oxc_resolver::{ResolveOptions, Resolver};
 
@@ -556,7 +556,15 @@ impl Graph {
         // The transpiled output is plain JS, but parsing it as a module is what
         // lets oxc surface the (preserved) import/export statements.
         let source_type = SourceType::mjs();
-        let parsed = Parser::new(&allocator, js, source_type).parse();
+        // Allow a top-level `return` — each module body becomes an async function
+        // wrapper, so a bare `return` (which Node permits in its CJS wrapper) is
+        // valid here too. Node's own test files rely on it for early skip-outs.
+        let parsed = Parser::new(&allocator, js, source_type)
+            .with_options(ParseOptions {
+                allow_return_outside_function: true,
+                ..ParseOptions::default()
+            })
+            .parse();
         if !parsed.errors.is_empty() {
             return Err(ModuleError::Parse {
                 path: path.to_path_buf(),
@@ -1008,7 +1016,12 @@ fn declares_binding(body: &str, name: &str) -> bool {
 /// Runtime glue prepended to every bundle: the registry and lazy `require`.
 const BUNDLE_PRELUDE: &str = r#"const __modules = {};
 const __cache = {};
-function require(id) {
+// These helpers are `const` (not `function` declarations) on purpose: a
+// top-level `function` declaration in the bundle script becomes an enumerable
+// property of `globalThis` (visible to `for..in`/leaked-globals audits), while a
+// `const` stays in the bundle's lexical scope — invisible globally, yet still
+// closed over by the module wrappers and the entry IIFE defined below.
+const require = function (id) {
   if (__cache[id]) return __cache[id].exports;
   // `node:` builtins always go through the one shared global loader so the
   // bundle and the runtime (e.g. the global WebSocket/fetch) get the SAME
@@ -1028,11 +1041,11 @@ function require(id) {
   __cache[id] = module;
   __modules[id](module, module.exports, require);
   return module.exports;
-}
+};
 // Build an ES-module namespace object from a (CJS or ESM) module's exports, for
 // dynamic `import()`. A CJS module's exports become the `default`, with its own
 // enumerable keys surfaced as named exports (matching Node's interop).
-function __velox_ns(m) {
+const __velox_ns = function (m) {
   if (m && m.__esModule && m.default !== undefined && Object.prototype.hasOwnProperty.call(m, 'default')) return m;
   const ns = {};
   if (m && (typeof m === 'object' || typeof m === 'function')) {
@@ -1044,18 +1057,18 @@ function __velox_ns(m) {
   // a transpiled-ESM module (`__esModule`) routes default through `.default`.
   ns.default = (m && m.__esModule && ('default' in m)) ? m.default : m;
   return ns;
-}
+};
 // Dynamic import: a promise of the resolved module's namespace, going through
 // the bundle registry (JSC's own module loader can't see node_modules).
-function __velox_import(id) {
+const __velox_import = function (id) {
   return Promise.resolve().then(function () { return __velox_ns(require(id)); });
-}
+};
 // Bun-style auto-serve: if the entry module's `export default` is a server
 // object (`{ port?, fetch }`) or a web-framework app exposing `.fetch`
 // (Hono/Elysia/…), start a server for it automatically. Opt out by exporting
 // something without a `fetch` method, or just call `.listen()`/`Velox.serve`
 // yourself.
-function __velox_maybe_serve(exports) {
+const __velox_maybe_serve = function (exports) {
   var def = exports && exports.default;
   if (!def || (typeof def !== 'object' && typeof def !== 'function')) return;
   if (typeof def.fetch !== 'function') return;
@@ -1064,7 +1077,7 @@ function __velox_maybe_serve(exports) {
     globalThis.__velox_served = true;
     globalThis.Velox.serve(def);
   }
-}
+};
 "#;
 
 /// Rewrite a single `import` declaration into CommonJS bindings.

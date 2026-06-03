@@ -17,10 +17,9 @@ use std::ptr;
 use objc2_javascript_core::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
     JSObjectGetTypedArrayByteOffset, JSObjectGetTypedArrayBytesPtr, JSObjectGetTypedArrayLength,
-    JSObjectMakeTypedArray,
-    JSObjectRef, JSStringCreateWithCharacters, JSStringCreateWithUTF8CString,
-    JSStringGetCharactersPtr, JSStringGetLength, JSStringRelease, JSTypedArrayType, JSValue,
-    JSValueRef,
+    JSObjectMakeTypedArray, JSObjectRef, JSStringCreateWithCharacters,
+    JSStringCreateWithUTF8CString, JSStringGetCharactersPtr, JSStringGetLength, JSStringRelease,
+    JSTypedArrayType, JSValue, JSValueRef,
 };
 
 use crate::event_loop::{arg_slice, register};
