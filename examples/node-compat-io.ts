@@ -168,6 +168,23 @@ check("fs async read/write + promisify", async () => {
 });
 // node:constants exposes O_*/S_* flags
 check("node:constants", () => { const C = require("node:constants"); if (C.O_CREAT !== 0x200 || C.S_IFREG !== 0x8000 || C.R_OK !== 4) throw new Error("constants"); });
+check("net socket paused-mode read() via 'readable'", async () => {
+  const net = require("node:net");
+  await new Promise<void>((resolve, reject) => {
+    const srv = net.createServer((sock: any) => { sock.on("data", () => sock.end("PAYLOAD")); });
+    srv.listen(0, () => {
+      const port = srv.address().port;
+      const c = net.connect(port, "127.0.0.1", () => c.write("go"));
+      let out = "";
+      // 'readable' (not 'data') keeps the socket paused — this is how undici and
+      // other low-level clients pull bytes; regression guard for that mode.
+      c.on("readable", () => { let chunk; while ((chunk = c.read()) !== null) out += chunk; });
+      c.on("end", () => { srv.close(); out === "PAYLOAD" ? resolve() : reject(new Error("got: " + out)); });
+      c.on("error", reject);
+      setTimeout(() => reject(new Error("paused-read timeout")), 1500);
+    });
+  });
+});
 
 await new Promise((r) => setTimeout(r, 300));
 let pass = 0, fail = 0;

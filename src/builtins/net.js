@@ -49,6 +49,14 @@ function Socket(options) {
   this.bytesRead = 0;
   this.bytesWritten = 0;
 
+  // Readable mode: null = paused/undetermined, true = flowing, false = paused.
+  // Adding a 'data' listener (or resume()/pipe()) switches to flowing; adding a
+  // 'readable' listener keeps it paused so the consumer pulls via read() — which
+  // is how undici and other low-level clients drive the socket.
+  this._readableFlowing = null;
+  this._readBuffer = [];
+  this.readableEnded = false;
+
   // Node sockets carry a libuv `_handle` whose `_parentWrap` points back at the
   // socket. velox has no libuv handle, but some libraries (got/http2-wrapper)
   // read `socket._handle._parentWrap` to recover the JS socket — provide a
@@ -152,8 +160,48 @@ Socket.prototype.setNoDelay = function () { return this; };
 Socket.prototype.setKeepAlive = function () { return this; };
 Socket.prototype.ref = function () { return this; };
 Socket.prototype.unref = function () { return this; };
-Socket.prototype.pause = function () { return this; };
-Socket.prototype.resume = function () { return this; };
+Socket.prototype.pause = function () { this._readableFlowing = false; return this; };
+Socket.prototype.resume = function () {
+  if (this._readableFlowing !== true) {
+    this._readableFlowing = true;
+    // Drain anything buffered while paused as 'data' events.
+    var q = this._readBuffer;
+    this._readBuffer = [];
+    for (var i = 0; i < q.length; i++) this.emit('data', this._encoding ? q[i].toString(this._encoding) : q[i]);
+  }
+  return this;
+};
+// read([n]) — paused-mode pull. Returns up to n bytes (all if omitted) from the
+// buffer, or null when empty. Honors setEncoding().
+Socket.prototype.read = function (n) {
+  if (this._readBuffer.length === 0) return null;
+  var all = this._readBuffer.length === 1 ? this._readBuffer[0] : Buffer.concat(this._readBuffer);
+  var out;
+  if (n == null || n >= all.length) { this._readBuffer = []; out = all; }
+  else { out = all.slice(0, n); this._readBuffer = [all.slice(n)]; }
+  return this._encoding ? out.toString(this._encoding) : out;
+};
+// Override on()/addListener() to set the read mode from the listener type.
+Socket.prototype.on = function (event, fn) {
+  EventEmitter.prototype.on.call(this, event, fn);
+  if (event === 'data') {
+    this.resume();
+  } else if (event === 'readable') {
+    if (this._readableFlowing === null) this._readableFlowing = false;
+    if (this._readBuffer.length > 0) { var self = this; nextTick(function () { self.emit('readable'); }); }
+  }
+  return this;
+};
+Socket.prototype.addListener = Socket.prototype.on;
+Object.defineProperty(Socket.prototype, 'readableLength', {
+  configurable: true,
+  get: function () { var n = 0; for (var i = 0; i < this._readBuffer.length; i++) n += this._readBuffer[i].length; return n; },
+});
+Object.defineProperty(Socket.prototype, 'readableFlowing', {
+  configurable: true,
+  get: function () { return this._readableFlowing; },
+  set: function (v) { this._readableFlowing = v; },
+});
 
 Socket.prototype.address = function () {
   return { port: this.localPort, address: this.localAddress, family: 'IPv4' };
@@ -218,8 +266,13 @@ Socket.prototype._pushData = function (data) {
     ? data
     : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   this.bytesRead += buf.length;
-  if (this._encoding) this.emit('data', buf.toString(this._encoding));
-  else this.emit('data', buf);
+  if (this._readableFlowing === true) {
+    this.emit('data', this._encoding ? buf.toString(this._encoding) : buf);
+  } else {
+    // Paused: buffer for read() and signal availability.
+    this._readBuffer.push(buf);
+    this.emit('readable');
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -349,6 +402,9 @@ globalThis.__velox_on_end = function (socketId) {
   var socket = sockets.get(socketId);
   if (socket) {
     socket.readable = false;
+    socket.readableEnded = true;
+    // Wake a paused reader so its read()-until-null loop observes EOF.
+    if (socket._readableFlowing !== true && socket._readBuffer.length > 0) socket.emit('readable');
     socket.emit('end');
   }
 };
