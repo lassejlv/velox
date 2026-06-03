@@ -60,6 +60,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ),
     ("module", include_str!("builtins/module_module.js")),
     ("http2", include_str!("builtins/http2.js")),
+    ("http2_hpack", include_str!("builtins/http2_hpack.js")),
     ("dgram", include_str!("builtins/dgram.js")),
     ("console", include_str!("builtins/console_module.js")),
     (

@@ -178,6 +178,27 @@ check("Buffer.copyBytesFrom", () => { const u = new Uint16Array([1, 2, 3, 4]); c
 check("crypto.generatePrimeSync", () => { const c = require("node:crypto"); const p = c.generatePrimeSync(48, { bigint: true }); if (typeof p !== "bigint" || p.toString(2).length !== 48 || !c.checkPrimeSync(p)) throw new Error("genprime"); const buf = c.generatePrimeSync(32); if (!(buf instanceof ArrayBuffer) || !c.checkPrimeSync(Buffer.from(buf))) throw new Error("genprime-buf"); });
 check("crypto.checkPrimeSync", () => { const c = require("node:crypto"); if (!c.checkPrimeSync(7919n) || !c.checkPrimeSync(2147483647n)) throw new Error("prime"); if (c.checkPrimeSync(91n) || c.checkPrimeSync(561n)) throw new Error("composite (Carmichael)"); });
 check("crypto.generateKeySync/generateKey", async () => { const c = require("node:crypto"); const k = c.generateKeySync("hmac", { length: 256 }); if (k.type !== "secret" || k.export().length !== 32) throw new Error("sync"); if (c.generateKeySync("aes", { length: 128 }).export().length !== 16) throw new Error("aes"); await new Promise<void>((res, rej) => c.generateKey("hmac", { length: 512 }, (e: any, key: any) => e ? rej(e) : key.export().length === 64 ? res() : rej(new Error("async len")))); });
+check("http2 server + client round-trip (h2c)", async () => {
+  const http2 = require("node:http2");
+  const server = http2.createServer();
+  server.on("stream", (stream: any, headers: any) => {
+    let body = ""; stream.on("data", (c: any) => (body += c));
+    stream.on("end", () => { stream.respond({ ":status": 200, "content-type": "application/json" }); stream.end(JSON.stringify({ path: headers[":path"], method: headers[":method"], echo: body })); });
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const port = server.address().port;
+  const client = http2.connect("http://localhost:" + port);
+  try {
+    const req = client.request({ ":path": "/x", ":method": "POST" });
+    let d = "", status = 0;
+    req.on("response", (h: any) => (status = h[":status"]));
+    req.on("data", (c: any) => (d += c));
+    req.end("h2body");
+    await new Promise<void>((res, rej) => { req.on("end", res); req.on("error", rej); setTimeout(() => rej(new Error("timeout")), 3000); });
+    const j = JSON.parse(d);
+    if (status !== 200 || j.path !== "/x" || j.method !== "POST" || j.echo !== "h2body") throw new Error("h2: " + status + " " + d);
+  } finally { client.close(); server.close(); }
+});
 check("crypto.getDiffieHellman/createDiffieHellman", () => { const c = require("node:crypto"); const a = c.getDiffieHellman("modp14"), b = c.getDiffieHellman("modp14"); const aPub = a.generateKeys(), bPub = b.generateKeys(); if (!a.computeSecret(bPub).equals(b.computeSecret(aPub))) throw new Error("modp14"); const d1 = c.createDiffieHellman(256); const d2 = c.createDiffieHellman(d1.getPrime(), d1.getGenerator()); const p1 = d1.generateKeys(), p2 = d2.generateKeys(); if (!d1.computeSecret(p2).equals(d2.computeSecret(p1))) throw new Error("generated"); });
 check("crypto x25519 keygen + diffieHellman", () => { const c = require("node:crypto"); const a = c.generateKeyPairSync("x25519"); const b = c.generateKeyPairSync("x25519"); const s1 = c.diffieHellman({ privateKey: a.privateKey, publicKey: b.publicKey }); const s2 = c.diffieHellman({ privateKey: b.privateKey, publicKey: a.publicKey }); if (s1.length !== 32 || !s1.equals(s2)) throw new Error("x25519 dh"); });
 check("crypto x25519 RFC 7748 vector", () => { const c = require("node:crypto"); const priv = (h: string) => "-----BEGIN PRIVATE KEY-----\n" + Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), Buffer.from(h, "hex")]).toString("base64") + "\n-----END PRIVATE KEY-----\n"; const pub = (h: string) => "-----BEGIN PUBLIC KEY-----\n" + Buffer.concat([Buffer.from("302a300506032b656e032100", "hex"), Buffer.from(h, "hex")]).toString("base64") + "\n-----END PUBLIC KEY-----\n"; const shared = c.diffieHellman({ privateKey: c.createPrivateKey(priv("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")), publicKey: c.createPublicKey(pub("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")) }); if (shared.toString("hex") !== "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742") throw new Error("rfc7748"); });
