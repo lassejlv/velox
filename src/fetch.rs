@@ -107,17 +107,34 @@ pub const FETCH_PRELUDE: &str = r#"
     return pairs;
   }
 
+  function abortReason(signal) {
+    if (signal && signal.reason !== undefined && signal.reason !== null) return signal.reason;
+    try { return new DOMException("The operation was aborted.", "AbortError"); }
+    catch (e) { var err = new Error("The operation was aborted."); err.name = "AbortError"; return err; }
+  }
+
   globalThis.fetch = function (url, options) {
     options = options || {};
+    let signal = options.signal;
     // Accept a Request instance as the first argument.
     if (typeof globalThis.Request !== "undefined" && url instanceof globalThis.Request) {
       const req = url;
+      if (signal === undefined) signal = req.signal;
       options = Object.assign({ method: req.method, headers: req.headers, body: req._bodyText }, options);
       url = req.url;
     }
     return new Promise(function (resolve, reject) {
+      // An already-aborted signal rejects before any socket work.
+      if (signal && signal.aborted) { reject(abortReason(signal)); return; }
       const token = nextToken++;
       pending[token] = { resolve: resolve, reject: reject };
+      // Aborting mid-flight rejects the promise; the lingering native request's
+      // later settle is dropped (the token is gone from `pending`).
+      if (signal && typeof signal.addEventListener === "function") {
+        signal.addEventListener("abort", function () {
+          if (pending[token]) { delete pending[token]; reject(abortReason(signal)); }
+        }, { once: true });
+      }
       const method = options.method ? String(options.method) : "GET";
       const body = options.body != null ? String(options.body) : "";
       let headersJson = "[]";

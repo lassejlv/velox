@@ -133,6 +133,8 @@ pub const GLOBALS_PRELUDE: &str = r#"
   try { env = JSON.parse(__velox_env_json()) || {}; } catch (e) {}
   var argv = ["velox"];
   try { argv = JSON.parse(__velox_argv_json()) || ["velox"]; } catch (e) {}
+  var _pids = ["0", "0"];
+  try { _pids = String(__velox_pids()).split(","); } catch (e) {}
 
   function makeStream(fd) {
     return {
@@ -253,8 +255,8 @@ pub const GLOBALS_PRELUDE: &str = r#"
     argv0: argv[0] || "velox",
     execArgv: [],
     execPath: argv[0] || "velox",
-    pid: 1,
-    ppid: 0,
+    pid: (+_pids[0]) || 0,
+    ppid: (+_pids[1]) || 0,
     title: "velox",
     version: "v22.12.0",
     versions: { node: "22.12.0", velox: "0.1.0", v8: "12.4.254.21-node.21" },
@@ -334,6 +336,21 @@ pub const GLOBALS_PRELUDE: &str = r#"
     resourceUsage: function () {
       var parts = String(__velox_cpu_usage()).split(",");
       return { userCPUTime: Math.round(+parts[0]), systemCPUTime: Math.round(+parts[1]), maxRSS: 0 };
+    },
+    // kill(pid, signal) — signal may be a name or number; 0 only probes the
+    // process. Throws ESRCH/EPERM like Node when the syscall fails.
+    kill: function (pid, signal) {
+      var SIG = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGABRT: 6, SIGFPE: 8, SIGKILL: 9, SIGSEGV: 11, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTOP: 17, SIGCONT: 19, SIGCHLD: 20, SIGUSR1: 30, SIGUSR2: 31 };
+      var sig = signal === undefined ? 15 : signal;
+      if (typeof sig === "string") { if (SIG[sig] == null) throw new Error("Unknown signal: " + sig); sig = SIG[sig]; }
+      var rc = __velox_kill(pid | 0, sig | 0);
+      if (rc !== 0) {
+        var code = rc === 3 ? "ESRCH" : rc === 1 ? "EPERM" : "EINVAL";
+        var e = new Error("kill " + code);
+        e.code = code; e.errno = -rc; e.syscall = "kill";
+        throw e;
+      }
+      return true;
     },
     getuid: function () { return 0; },
     getgid: function () { return 0; },
@@ -441,6 +458,8 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_hrtime_ns", velox_hrtime_ns);
         register(ctx, c"__velox_cpu_usage", velox_cpu_usage);
         register(ctx, c"__velox_mem_info", velox_mem_info);
+        register(ctx, c"__velox_kill", velox_kill);
+        register(ctx, c"__velox_pids", velox_pids);
         register(ctx, c"__velox_load_builtin", velox_load_builtin);
 
         register(ctx, c"__velox_read_file", fs_read_file);
@@ -690,6 +709,50 @@ unsafe extern "C-unwind" fn velox_mem_info(
     };
 
     unsafe { js_string(ctx, &format!("{{\"rss\":{rss},\"available\":{available}}}")) }
+}
+
+/// `__velox_pids()` → "pid,ppid" (real `getpid`/`getppid`). Backs
+/// `process.pid`/`process.ppid`.
+unsafe extern "C-unwind" fn velox_pids(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let pid = unsafe { libc::getpid() };
+    let ppid = unsafe { libc::getppid() };
+    unsafe { js_string(ctx, &format!("{pid},{ppid}")) }
+}
+
+/// `__velox_kill(pid, signal)` → 0 on success, else the errno (3 = ESRCH no such
+/// process, 1 = EPERM). Signal 0 only probes existence/permission. Backs
+/// `process.kill`.
+unsafe extern "C-unwind" fn velox_kill(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    argc: usize,
+    argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    let args = arg_slice(argc, argv);
+    let pid = args
+        .first()
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(0.0) as i32;
+    let sig = args
+        .get(1)
+        .map(|v| unsafe { JSValue::to_number(ctx, *v, ptr::null_mut()) })
+        .unwrap_or(15.0) as i32;
+    let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
+    let out = if rc == 0 {
+        0
+    } else {
+        std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
+    };
+    unsafe { JSValue::new_number(ctx, out as f64) }
 }
 
 /// `__velox_os_info()` → JSON of host facts (hostname, cpus, memory, loadavg).

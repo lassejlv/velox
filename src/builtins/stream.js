@@ -1035,6 +1035,161 @@ Writable.prototype.toWeb = function () {
   });
 };
 
+// --- Static .toWeb forms (Node exposes these as static methods too) ---------
+// `Readable.toWeb(nodeReadable)` converts a Node Readable into a WHATWG
+// ReadableStream. Data/end/error are wired through; pause/resume drives basic
+// backpressure (we resume only when the web consumer pulls).
+Readable.toWeb = function (nodeReadable, options) {
+  return new globalThis.ReadableStream({
+    start: function (controller) {
+      nodeReadable.on('data', function (chunk) {
+        controller.enqueue(
+          (chunk instanceof Uint8Array) ? chunk
+            : (BufferImpl ? BufferImpl.from(chunk) : chunk)
+        );
+        // Backpressure: if the web side's queue is full, pause the Node side.
+        if (controller.desiredSize != null && controller.desiredSize <= 0) {
+          if (nodeReadable.pause) nodeReadable.pause();
+        }
+      });
+      nodeReadable.on('end', function () { try { controller.close(); } catch (e) {} });
+      nodeReadable.on('error', function (err) { controller.error(err); });
+    },
+    pull: function () {
+      if (nodeReadable.resume) nodeReadable.resume();
+    },
+    cancel: function () {
+      if (nodeReadable.destroy) nodeReadable.destroy();
+    },
+  });
+};
+// `Writable.toWeb(nodeWritable)` -> WHATWG WritableStream.
+Writable.toWeb = function (nodeWritable) {
+  return new globalThis.WritableStream({
+    write: function (chunk) { return new Promise(function (res, rej) { nodeWritable.write(chunk, function (e) { e ? rej(e) : res(); }); }); },
+    close: function () { return new Promise(function (res) { nodeWritable.end(res); }); },
+    abort: function (err) { if (nodeWritable.destroy) nodeWritable.destroy(err); },
+  });
+};
+// `Duplex.toWeb(nodeDuplex)` -> `{ readable, writable }` pair of web streams.
+Duplex.toWeb = function (nodeDuplex) {
+  return {
+    readable: Readable.toWeb(nodeDuplex),
+    writable: Writable.toWeb(nodeDuplex),
+  };
+};
+
+// --- Duplex.from(source) ----------------------------------------------------
+// Build a Duplex from various sources, matching Node's Duplex.from:
+//   - an async-generator function or a function returning an async iterable
+//     -> readable side yields from it (writable side is a no-op sink),
+//   - a `{ readable, writable }` pair (two streams) -> composed into one Duplex,
+//   - a Readable -> readable side is it (writable side is a no-op sink),
+//   - an async iterable / array -> like Readable.from but as a Duplex,
+//   - a Promise -> resolve, then treat the result.
+Duplex.from = function (source) {
+  // Promise: defer until it resolves, bridging through a PassThrough so the
+  // returned object is synchronously a Duplex.
+  if (source && typeof source.then === 'function') {
+    var holder = new PassThrough({ objectMode: true });
+    Promise.resolve(source).then(function (resolved) {
+      var inner = Duplex.from(resolved);
+      // Pipe the resolved duplex's readable side into the holder.
+      if (inner && inner.on) {
+        inner.on('data', function (c) { holder.push(c); });
+        inner.on('end', function () { holder.push(null); });
+        inner.on('error', function (e) { errorOrDestroy(holder, e); });
+      } else {
+        holder.push(null);
+      }
+    }, function (err) { errorOrDestroy(holder, err); });
+    return holder;
+  }
+
+  // `{ readable, writable }` pair -> compose into one Duplex. Delegate to the
+  // existing compose() which already pipelines a writable feed into a readable
+  // drain (here the two halves are independent streams).
+  if (source && (source.readable || source.writable) &&
+      typeof source !== 'function' &&
+      (isStreamLike(source.readable) || isStreamLike(source.writable))) {
+    return duplexFromPair(source.writable, source.readable);
+  }
+
+  // Function: call it. An async-generator function (or any function returning
+  // an async iterable) drives the readable side; the writable side is a sink.
+  if (typeof source === 'function') {
+    var produced = source();
+    return Duplex.from(produced);
+  }
+
+  // A Node Readable (or Duplex) -> readable side is it; writable side is a sink.
+  if (source && source._readableState && typeof source.pipe === 'function') {
+    return duplexFromPair(null, source);
+  }
+
+  // An async iterable / sync iterable / array -> like Readable.from, as Duplex.
+  if (source && (typeof source[Symbol.asyncIterator] === 'function' ||
+                 typeof source[Symbol.iterator] === 'function')) {
+    return duplexFromReadable(Readable.from(source));
+  }
+
+  throw new TypeError('Duplex.from: unsupported source');
+};
+
+function isStreamLike(x) {
+  return !!(x && (x._readableState || x._writableState ||
+    typeof x.pipe === 'function' || typeof x.write === 'function' ||
+    typeof x.getReader === 'function' || typeof x.getWriter === 'function'));
+}
+
+// Duplex whose readable side mirrors `readable` and whose writable side is a
+// no-op sink (used for the Readable / async-iterable cases).
+function duplexFromReadable(readable) {
+  var d = new Duplex({ objectMode: true });
+  d._read = function () {};
+  d._write = function (chunk, enc, cb) { cb(); }; // sink
+  d._final = function (cb) { cb(); };
+  readable.on('data', function (c) { d.push(c); });
+  readable.on('end', function () { d.push(null); });
+  readable.on('error', function (e) { errorOrDestroy(d, e); });
+  return d;
+}
+
+// Compose a `{ writable, readable }` pair into one Duplex: writes go to the
+// `writable` stream, reads come from the `readable` stream. Either may be a
+// Node stream or a WHATWG web stream (coerced via fromWeb).
+function duplexFromPair(writable, readable) {
+  if (writable && typeof writable.getWriter === 'function') {
+    writable = Writable.fromWeb(writable);
+  }
+  if (readable && typeof readable.getReader === 'function') {
+    readable = Readable.fromWeb(readable);
+  }
+  var d = new Duplex({ objectMode: true });
+  d._read = function () {};
+  d._write = function (chunk, enc, cb) {
+    if (!writable) { cb(); return; }
+    if (writable.write(chunk) === false) writable.once('drain', cb);
+    else cb();
+  };
+  d._final = function (cb) {
+    if (writable && writable.end) writable.end();
+    cb();
+  };
+  if (readable) {
+    readable.on('data', function (c) { d.push(c); });
+    readable.on('end', function () { d.push(null); });
+    readable.on('error', function (e) { errorOrDestroy(d, e); });
+  } else {
+    // No readable side: EOF the readable half immediately.
+    d.push(null);
+  }
+  if (writable) {
+    writable.on('error', function (e) { errorOrDestroy(d, e); });
+  }
+  return d;
+};
+
 // ===========================================================================
 // Transform — Duplex where writes pass through _transform into the readable.
 // ===========================================================================
