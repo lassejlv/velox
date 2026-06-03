@@ -390,6 +390,7 @@ function detectKeyType(pem) {
     if (hex.indexOf("2b656e") >= 0) return "x25519";
     if (hex.indexOf("2b6570") >= 0) return "ed25519";
     if (hex.indexOf("2b656f") >= 0) return "x448";
+    if (hex.indexOf("2a864886f70d010101") >= 0) return "rsa"; // rsaEncryption OID
     if (hex.indexOf("2a8648ce3d") >= 0) return "ec"; // EC OID prefix
   } catch (e) {}
   return undefined;
@@ -578,6 +579,12 @@ function getCiphers() {
   ];
 }
 
+// The named curves velox's EC/ECDH support covers (P-256 via the p256 crate;
+// the OpenSSL aliases are listed too since libraries match on either name).
+function getCurves() {
+  return ["prime256v1", "secp256r1", "P-256"];
+}
+
 // X509Certificate — parses a PEM/DER certificate via the native __velox_x509_parse
 // (x509-cert crate) and exposes Node's read-only certificate surface. Binary
 // fields (raw DER, SPKI) cross from the native as hex.
@@ -712,6 +719,7 @@ module.exports = {
   Cipheriv: Cipheriv,
   Decipheriv: Cipheriv,
   getCiphers: getCiphers,
+  getCurves: getCurves,
   generateKeyPairSync: generateKeyPairSync,
   generateKeyPair: generateKeyPair,
   sign: sign,

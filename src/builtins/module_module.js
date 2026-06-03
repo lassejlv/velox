@@ -50,9 +50,23 @@ Module.wrap = function (script) { return '(function (exports, require, module, _
 Module.runMain = function () {};
 Module.prototype.require = function (id) { return loaderRequire(id); };
 
+// SourceMap — the V8 source-map reader Node exposes from node:module. velox maps
+// stack frames natively (src/sourcemap.rs), so the userland API is a thin reader
+// over a provided payload, with findSourceMap returning undefined (velox doesn't
+// keep a JS-visible registry of loaded source maps).
+function SourceMap(payload) {
+  this.payload = payload || {};
+}
+SourceMap.prototype.findEntry = function () { return {}; };
+SourceMap.prototype.findOrigin = function () { return {}; };
+Module.SourceMap = SourceMap;
+Module.findSourceMap = function () { return undefined; };
+
 module.exports = Module;
 module.exports.Module = Module;
 module.exports.createRequire = createRequire;
 module.exports.builtinModules = BUILTINS.slice();
 module.exports.isBuiltin = isBuiltin;
+module.exports.SourceMap = SourceMap;
+module.exports.findSourceMap = Module.findSourceMap;
 module.exports.default = Module;
