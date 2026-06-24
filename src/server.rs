@@ -15,9 +15,9 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use crate::jsc::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use mio::net::{TcpListener, TcpStream};
 use mio::{Interest, Token};
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use rustls::{
     ClientConfig, ClientConnection, Connection as TlsConnection, RootCertStore, ServerConfig,
     ServerConnection,

@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValueRef};
+use crate::jsc::{JSContextRef, JSObjectRef, JSValueRef};
 
 use crate::event_loop::{arg_slice, register};
 use crate::node::js_string;

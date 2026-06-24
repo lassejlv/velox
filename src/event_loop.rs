@@ -25,12 +25,12 @@ use std::time::{Duration, Instant};
 
 use std::sync::Arc;
 
-use mio::{Events, Poll, Registry, Token, Waker};
-use objc2_javascript_core::{
+use crate::jsc::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectMakeFunctionWithCallback, JSObjectRef,
     JSObjectSetProperty, JSStringCreateWithUTF8CString, JSStringRelease, JSValue, JSValueRef,
     kJSPropertyAttributeDontEnum,
 };
+use mio::{Events, Poll, Registry, Token, Waker};
 
 use crate::runtime::js_value_to_string;
 
@@ -406,6 +406,12 @@ pub(crate) unsafe fn register(ctx: JSContextRef, name: &CStr, callback: NativeFn
 // drains. The public C API has no equivalent, so without this hook a
 // rejected-and-unobserved promise (a fire-and-forget async call, an uncaught
 // dynamic-import failure) vanishes and the process just exits silently.
+//
+// This is an Apple-framework SPI symbol; WebKitGTK (Linux) does not export it,
+// so the hook is macOS-only. On other platforms `install_unhandled_rejection`
+// is a no-op — unhandled rejections are silently dropped (the documented
+// pre-hook behavior) rather than failing the build.
+#[cfg(target_os = "macos")]
 #[link(name = "JavaScriptCore", kind = "framework")]
 unsafe extern "C" {
     fn JSGlobalContextSetUnhandledRejectionCallback(
@@ -418,6 +424,7 @@ unsafe extern "C" {
 /// Route JSC's unhandled-rejection notifications to the JS reporter
 /// (`__velox_report_unhandled_rejection`), which emits `process`'s
 /// 'unhandledRejection' or, with no listener, surfaces the error.
+#[cfg(target_os = "macos")]
 pub(crate) fn install_unhandled_rejection(ctx: JSContextRef) {
     unsafe {
         let name = JSStringCreateWithUTF8CString(c"__velox_rejection_cb".as_ptr());
@@ -428,6 +435,11 @@ pub(crate) fn install_unhandled_rejection(ctx: JSContextRef) {
     }
 }
 
+/// Non-macOS: WebKitGTK lacks the unhandled-rejection SPI, so this is a no-op.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn install_unhandled_rejection(_ctx: JSContextRef) {}
+
+#[cfg(target_os = "macos")]
 unsafe extern "C-unwind" fn unhandled_rejection_cb(
     ctx: JSContextRef,
     _function: JSObjectRef,

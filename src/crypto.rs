@@ -4,6 +4,7 @@
 
 use std::ptr;
 
+use crate::jsc::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit as AeadKeyInit};
@@ -12,7 +13,6 @@ use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher};
 use digest::Digest;
 use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512};
 

@@ -32,7 +32,7 @@ use mio::{Interest, Token};
 use rustls::{ClientConfig, ClientConnection, RootCertStore};
 use rustls_pki_types::ServerName;
 
-use objc2_javascript_core::{
+use crate::jsc::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty, JSObjectRef,
     JSStringCreateWithUTF8CString, JSStringRelease, JSValue, JSValueRef,
 };

@@ -17,8 +17,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr;
 
+use crate::jsc::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use base64::Engine;
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use rusqlite::Connection;
 use rusqlite::types::{Value, ValueRef};
 use serde_json::{Value as Json, json};

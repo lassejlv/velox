@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    # velox is macOS-only (system JavaScriptCore); Apple-silicon runner.
+    # macOS: Apple's system JavaScriptCore framework; Apple-silicon runner.
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -42,3 +42,47 @@ jobs:
 
       - name: Node.js test suite (curated subset)
         run: ./scripts/node-test.sh
+
+  linux:
+    # Linux: JavaScriptCore C API via WebKitGTK's libjavascriptcoregtk-4.1
+    # (build.rs locates it with pkg-config). The JIT needs no code-signing here.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install JavaScriptCore (WebKitGTK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libjavascriptcoregtk-4.1-dev pkg-config
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build
+
+      - name: Unit tests
+        run: cargo test
+
+      # node-compat-extra first: it exercises the highest-risk C-API surface
+      # (SharedArrayBuffer / no-copy ArrayBuffer / typed arrays) on WebKitGTK.
+      - name: Smoke (hello + node-compat suites)
+        run: |
+          cargo run -- examples/hello.ts
+          for f in examples/node-compat-extra.ts \
+                   examples/node-compat-core.ts \
+                   examples/node-compat-io.ts \
+                   examples/node-compat-modern.ts; do
+            echo "== $f =="
+            cargo run -- "$f"
+          done

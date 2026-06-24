@@ -7,6 +7,7 @@ mod event_loop;
 mod fetch;
 mod init;
 mod inspect;
+mod jsc;
 mod module;
 mod node;
 mod oxc_helpers;

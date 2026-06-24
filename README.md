@@ -1,12 +1,14 @@
 # velox
 
-A small TypeScript/JavaScript runtime for macOS — Rust + [JavaScriptCore](https://developer.apple.com/documentation/javascriptcore) + [oxc](https://oxc.rs).
+A small TypeScript/JavaScript runtime — Rust + [JavaScriptCore](https://developer.apple.com/documentation/javascriptcore) + [oxc](https://oxc.rs).
 
 Run `.ts`/`.tsx`/`.js`/`.jsx` with imports, top-level `await`, `fetch`, timers, and partial Node.js compatibility.
 
-**Requirements:** macOS only.
+**Platforms:** macOS (Apple's JavaScriptCore framework) and Linux (WebKitGTK's `libjavascriptcoregtk`). The JavaScriptCore C API is identical across both; the platform-specific linking lives behind `src/jsc/`.
 
 ## Install
+
+### macOS
 
 ```sh
 make install          # build, sign (JIT), install to ~/.cargo/bin
@@ -15,6 +17,20 @@ cargo run -- examples/hello.ts   # dev (auto-signed via cargo runner)
 ```
 
 Use `make`, not plain `cargo install` — Apple Silicon needs a JIT entitlement signature or CPU work runs ~9× slower. See [Getting started → JIT signing](docs/getting-started.md#jit-and-code-signing).
+
+### Linux
+
+Install JavaScriptCore (WebKitGTK) + pkg-config first, then build normally — no
+code-signing is needed (WebKitGTK's JIT works unsigned):
+
+```sh
+sudo apt-get install -y libjavascriptcoregtk-4.1-dev pkg-config   # or -4.0-dev on older distros
+make install          # build + install to ~/.cargo/bin (sign step auto-skipped)
+cargo run -- examples/hello.ts
+```
+
+A reproducible Linux build/smoke check lives in `Dockerfile.linux`
+(`docker build -f Dockerfile.linux -t velox-linux .`).
 
 ## Quick start
 

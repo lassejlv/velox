@@ -4,10 +4,16 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-velox is a TypeScript/JavaScript runtime in Rust, macOS-only. oxc transpiles &
-bundles TS/JSX → JS, then Apple's JavaScriptCore (via `objc2-javascript-core`,
-the C API) executes it. A `mio` (kqueue) event loop drives timers and async I/O.
-It ships a partial Node.js standard library so real npm packages run.
+velox is a TypeScript/JavaScript runtime in Rust, cross-platform (macOS +
+Linux). oxc transpiles & bundles TS/JSX → JS, then JavaScriptCore's **C API**
+executes it. The C API is identical on every platform; only the linking differs
+and is hidden behind `src/jsc/`: on macOS it re-exports `objc2-javascript-core`
+(Apple's JavaScriptCore.framework); on Linux it uses hand-written `extern "C"`
+bindings (`src/jsc/linux.rs`) linked against WebKitGTK's `libjavascriptcoregtk`
+by `build.rs` (pkg-config). The rest of the codebase imports only from
+`crate::jsc`, never naming the platform. A `mio` event loop (kqueue on macOS,
+epoll on Linux — `mio` selects automatically) drives timers and async I/O. It
+ships a partial Node.js standard library so real npm packages run.
 
 ## Commands
 
@@ -255,5 +261,13 @@ executable memory). `cargo run`/`cargo test` auto-sign via a cargo `runner`
 (`scripts/sign-and-run.sh`, wired in `.cargo/config.toml`); `make release`/`make
 install` sign the standalone binary (a plain `cargo install` strips the
 signature). Signed perf: ~7 ms cold start, ~34k req/s HTTP, and CPU on par with
-or faster than Node (`fib(32)×5` ~40 ms vs ~63 ms). macOS/kqueue only. HTTPS
-server uses a self-signed cert when none given.
+or faster than Node (`fib(32)×5` ~40 ms vs ~63 ms). On **Linux** none of this
+applies — WebKitGTK's JIT works unsigned, so the `codesign` step is skipped
+(`Makefile` guards on `uname`; the cargo runner is already gated to macOS in
+`.cargo/config.toml`). Linux needs `libjavascriptcoregtk-4.1-dev` + `pkg-config`
+at build time (`build.rs` links it); a `Dockerfile.linux` + the `linux` CI job
+verify the build. One Linux caveat: JSC's private
+`JSGlobalContextSetUnhandledRejectionCallback` SPI isn't exported by WebKitGTK,
+so `process`'s `'unhandledRejection'` reporting is macOS-only (the hook is a
+no-op on Linux — unhandled rejections are silently dropped). HTTPS server uses a
+self-signed cert when none given.

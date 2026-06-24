@@ -1,13 +1,13 @@
 //! The JavaScriptCore execution environment plus the small native surface we
 //! expose to scripts (currently just `console`).
 
+use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 
-use objc2::rc::Retained;
-use objc2_foundation::{NSString, NSURL};
-use objc2_javascript_core::{
-    JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
+use crate::jsc::{
+    JSContext, JSContextRef, JSEvaluateScript, JSGlobalContextCreateInGroup, JSGlobalContextRef,
+    JSGlobalContextRelease, JSObjectCallAsFunction, JSObjectGetProperty,
     JSObjectMakeFunctionWithCallback, JSObjectRef, JSObjectSetProperty,
     JSStringCreateWithUTF8CString, JSStringGetMaximumUTF8CStringSize, JSStringGetUTF8CString,
     JSStringRelease, JSValue, JSValueRef, kJSPropertyAttributeDontEnum,
@@ -192,12 +192,24 @@ pub struct Evaluated {
 }
 
 pub struct Runtime {
-    context: Retained<JSContext>,
+    /// Owned global execution context (released in `Drop`). Stored as the raw
+    /// C-API handle so the whole runtime is platform-neutral — no Objective-C
+    /// object API, which WebKitGTK (Linux) does not provide.
+    context: JSGlobalContextRef,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        unsafe { JSGlobalContextRelease(self.context) };
+    }
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        let context = unsafe { JSContext::new() };
+        // A null group makes JSC allocate a fresh context group; a null class
+        // gives the default global object. The returned context is owned (+1
+        // retain) and released in `Drop`.
+        let context = unsafe { JSGlobalContextCreateInGroup(ptr::null(), ptr::null_mut()) };
         let runtime = Self { context };
         runtime.install_console();
         // Reserve the `__velox_*` runtime hook slots as NON-enumerable up front.
@@ -250,7 +262,7 @@ impl Runtime {
 
     /// Raw C-API context handle for the global execution context.
     fn global_context(&self) -> JSContextRef {
-        unsafe { self.context.JSGlobalContextRef() as JSContextRef }
+        self.context as JSContextRef
     }
 
     /// Raw context handle, for native subsystems that need it directly (e.g. a
@@ -267,50 +279,67 @@ impl Runtime {
 
     /// The exit code the script requested via `process.exitCode` (0 if unset).
     pub fn exit_code(&self) -> i32 {
-        let script = NSString::from_str("(globalThis.process && (process.exitCode | 0)) || 0");
-        let value = unsafe { self.context.evaluateScript(Some(&script)) };
-        unsafe { self.context.setException(None) };
-        value
-            .map(|v| unsafe { v.toDouble() } as i32)
-            .unwrap_or(0)
-            .clamp(0, 255)
+        let ctx = self.global_context();
+        unsafe {
+            let script = JSStringCreateWithUTF8CString(
+                c"(globalThis.process && (process.exitCode | 0)) || 0".as_ptr(),
+            );
+            let mut exc: JSValueRef = ptr::null();
+            let value =
+                JSEvaluateScript(ctx, script, ptr::null_mut(), ptr::null_mut(), 0, &mut exc);
+            JSStringRelease(script);
+            if value.is_null() || !exc.is_null() {
+                return 0;
+            }
+            (JSValue::to_number(ctx, value, ptr::null_mut()) as i32).clamp(0, 255)
+        }
     }
 
     /// Evaluate JavaScript source. Returns the completion value (for the REPL)
     /// or a formatted JS exception message.
     pub fn eval(&self, source: &str) -> Result<Evaluated, String> {
-        let script = NSString::from_str(source);
-        // Evaluate under a synthetic URL so JSC emits line:col in error stacks;
-        // `crate::sourcemap` maps those bundle positions back to source files.
-        let url = NSURL::URLWithString(&NSString::from_str(crate::sourcemap::BUNDLE_URL));
-        let value = unsafe {
-            self.context
-                .evaluateScript_withSourceURL(Some(&script), url.as_deref())
+        let ctx = self.global_context();
+        // JSStringCreateWithUTF8CString needs a NUL-terminated buffer; a NUL in
+        // the source would truncate it, so reject that up front.
+        let c_source = match CString::new(source) {
+            Ok(s) => s,
+            Err(_) => return Err("source contains an interior NUL byte".to_string()),
         };
+        // The synthetic source URL is a JSStringRef here (the C API's sourceURL
+        // parameter), not an NSURL. JSC emits line:col against it in error
+        // stacks; `crate::sourcemap` maps those bundle positions back to source.
+        let url_c = CString::new(crate::sourcemap::BUNDLE_URL).unwrap_or_default();
+        unsafe {
+            let script = JSStringCreateWithUTF8CString(c_source.as_ptr());
+            let url = JSStringCreateWithUTF8CString(url_c.as_ptr());
+            let mut exc: JSValueRef = ptr::null();
+            // starting_line_number = 1 to match the previous Obj-C behavior.
+            let value = JSEvaluateScript(ctx, script, ptr::null_mut(), url, 1, &mut exc);
+            JSStringRelease(script);
+            JSStringRelease(url);
 
-        // A thrown exception is parked on the context rather than unwinding.
-        if let Some(exception) = unsafe { self.context.exception() } {
-            unsafe { self.context.setException(None) };
-            return Err(format_exception(&exception));
-        }
+            // A thrown exception is reported via the out-param rather than
+            // unwinding across the FFI boundary.
+            if !exc.is_null() {
+                return Err(format_exception(ctx, exc));
+            }
 
-        // Format the completion value with the same inspector `console` uses,
-        // so the REPL shows `{ a: 1 }` rather than `[object Object]`.
-        let display = value.and_then(|v| unsafe {
-            if v.isUndefined() {
+            // Format the completion value with the same inspector `console`
+            // uses, so the REPL shows `{ a: 1 }` rather than `[object Object]`.
+            let display = if value.is_null() || JSValue::is_undefined(ctx, value) {
                 None
             } else {
-                inspect_value(self.global_context(), v.JSValueRef())
-            }
-        });
-        Ok(Evaluated { display })
+                inspect_value(ctx, value)
+            };
+            Ok(Evaluated { display })
+        }
     }
 
     /// Install `console` by registering the native `__velox_log(level, text)`
     /// function through the JSC C API, then running the JS prelude on top.
     fn install_console(&self) {
         unsafe {
-            let ctx = self.context.JSGlobalContextRef() as JSContextRef;
+            let ctx = self.global_context();
             let global = JSContext::global_object(ctx);
 
             let name = JSStringCreateWithUTF8CString(c"__velox_log".as_ptr());
@@ -425,16 +454,29 @@ fn print_console(level: &str, text: &str) {
 }
 
 /// Build a readable message from a thrown JS value, including a stack line.
-fn format_exception(exception: &JSValue) -> String {
-    let message = unsafe { exception.toString() }
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "<unprintable exception>".to_string());
+fn format_exception(ctx: JSContextRef, exception: JSValueRef) -> String {
+    let message = unsafe { js_value_to_string(ctx, exception) };
+    let message = if message.is_empty() {
+        "<unprintable exception>".to_string()
+    } else {
+        message
+    };
 
+    // Read the `.stack` property off the error object, if present.
     let stack = unsafe {
-        exception
-            .objectForKeyedSubscript(Some(&NSString::from_str("stack")))
-            .and_then(|v| v.toString())
-            .map(|s| s.to_string())
+        let obj = JSValue::to_object(ctx, exception, ptr::null_mut());
+        if obj.is_null() {
+            None
+        } else {
+            let name = JSStringCreateWithUTF8CString(c"stack".as_ptr());
+            let stack_val = JSObjectGetProperty(ctx, obj, name, ptr::null_mut());
+            JSStringRelease(name);
+            if stack_val.is_null() || JSValue::is_undefined(ctx, stack_val) {
+                None
+            } else {
+                Some(js_value_to_string(ctx, stack_val))
+            }
+        }
     };
 
     match stack {
