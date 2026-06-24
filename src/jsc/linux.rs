@@ -62,6 +62,8 @@ pub const kJSPropertyAttributeDontEnum: c_uint = 1 << 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct JSTypedArrayType(pub c_uint);
 
+// A faithful mirror of JSC's enum; not every variant is referenced by velox.
+#[allow(dead_code)]
 impl JSTypedArrayType {
     pub const Int8Array: Self = Self(0);
     pub const Int16Array: Self = Self(1);

@@ -74,7 +74,7 @@ check("URLSearchParams", () => { const sp = new URLSearchParams("a=1&b=2"); if (
 check("process.hrtime.bigint", () => { if (typeof process.hrtime.bigint() !== "bigint") throw new Error("hrt"); });
 check("process.nextTick", async () => { await new Promise<void>((res)=>process.nextTick(res)); });
 check("process.memoryUsage", () => { if (typeof process.memoryUsage().rss !== "number") throw new Error("mem"); });
-check("process.platform", () => { if (process.platform!=="darwin") throw new Error("plat"); });
+check("process.platform", () => { if (!["darwin","linux","win32"].includes(process.platform)) throw new Error("plat"); });
 check("process.env mutate", () => { process.env.VX_TEST="1"; if (process.env.VX_TEST!=="1") throw new Error("env"); });
 check("process.argv", () => { if (!Array.isArray(process.argv)) throw new Error("argv"); });
 check("process.cwd", () => { if (typeof process.cwd()!=="string") throw new Error("cwd"); });

@@ -148,7 +148,7 @@ fn sql_to_json(v: ValueRef, bigints: bool) -> Json {
     match v {
         ValueRef::Null => Json::Null,
         ValueRef::Integer(i) => {
-            if bigints || i > MAX_SAFE_INT || i < -MAX_SAFE_INT {
+            if bigints || !(-MAX_SAFE_INT..=MAX_SAFE_INT).contains(&i) {
                 json!({ "t": "bigint", "v": i.to_string() })
             } else {
                 json!(i)
@@ -274,7 +274,7 @@ unsafe extern "C-unwind" fn run_fn(
         bind_params(&mut stmt, &params).map_err(|e| e.to_string())?;
         let changes = stmt.raw_execute().map_err(|e| e.to_string())?;
         let last = conn.last_insert_rowid();
-        let last_json = if last > MAX_SAFE_INT || last < -MAX_SAFE_INT {
+        let last_json = if !(-MAX_SAFE_INT..=MAX_SAFE_INT).contains(&last) {
             json!({ "t": "bigint", "v": last.to_string() })
         } else {
             json!(last)
