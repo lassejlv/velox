@@ -679,18 +679,17 @@ impl Graph {
                 end: span.start + 6, // the `import` keyword
                 text: "__velox_import".to_string(),
             });
-            match self.resolve_and_load(&specifier, dir, path) {
-                Ok(id) => edits.push(Edit {
+            // A *literal* `import('x')` we couldn't resolve at bundle time (e.g.
+            // drizzle-kit's bin bundled from a cache dir dynamically importing the
+            // *project's* drizzle-orm, or a data: URL) keeps its original
+            // specifier: the runtime loader Node-resolves it against cwd (or
+            // parses the data URL) on demand.
+            if let Ok(id) = self.resolve_and_load(&specifier, dir, path) {
+                edits.push(Edit {
                     start: src_span.start,
                     end: src_span.end,
                     text: format!("'{id}'"),
-                }),
-                // A *literal* `import('x')` we couldn't resolve at bundle time
-                // (e.g. drizzle-kit's bin bundled from a cache dir dynamically
-                // importing the *project's* drizzle-orm, or a data: URL) keeps
-                // its original specifier: the runtime loader Node-resolves it
-                // against cwd (or parses the data URL) on demand.
-                Err(_) => {}
+                });
             }
         }
 

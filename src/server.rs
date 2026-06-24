@@ -988,7 +988,7 @@ fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) -> bool {
     match state {
         Some(false) => {
             flush_conn(ctx, token);
-            let drained = CONNS.with(|c| {
+            CONNS.with(|c| {
                 let mut map = c.borrow_mut();
                 match map.get_mut(&token) {
                     Some(conn) => {
@@ -1002,8 +1002,7 @@ fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) -> bool {
                     // Closed during the flush — nothing left to wait for.
                     None => true,
                 }
-            });
-            return drained;
+            })
         }
         Some(true) => {
             // Still connecting: queued until the handshake completes.
@@ -1012,7 +1011,7 @@ fn queue_socket_write(ctx: JSContextRef, token: Token, data: Vec<u8>) -> bool {
                     conn.notify_drain = true;
                 }
             });
-            return false;
+            false
         }
         None => {
             // Still resolving DNS: hold the bytes until the socket opens.

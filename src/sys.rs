@@ -608,10 +608,10 @@ fn system_nameserver() -> std::net::IpAddr {
     if let Ok(content) = std::fs::read_to_string("/etc/resolv.conf") {
         for line in content.lines() {
             let line = line.trim();
-            if let Some(rest) = line.strip_prefix("nameserver") {
-                if let Ok(ip) = rest.trim().parse::<IpAddr>() {
-                    return ip;
-                }
+            if let Some(rest) = line.strip_prefix("nameserver")
+                && let Ok(ip) = rest.trim().parse::<IpAddr>()
+            {
+                return ip;
             }
         }
     }
