@@ -13,3 +13,6 @@
 /node-compat-*/
 /node-compat/
 .DS_Store
+
+# Node / velox installed deps
+node_modules/

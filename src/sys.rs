@@ -7,7 +7,7 @@ use std::io::Read;
 use std::ptr;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
+use crate::jsc::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use serde_json::Value;
 
 use crate::event_loop::{arg_slice, begin_io, end_io, register, waker};

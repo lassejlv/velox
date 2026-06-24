@@ -2832,6 +2832,7 @@ dependencies = [
  "oxc_resolver",
  "p256",
  "pbkdf2",
+ "pkg-config",
  "rand",
  "rcgen",
  "ring",

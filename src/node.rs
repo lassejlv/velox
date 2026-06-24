@@ -14,7 +14,7 @@ use std::ffi::{CStr, CString};
 use std::io::Write;
 use std::ptr;
 
-use objc2_javascript_core::{
+use crate::jsc::{
     JSContext, JSContextRef, JSObjectCallAsFunction, JSObjectGetProperty,
     JSObjectGetTypedArrayByteOffset, JSObjectGetTypedArrayBytesPtr, JSObjectGetTypedArrayLength,
     JSObjectMakeTypedArray, JSObjectRef, JSStringCreateWithCharacters,
@@ -272,7 +272,7 @@ pub const GLOBALS_PRELUDE: &str = r#"
   var startMs = Date.now();
   var process = {
     platform: __velox_platform(),
-    arch: "arm64",
+    arch: __velox_arch(),
     env: env,
     argv: argv,
     argv0: argv[0] || "velox",
@@ -393,7 +393,7 @@ pub const GLOBALS_PRELUDE: &str = r#"
     // process.config — the build configuration object. velox isn't built like
     // Node, but libraries read fields off it (e.g. variables.*); provide a
     // plausible shape so property access doesn't throw.
-    config: { target_defaults: { default_configuration: "Release" }, variables: { host_arch: "arm64", target_arch: "arm64", v8_enable_i18n_support: 1, node_use_openssl: true } },
+    config: { target_defaults: { default_configuration: "Release" }, variables: { host_arch: __velox_arch(), target_arch: __velox_arch(), v8_enable_i18n_support: 1, node_use_openssl: true } },
   };
   process.hrtime.bigint = function () { return BigInt(Math.round(__velox_hrtime_ns())); };
 
@@ -548,6 +548,7 @@ pub fn install(ctx: JSContextRef) {
         register(ctx, c"__velox_gc", velox_gc);
         register(ctx, c"__velox_cwd", velox_cwd);
         register(ctx, c"__velox_platform", velox_platform);
+        register(ctx, c"__velox_arch", velox_arch);
         register(ctx, c"__velox_isatty", velox_isatty);
         register(ctx, c"__velox_env_json", velox_env_json);
         register(ctx, c"__velox_argv_json", velox_argv_json);
@@ -621,7 +622,7 @@ unsafe extern "C-unwind" fn velox_gc(
     _exception: *mut JSValueRef,
 ) -> JSValueRef {
     unsafe {
-        objc2_javascript_core::JSGarbageCollect(ctx);
+        crate::jsc::JSGarbageCollect(ctx);
         JSValue::new_undefined(ctx)
     }
 }
@@ -649,6 +650,19 @@ unsafe extern "C-unwind" fn velox_platform(
     _exception: *mut JSValueRef,
 ) -> JSValueRef {
     unsafe { js_string(ctx, node_platform()) }
+}
+
+/// `__velox_arch()` — Node's CPU architecture name (`arm64`/`x64`/…), derived
+/// from the build target so it is correct on every platform.
+unsafe extern "C-unwind" fn velox_arch(
+    ctx: JSContextRef,
+    _function: JSObjectRef,
+    _this: JSObjectRef,
+    _argc: usize,
+    _argv: *mut JSValueRef,
+    _exception: *mut JSValueRef,
+) -> JSValueRef {
+    unsafe { js_string(ctx, node_arch()) }
 }
 
 /// `__velox_isatty(fd)` — is the given fd a terminal?
@@ -791,6 +805,7 @@ unsafe extern "C-unwind" fn velox_mem_info(
     _argv: *mut JSValueRef,
     _exception: *mut JSValueRef,
 ) -> JSValueRef {
+    #[cfg(target_os = "macos")]
     let rss: u64 = unsafe {
         let mut info: libc::mach_task_basic_info = std::mem::zeroed();
         let mut count = (std::mem::size_of::<libc::mach_task_basic_info>()
@@ -809,6 +824,7 @@ unsafe extern "C-unwind" fn velox_mem_info(
         }
     };
 
+    #[cfg(target_os = "macos")]
     let available: u64 = unsafe {
         let page_size = libc::sysconf(libc::_SC_PAGESIZE) as u64;
         let mut vm: libc::vm_statistics64 = std::mem::zeroed();
@@ -826,6 +842,36 @@ unsafe extern "C-unwind" fn velox_mem_info(
         } else {
             0
         }
+    };
+
+    // Linux has no Mach task/host stats; read RSS from /proc/self/statm
+    // (field 1 = resident pages) and available memory from /proc/meminfo.
+    #[cfg(not(target_os = "macos"))]
+    let rss: u64 = {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| {
+                s.split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.parse::<u64>().ok())
+            })
+            .map(|pages| pages * page_size)
+            .unwrap_or(0)
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let available: u64 = {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("MemAvailable:"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|kb| kb.parse::<u64>().ok())
+            })
+            .map(|kb| kb * 1024)
+            .unwrap_or(0)
     };
 
     unsafe { js_string(ctx, &format!("{{\"rss\":{rss},\"available\":{available}}}")) }
@@ -893,6 +939,9 @@ unsafe extern "C-unwind" fn velox_os_info(
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
+    // Total physical memory. macOS exposes it via sysctl(HW_MEMSIZE); Linux has
+    // no such MIB, so use sysinfo(2) (totalram scaled by mem_unit).
+    #[cfg(target_os = "macos")]
     let totalmem = {
         let mut mem: u64 = 0;
         let mut size = std::mem::size_of::<u64>();
@@ -908,6 +957,15 @@ unsafe extern "C-unwind" fn velox_os_info(
             )
         };
         mem
+    };
+    #[cfg(not(target_os = "macos"))]
+    let totalmem = unsafe {
+        let mut info: libc::sysinfo = std::mem::zeroed();
+        if libc::sysinfo(&mut info) == 0 {
+            info.totalram as u64 * info.mem_unit as u64
+        } else {
+            0
+        }
     };
     let mut load = [0f64; 3];
     unsafe { libc::getloadavg(load.as_mut_ptr(), 3) };

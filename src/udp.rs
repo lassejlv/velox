@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::ptr;
 
+use crate::jsc::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use mio::net::UdpSocket;
 use mio::{Interest, Token};
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 
 use crate::event_loop::{arg_slice, begin_io, end_io, next_token, register, registry};
 use crate::node::{js_string, js_string_latin1, js_value_to_latin1};
@@ -212,7 +212,7 @@ pub fn on_ready(ctx: JSContextRef, event: &mio::event::Event) {
 
 /// Call `globalThis.__velox_on_udp(id, dataLatin1, addr, port)`.
 unsafe fn dispatch_message(ctx: JSContextRef, id: usize, data: &[u8], from: SocketAddr) {
-    use objc2_javascript_core::{
+    use crate::jsc::{
         JSContext, JSObjectCallAsFunction, JSObjectGetProperty, JSStringCreateWithUTF8CString,
         JSStringRelease,
     };

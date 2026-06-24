@@ -1,0 +1,48 @@
+# Linux build + smoke test for velox.
+#
+# velox links JavaScriptCore's C API via WebKitGTK's libjavascriptcoregtk-4.1
+# (build.rs locates it with pkg-config). On Apple Silicon macOS the JIT needs a
+# code-signing entitlement; on Linux WebKitGTK's JIT works with no signing.
+#
+#   docker build -f Dockerfile.linux -t velox-linux .
+#
+# A green build means the cross-platform port compiles and the smoke suite runs.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# libjavascriptcoregtk-4.1-dev provides the JSC C API + pkg-config metadata.
+# build-essential + perl satisfy the ring/rcgen native builds; rusqlite uses the
+# bundled SQLite so no libsqlite needed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libjavascriptcoregtk-4.1-dev \
+        pkg-config \
+        build-essential \
+        perl \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH=/root/.cargo/bin:$PATH
+
+WORKDIR /velox
+COPY . .
+
+# Build (release exercises the LTO path the distributed binary uses).
+RUN cargo build --release
+
+# Smoke tests: prove eval + the JSC facade, then the node-compat probe suites.
+# node-compat-extra runs first to flush the highest-risk C-API surface
+# (SharedArrayBuffer / no-copy ArrayBuffer / typed arrays) early.
+RUN ./target/release/velox examples/hello.ts \
+ && for f in examples/node-compat-extra.ts \
+             examples/node-compat-core.ts \
+             examples/node-compat-io.ts \
+             examples/node-compat-modern.ts; do \
+        echo "== $f =="; ./target/release/velox "$f" || exit 1; \
+    done
+
+CMD ["./target/release/velox", "examples/hello.ts"]

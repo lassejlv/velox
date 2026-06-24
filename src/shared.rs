@@ -15,7 +15,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use objc2_javascript_core::{
+use crate::jsc::{
     JSContextRef, JSObjectMakeArrayBufferWithBytesNoCopy, JSObjectRef, JSValue, JSValueRef,
 };
 

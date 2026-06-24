@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+use crate::jsc::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 use mio::Waker;
-use objc2_javascript_core::{JSContextRef, JSObjectRef, JSValue, JSValueRef};
 
 use crate::event_loop::{arg_slice, begin_io, end_io, register, waker};
 use crate::node::js_string;
@@ -385,7 +385,7 @@ unsafe fn invoke_global3(ctx: JSContextRef, name: &str, a: &str, b: &str, c: &st
 
 /// Look up `globalThis[name]` and call it with `args` (ignoring its result).
 unsafe fn invoke(ctx: JSContextRef, name: &str, args: &[JSValueRef]) {
-    use objc2_javascript_core::{
+    use crate::jsc::{
         JSContext, JSObjectCallAsFunction, JSObjectGetProperty, JSStringCreateWithUTF8CString,
         JSStringRelease,
     };

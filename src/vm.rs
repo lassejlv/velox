@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::os::raw::c_char;
 use std::ptr;
 
-use objc2_javascript_core::{
+use crate::jsc::{
     JSContext, JSContextRef, JSEvaluateScript, JSGlobalContextCreateInGroup, JSGlobalContextRef,
     JSGlobalContextRelease, JSObjectCopyPropertyNames, JSObjectGetProperty, JSObjectRef,
     JSObjectSetProperty, JSPropertyNameArrayGetCount, JSPropertyNameArrayGetNameAtIndex,
