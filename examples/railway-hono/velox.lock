@@ -1,0 +1,11 @@
+# velox lockfile — generated, do not edit by hand
+lockfileVersion: 1
+packages:
+  "@hono/node-server":
+    version: 1.19.14
+    resolved: https://registry.npmjs.org/@hono/node-server/-/node-server-1.19.14.tgz
+    integrity: sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw==
+  "hono":
+    version: 4.12.27
+    resolved: https://registry.npmjs.org/hono/-/hono-4.12.27.tgz
+    integrity: sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q==
